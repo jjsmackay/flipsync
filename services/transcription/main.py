@@ -45,7 +45,7 @@ async def _run_transcription(
     batch_size: int,
 ) -> None:
     """Background task: load model, process segments in batches, update job state."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     try:
         # Load (or retrieve cached) model in executor to avoid blocking event loop
