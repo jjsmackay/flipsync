@@ -207,6 +207,25 @@ Frontend needs:
 1. Component tests for the review queue (keyboard navigation, status transitions)
 2. API mock tests for polling behaviour
 
+## Development environment
+
+- **Python:** `python3` only (no `python` or `pip` binary). Use `uv` for running/installing: `uv run --with <deps> python -m <cmd>`
+- **Node:** Available via nvm. Package manager is `pnpm` (enabled via `corepack enable pnpm`).
+- **Docker:** Available in rootless mode. `docker compose up --build` from repo root.
+- **Orchestrator tests:** `cd services/orchestrator && uv run --with fastapi --with uvicorn --with python-multipart --with aiofiles --with httpx --with pytest --with pytest-asyncio --with anyio python -m pytest tests/ -v`
+
+## Error handling pattern
+
+All services use a flat error response: `{"error": "snake_case", "message": "...", "detail": {}}`.
+The orchestrator uses `AppError` from `errors.py` — never `HTTPException` (which wraps in `{"detail": {...}}`).
+Processing services should return the same flat format directly.
+
+## Current status
+
+- **Wave 0 (scaffolding):** Complete.
+- **Wave 1 (orchestrator core):** Complete. All endpoints, state machines, job queue, tests passing (143 pass, 4 skipped).
+- **Next:** Wave 2 (processing services — can be built in parallel) or Wave 3 (orchestrator integration with real services).
+
 ## Docker notes
 
 - All services share the `./data:/data` bind mount. That's how files flow between them.
