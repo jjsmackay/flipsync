@@ -1,0 +1,6 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+pyannote.audio==3.3.2
+scipy
+torch
+torchaudio

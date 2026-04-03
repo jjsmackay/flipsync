@@ -1,0 +1,82 @@
+services:
+  orchestrator:
+    build: ./services/orchestrator
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - DATA_DIR=/data
+      - VOCAL_SEPARATION_URL=http://vocal-separation:8001
+      - DIARISATION_URL=http://diarisation:8002
+      - TRANSCRIPTION_URL=http://transcription:8003
+      - CLEANUP_URL=http://cleanup:8004
+    depends_on:
+      - vocal-separation
+      - diarisation
+      - transcription
+      - cleanup
+    restart: unless-stopped
+
+  vocal-separation:
+    build: ./services/vocal-separation
+    volumes:
+      - ./data:/data
+      - demucs-models:/root/.cache/torch
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  diarisation:
+    build: ./services/diarisation
+    volumes:
+      - ./data:/data
+      - pyannote-models:/root/.cache/huggingface
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  transcription:
+    build: ./services/transcription
+    volumes:
+      - ./data:/data
+      - whisper-models:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  cleanup:
+    build: ./services/cleanup
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+
+volumes:
+  demucs-models:
+  pyannote-models:
+  whisper-models:
