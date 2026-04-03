@@ -1,0 +1,359 @@
+# Data Models
+
+**Status:** DRAFT  
+**Last updated:** 2026-04-03
+
+---
+
+## Storage decision
+
+**SQLite.** One database file per project at `projects/{project_id}/project.db`.
+
+Rationale: the review UI needs queries the filesystem can't serve efficiently — "all segments with confidence > 0.85 and status pending", "total approved duration", "segments from episode 3 only". A flat JSON manifest works for export but not for interactive review. SQLite is a single file, survives Docker restarts, requires no separate service, and is trivially backed up by copying the file. It is the right tool at this scale.
+
+The `manifest.json` file in the export directory is a **derived output**, not the source of truth. It is written at export time from the database. Processing services do not read or write JSON manifests — all data flows through the orchestrator, which reads service responses and writes to SQLite.
+
+---
+
+## Database creation and connection management
+
+**Creation:** The orchestrator creates `project.db` inside the project's working directory when `POST /projects` is called. It runs all migration files against the new database immediately, producing a fully-formed schema.
+
+**Connection management:** The orchestrator maintains one SQLite connection per project, opened on first access and kept open for the lifetime of the process. Since SQLite allows only one writer at a time, and the orchestrator is a single-process app, write contention is not a concern. Connections use `PRAGMA journal_mode=WAL` for concurrent read access during write operations (e.g. the browser reading segment state while the orchestrator writes transcription results).
+
+**Multiple projects:** Each project has its own `.db` file. The orchestrator does not use a single shared database. When listing projects (`GET /projects`), the orchestrator reads a lightweight project index — either a single `index.db` at the `DATABASE_DIR` root, or by scanning project directories. The index approach is preferred for performance; the scan approach is acceptable for v1.
+
+---
+
+## Database schema
+
+### `projects`
+
+One row per project.
+
+```sql
+CREATE TABLE projects (
+    id              TEXT PRIMARY KEY,       -- UUID
+    name            TEXT NOT NULL,
+    created_at      TEXT NOT NULL,          -- ISO 8601
+    updated_at      TEXT NOT NULL,
+    status          TEXT NOT NULL,          -- see Project status
+    reference_path  TEXT,                   -- path to reference.wav
+    whisper_model   TEXT NOT NULL DEFAULT 'large-v2',
+    language        TEXT,                   -- NULL = auto-detect
+    match_threshold      REAL NOT NULL DEFAULT 0.75,
+    target_lufs          REAL NOT NULL DEFAULT -23.0,
+    target_duration_secs REAL NOT NULL DEFAULT 1800.0  -- progress bar target; default 30 minutes
+);
+```
+
+---
+
+### `sources`
+
+One row per uploaded video file.
+
+```sql
+CREATE TABLE sources (
+    id              TEXT PRIMARY KEY,       -- UUID
+    project_id      TEXT NOT NULL REFERENCES projects(id),
+    filename        TEXT NOT NULL,          -- original filename
+    file_path       TEXT NOT NULL,          -- source/{id}.{ext}
+    audio_path      TEXT,                   -- audio/raw/{id}.wav, set after extraction
+    vocals_path     TEXT,                   -- audio/vocals/{id}.wav, set after step 1
+    duration_secs   REAL,                   -- set after extraction
+    status          TEXT NOT NULL,          -- see Source status
+    step1_model     TEXT,                   -- Demucs model used
+    step1_error     TEXT,                   -- error message if step1 failed
+    step2_error     TEXT,
+    coverage_ratio  REAL,                   -- fraction of file attributed to target speaker
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+```
+
+**Orchestrator write behaviour for sources:**
+- `audio_path` and `duration_secs` are set when the `extract_audio` job completes.
+- `vocals_path` and `step1_model` are set when the `vocal_separation` job completes. `step1_model` records the Demucs model variant actually used (which may differ from the default if the user requested a specific model or the orchestrator retried with a fallback).
+- `step1_error` is set when vocal separation fails; cleared when step 1 is re-run.
+- `step2_error` is set when diarisation fails; cleared when step 2 is re-run.
+- `coverage_ratio` is set from the diarisation service response when step 2 completes.
+
+### `segments`
+
+One row per diarised segment. This is the central table.
+
+```sql
+CREATE TABLE segments (
+    id                      TEXT PRIMARY KEY,   -- UUID
+    project_id              TEXT NOT NULL REFERENCES projects(id),
+    source_id               TEXT NOT NULL REFERENCES sources(id),
+    raw_path                TEXT NOT NULL,      -- segments/raw/{id}.wav
+    export_path             TEXT,               -- export/{id}.wav, set after cleanup
+
+    -- Diarisation
+    start_secs              REAL NOT NULL,
+    end_secs                REAL NOT NULL,
+    duration_secs           REAL GENERATED ALWAYS AS (end_secs - start_secs) STORED,
+    speaker_label           TEXT NOT NULL,      -- SPEAKER_00, SPEAKER_01, etc (local to source)
+
+    -- Speaker matching
+    match_confidence        REAL NOT NULL,      -- cosine similarity, 0.0-1.0
+
+    -- Transcription
+    transcript              TEXT,               -- NULL until transcribed
+    transcript_edited       TEXT,               -- NULL unless user has edited
+    transcript_confidence   REAL,               -- mean word probability, 0.0-1.0
+
+    -- Review
+    status                  TEXT NOT NULL DEFAULT 'pending',
+    clipping_warning        INTEGER NOT NULL DEFAULT 0,       -- boolean, see note below
+    flags                   TEXT,               -- JSON array of flag strings, see note below
+
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+```
+
+**Effective transcript:** the orchestrator always uses `COALESCE(transcript_edited, transcript)` when writing the export manifest. User edits take precedence; the original is preserved.
+
+**`clipping_warning` column vs `clipping_warning` status.** These are related but distinct. The `clipping_warning` INTEGER column is a persistent flag set by the cleanup service — it records "this segment's audio clips." The `clipping_warning` status is a review state that puts the segment back in the review queue. When the user re-approves a clipping segment (status → `approved`), the `clipping_warning` column remains `1` so the UI can still show the warning icon. The column is a fact about the audio; the status is a workflow state.
+
+**`flags` column.** JSON array of string tags for machine-generated annotations that don't warrant their own column. Current usage:
+- `"cleanup_error"` — FFmpeg failed on this segment during cleanup; the segment was auto-rejected. The error message is stored in the `flags` array as `"cleanup_error: <message>"`.
+- `"short_transcript"` — segment is under 2 seconds; transcript confidence score may be unreliable.
+
+Future flags can be added without schema changes. The UI should display flags as informational badges on the segment detail panel. Flags are set by the orchestrator based on service responses; services do not write to the database directly.
+
+---
+
+### `jobs`
+
+One row per processing job. Jobs are the unit of work the orchestrator queues and tracks.
+
+```sql
+CREATE TABLE jobs (
+    id              TEXT PRIMARY KEY,       -- UUID
+    project_id      TEXT NOT NULL REFERENCES projects(id),
+    source_id       TEXT,                   -- NULL for project-wide jobs (e.g. bulk transcription)
+    type            TEXT NOT NULL,          -- see Job types
+    status          TEXT NOT NULL,          -- queued | running | complete | failed | cancelled
+    params          TEXT,                   -- JSON, job-specific parameters
+    error           TEXT,                   -- error message if failed
+    progress        INTEGER,                -- 0-100, updated during execution
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    completed_at    TEXT
+);
+```
+
+---
+
+## Enumerations
+
+### Project status
+
+| Value | Meaning |
+|-------|---------|
+| `new` | Created, no files uploaded yet |
+| `ready` | Files uploaded, pipeline not started |
+| `processing` | One or more jobs running |
+| `review` | All pipeline steps complete, awaiting user review |
+| `exporting` | Export job running |
+| `exported` | Export complete, archive available |
+
+State transitions:
+
+```
+new         -> ready              (first source file uploaded)
+ready       -> processing         (pipeline started)
+processing  -> review             (all jobs complete, no failures)
+processing  -> ready              (all jobs complete, some failed — user action needed)
+review      -> processing         (user re-runs a step or triggers transcription)
+review      -> exporting          (user triggers export)
+exporting   -> exported           (export job completes)
+exported    -> processing         (user re-runs a step)
+exported    -> review             (user changes approvals without re-processing)
+exported    -> exporting          (user re-exports with different approvals)
+```
+
+The orchestrator recomputes project status after each job completion or user action. A project is `processing` if any job is `queued` or `running`; `review` if all sources are `complete` and no jobs are active.
+
+---
+
+### Source status
+
+| Value | Meaning |
+|-------|---------|
+| `uploaded` | File received, audio not yet extracted |
+| `extracting` | FFmpeg audio extraction running |
+| `extraction_failed` | FFmpeg failed; user action required |
+| `step1_pending` | Audio extracted, step 1 not started |
+| `step1_running` | Demucs running |
+| `step1_failed` | Demucs failed |
+| `step2_pending` | Step 1 complete, step 2 not started |
+| `step2_running` | pyannote running |
+| `step2_failed` | pyannote failed |
+| `complete` | Both steps done; segments written to database |
+
+State transitions:
+
+```
+uploaded          -> extracting        (upload handler enqueues extraction job)
+extracting        -> step1_pending     (extraction succeeds)
+extracting        -> extraction_failed (extraction fails)
+step1_pending     -> step1_running     (vocal separation job starts)
+step1_running     -> step2_pending     (step 1 succeeds)
+step1_running     -> step1_failed      (step 1 fails, including after OOM retry)
+step2_pending     -> step2_running     (diarisation job starts)
+step2_running     -> complete          (step 2 succeeds)
+step2_running     -> step2_failed      (step 2 fails)
+complete          -> step1_pending     (user re-runs step 1; deletes all segments for this source)
+complete          -> step2_pending     (user re-runs step 2; deletes segments for this source)
+step1_failed      -> step1_pending     (user retries step 1)
+step2_failed      -> step2_pending     (user retries step 2)
+```
+
+`extraction_failed` has no forward transition. The user must delete the source and re-upload. This is intentional — a corrupt file won't become less corrupt on retry.
+
+---
+
+### Segment status
+
+| Value | Meaning |
+|-------|---------|
+| `pending` | Not yet reviewed |
+| `approved` | User approved; included in export |
+| `rejected` | User rejected; excluded from export |
+| `maybe` | User deferred decision |
+| `below_threshold` | Below display threshold; not shown by default |
+| `clipping_warning` | Cleanup flagged clipping; returned to review |
+| `auto_rejected` | Silent after trim; excluded automatically |
+
+State transitions:
+
+```
+pending          -> approved
+pending          -> rejected
+pending          -> maybe
+pending          -> below_threshold  (when user raises match threshold)
+maybe            -> approved
+maybe            -> rejected
+maybe            -> pending          (bulk reset: move all maybe → pending)
+approved         -> rejected         (user changes mind)
+approved         -> maybe            (user defers decision)
+approved         -> clipping_warning (after cleanup step flags it)
+below_threshold  -> pending          (when user lowers match threshold)
+clipping_warning -> approved         (user accepts the risk)
+clipping_warning -> rejected
+```
+
+`auto_rejected` is a terminal state with no exit. These segments were silent after trimming — they contain no usable audio. If the user re-runs step 2 for the source, all segments (including `auto_rejected`) for that source are deleted and new segments are created from scratch.
+
+`rejected` is also terminal for user-initiated transitions. A rejected segment can only return to review if the source is reprocessed (which deletes and recreates all segments for that source). This is intentional — reject means reject.
+
+The orchestrator rejects any transition not in this list.
+
+---
+
+### Job types
+
+| Value | Triggered by | Execution |
+|-------|-------------|-----------|
+| `extract_audio` | File upload | In-process FFmpeg subprocess (no external service) |
+| `vocal_separation` | User starts pipeline or re-runs step 1 | External service (port 8001) |
+| `diarisation` | Step 1 complete or user re-runs step 2 | External service (port 8002) |
+| `transcription_bulk` | Step 2 complete or user triggers | External service (port 8003) |
+| `transcription_segment` | User re-transcribes a single segment | External service (port 8003) |
+| `export` | User triggers export | External service (port 8004) for cleanup, then in-process for manifest + archive |
+
+`extract_audio` and the manifest/archive phase of `export` run as FFmpeg subprocesses inside the orchestrator. They follow the same job lifecycle (create row, update progress, mark complete/failed) but do not involve polling an external service — the orchestrator runs the subprocess in a background `asyncio` task and updates the job row directly on completion.
+
+---
+
+## Derived values
+
+These are computed by the orchestrator on request; not stored.
+
+**Project summary stats** (returned with project state):
+
+```json
+{
+  "total_segments": 1842,
+  "approved_count": 743,
+  "approved_duration_secs": 4821.3,
+  "pending_count": 891,
+  "maybe_count": 47,
+  "rejected_count": 161,
+  "below_threshold_count": 312,
+  "source_coverage": [
+    {
+      "source_id": "...",
+      "filename": "s01e01.mkv",
+      "coverage_ratio": 0.21,
+      "low_coverage_warning": false
+    }
+  ]
+}
+```
+
+`low_coverage_warning` is `true` when `coverage_ratio < 0.15` (i.e. the target speaker accounts for less than 15% of the source file's total audio). This threshold is hardcoded in v1.
+
+**Approved duration** drives the progress indicator in the project header. XTTS-v2 needs roughly 30 minutes of clean audio for a fine-tune. The UI surfaces this as a progress bar towards a configurable target (default 1800 seconds).
+
+---
+
+## Export manifest format
+
+Written to `export/manifest.json` at export time. XTTS-v2 compatible.
+
+```json
+{
+  "version": "1",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "exported_at": "2026-04-03T14:32:00Z",
+  "speaker": "target",
+  "segments": [
+    {
+      "id": "7f3c2a1b-...",
+      "audio_file": "7f3c2a1b.wav",
+      "text": "The transcript text for this segment.",
+      "source": "s01e01.mkv",
+      "start_secs": 142.31,
+      "end_secs": 146.88,
+      "duration_secs": 4.57,
+      "match_confidence": 0.91,
+      "transcript_confidence": 0.88
+    }
+  ],
+  "stats": {
+    "segment_count": 743,
+    "total_duration_secs": 4821.3
+  }
+}
+```
+
+The `text` field uses `COALESCE(transcript_edited, transcript)`. Segments with no transcript (edge case: transcription failed for a segment the user approved anyway) are excluded from the export with a warning logged.
+
+---
+
+## Indexes
+
+```sql
+CREATE INDEX idx_segments_project     ON segments(project_id);
+CREATE INDEX idx_segments_source      ON segments(source_id);
+CREATE INDEX idx_segments_status      ON segments(status);
+CREATE INDEX idx_segments_confidence  ON segments(match_confidence);
+CREATE INDEX idx_jobs_project_status  ON jobs(project_id, status);
+CREATE INDEX idx_sources_project      ON sources(project_id);
+```
+
+These cover the queries the review UI needs: filter by status, sort by confidence, filter by source, aggregate approved duration.
+
+---
+
+## Migration strategy
+
+Schema changes use sequential numbered migration files in `services/orchestrator/migrations/`. The orchestrator runs pending migrations on startup. SQLite's `ALTER TABLE` support is limited; additive changes (new columns with defaults) are preferred. Destructive changes require a new table and data copy.
+
+For v1, migrations are add-only. Breaking schema changes before v1.0 are acceptable with a documented upgrade path in the release notes.
