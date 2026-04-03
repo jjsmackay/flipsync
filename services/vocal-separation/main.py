@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     preload = os.environ.get("PRELOAD_MODELS", "htdemucs").split(",")
     preload = [m.strip() for m in preload if m.strip()]
     if preload:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(_executor, sep.preload_models, preload)
     yield
 
