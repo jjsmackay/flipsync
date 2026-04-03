@@ -2,3 +2,6 @@ fastapi==0.115.0
 uvicorn==0.30.6
 faster-whisper==1.0.3
 torch
+httpx
+pytest
+pytest-asyncio
