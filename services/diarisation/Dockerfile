@@ -14,4 +14,4 @@ COPY . .
 ENV HF_TOKEN=""
 
 EXPOSE 8002
-CMD ["python", "main.py"]
+CMD ["python3", "main.py"]

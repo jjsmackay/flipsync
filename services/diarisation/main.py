@@ -163,7 +163,7 @@ async def submit_job(req: JobRequest):
         "error": None,
     }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     loop.run_in_executor(_executor, _run_job, job_id, req)
 
     return {"job_id": job_id}
