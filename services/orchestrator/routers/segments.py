@@ -7,12 +7,14 @@ import json
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from db import get_conn, project_dir, project_exists
+from errors import AppError
 from state_machines import validate_segment_transition, BULK_ACTION_SOURCES
+from status import recompute_project_status
 
 router = APIRouter(prefix="/projects/{project_id}/segments", tags=["segments"])
 
@@ -23,17 +25,11 @@ def _now() -> str:
 
 def _require_project(project_id: str):
     if not project_exists(project_id):
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     conn = get_conn(project_id)
     p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
     if p is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     return conn
 
 
@@ -59,15 +55,9 @@ async def list_segments(
     conn = _require_project(project_id)
 
     if sort not in VALID_SORT_FIELDS:
-        raise HTTPException(
-            422,
-            detail={"error": "invalid_sort", "message": f"sort must be one of {sorted(VALID_SORT_FIELDS)}.", "detail": {}},
-        )
+        raise AppError(422, "invalid_sort", f"sort must be one of {sorted(VALID_SORT_FIELDS)}.")
     if order not in VALID_ORDERS:
-        raise HTTPException(
-            422,
-            detail={"error": "invalid_order", "message": "order must be 'asc' or 'desc'.", "detail": {}},
-        )
+        raise AppError(422, "invalid_order", "order must be 'asc' or 'desc'.")
     per_page = min(per_page, 200)
     page = max(page, 1)
 
@@ -154,17 +144,11 @@ async def get_segment_audio(project_id: str, segment_id: str):
         "SELECT raw_path FROM segments WHERE id=? AND project_id=?", (segment_id, project_id)
     ).fetchone()
     if seg is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Segment not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Segment not found.")
 
     wav = project_dir(project_id) / seg["raw_path"]
     if not wav.exists():
-        raise HTTPException(
-            404,
-            detail={"error": "audio_not_found", "message": "WAV file not yet written.", "detail": {}},
-        )
+        raise AppError(404, "audio_not_found", "WAV file not yet written.")
 
     return FileResponse(str(wav), media_type="audio/wav")
 
@@ -181,22 +165,16 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
         "SELECT * FROM segments WHERE id=? AND project_id=?", (segment_id, project_id)
     ).fetchone()
     if seg is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Segment not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Segment not found.")
 
     updates: dict = {}
 
     if body.status is not None:
         if not validate_segment_transition(seg["status"], body.status):
-            raise HTTPException(
-                409,
-                detail={
-                    "error": "invalid_transition",
-                    "message": f"Cannot transition from '{seg['status']}' to '{body.status}'.",
-                    "detail": {"from": seg["status"], "to": body.status},
-                },
+            raise AppError(
+                409, "invalid_transition",
+                f"Cannot transition from '{seg['status']}' to '{body.status}'.",
+                {"from": seg["status"], "to": body.status},
             )
         updates["status"] = body.status
 
@@ -211,6 +189,8 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
             (*updates.values(), segment_id),
         )
         conn.commit()
+        if "status" in updates:
+            recompute_project_status(project_id)
 
     updated = conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,)).fetchone()
     return dict(updated)
@@ -243,13 +223,9 @@ async def bulk_action(project_id: str, body: BulkRequest):
     conn = _require_project(project_id)
 
     if body.action not in BULK_ACTION_TARGET:
-        raise HTTPException(
-            422,
-            detail={
-                "error": "invalid_action",
-                "message": "action must be one of: approve, reject, maybe, pending.",
-                "detail": {},
-            },
+        raise AppError(
+            422, "invalid_action",
+            "action must be one of: approve, reject, maybe, pending.",
         )
 
     to_status = BULK_ACTION_TARGET[body.action]
@@ -293,4 +269,8 @@ async def bulk_action(project_id: str, body: BulkRequest):
     )
     conn.commit()
 
-    return {"affected_count": result.rowcount}
+    affected = result.rowcount
+    if affected > 0:
+        recompute_project_status(project_id)
+
+    return {"affected_count": affected}

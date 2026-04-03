@@ -9,6 +9,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from errors import AppError, app_error_handler
 from jobs import recover_jobs
 from routers import projects, sources, reference, pipeline, segments
 
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FlipSync Orchestrator", version="0.1.0", lifespan=lifespan)
+app.add_exception_handler(AppError, app_error_handler)
 
 # CORS — allow the frontend dev server
 app.add_middleware(

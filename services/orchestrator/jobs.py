@@ -272,39 +272,13 @@ HANDLERS: dict[str, Callable] = {
 
 
 # ---------------------------------------------------------------------------
-# Project status recomputation
+# Project status recomputation (delegates to shared module)
 # ---------------------------------------------------------------------------
 
 
 def _recompute_project_status(project_id: str) -> None:
-    """Derive and persist project status from current DB state."""
-    from state_machines import compute_project_status
-
-    conn = get_conn(project_id)
-    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    if project is None:
-        return
-
-    sources = conn.execute("SELECT status FROM sources WHERE project_id=?", (project_id,)).fetchall()
-    active_jobs = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND status IN ('queued','running')",
-        (project_id,),
-    ).fetchone()[0]
-
-    has_sources = len(sources) > 0
-    has_active_jobs = active_jobs > 0
-    all_sources_complete = has_sources and all(s["status"] == "complete" for s in sources)
-    export_complete = project["status"] == "exported"
-
-    new_status = compute_project_status(
-        project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete
-    )
-
-    conn.execute(
-        "UPDATE projects SET status=?, updated_at=? WHERE id=?",
-        (new_status, _now(), project_id),
-    )
-    conn.commit()
+    from status import recompute_project_status
+    recompute_project_status(project_id)
 
 
 # ---------------------------------------------------------------------------

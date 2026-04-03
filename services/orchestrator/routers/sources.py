@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Optional
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, UploadFile, File
 from pydantic import BaseModel
 
 from db import get_conn, project_dir, project_exists
+from errors import AppError
 from jobs import enqueue
+from status import recompute_project_status
 
 router = APIRouter(prefix="/projects/{project_id}/sources", tags=["sources"])
 
@@ -24,17 +26,11 @@ def _now() -> str:
 
 def _require_project(project_id: str):
     if not project_exists(project_id):
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     conn = get_conn(project_id)
     p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
     if p is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     return conn
 
 
@@ -89,10 +85,7 @@ async def delete_source(project_id: str, source_id: str, body: SourceDelete):
         "SELECT * FROM sources WHERE id=? AND project_id=?", (source_id, project_id)
     ).fetchone()
     if source is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Source not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Source not found.")
 
     approved_count = conn.execute(
         "SELECT COUNT(*) FROM segments WHERE source_id=? AND status='approved'",
@@ -100,13 +93,10 @@ async def delete_source(project_id: str, source_id: str, body: SourceDelete):
     ).fetchone()[0]
 
     if approved_count > 0 and not body.confirm:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "has_approved_segments",
-                "message": f"Source has {approved_count} approved segments. Pass confirm=true to delete anyway.",
-                "detail": {"approved_count": approved_count},
-            },
+        raise AppError(
+            409, "has_approved_segments",
+            f"Source has {approved_count} approved segments. Pass confirm=true to delete anyway.",
+            {"approved_count": approved_count},
         )
 
     deleted_count = conn.execute(
@@ -123,14 +113,18 @@ async def delete_source(project_id: str, source_id: str, body: SourceDelete):
                 if f.exists():
                     f.unlink()
 
-    # Delete source file
-    if source["file_path"]:
-        f = pdir / source["file_path"]
-        if f.exists():
-            f.unlink()
+    # Delete source file and derived audio files
+    for path_col in ["file_path", "audio_path", "vocals_path"]:
+        p = source[path_col]
+        if p:
+            f = pdir / p
+            if f.exists():
+                f.unlink()
 
     conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
     conn.execute("DELETE FROM sources WHERE id=?", (source_id,))
     conn.commit()
+
+    recompute_project_status(project_id)
 
     return {"deleted_segment_count": deleted_count, "deleted_approved_count": approved_count}

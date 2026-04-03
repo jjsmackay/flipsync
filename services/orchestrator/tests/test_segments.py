@@ -205,7 +205,7 @@ class TestPatchSegment:
 
         resp = client.patch(f"/projects/{project}/segments/{seg_id}", json={"status": "approved"})
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "invalid_transition"
+        assert resp.json()["error"] == "invalid_transition"
 
     def test_edit_transcript(self, client, project):
         import db

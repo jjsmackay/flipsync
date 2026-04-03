@@ -101,7 +101,7 @@ class TestSourceDelete:
 
         resp = client.request("DELETE", f"/projects/{project}/sources/{source_id}", json={"confirm": False})
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "has_approved_segments"
+        assert resp.json()["error"] == "has_approved_segments"
 
     def test_delete_source_with_approved_segments_with_confirm(self, client, project):
         import db, uuid

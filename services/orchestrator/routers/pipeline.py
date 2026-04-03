@@ -3,11 +3,13 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from db import get_conn, project_exists
+from db import get_conn, project_dir, project_exists
+from errors import AppError
 from jobs import enqueue
+from state_machines import validate_source_transition
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["pipeline"])
 
@@ -18,17 +20,11 @@ def _now() -> str:
 
 def _require_project(project_id: str):
     if not project_exists(project_id):
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     conn = get_conn(project_id)
     p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
     if p is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     return conn
 
 
@@ -47,13 +43,9 @@ async def start_pipeline(project_id: str):
     ).fetchall()
 
     if not pending_sources:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "no_pending_sources",
-                "message": "No sources in step1_pending status. Upload sources or check source status.",
-                "detail": {},
-            },
+        raise AppError(
+            409, "no_pending_sources",
+            "No sources in step1_pending status. Upload sources or check source status.",
         )
 
     enqueued = []
@@ -89,20 +81,13 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         "SELECT * FROM sources WHERE id=? AND project_id=?", (source_id, project_id)
     ).fetchone()
     if source is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Source not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Source not found.")
 
     valid_step_combos = [["step1"], ["step2"], ["step1", "step2"]]
     if body.steps not in valid_step_combos:
-        raise HTTPException(
-            422,
-            detail={
-                "error": "invalid_steps",
-                "message": "steps must be ['step1'], ['step2'], or ['step1', 'step2'].",
-                "detail": {},
-            },
+        raise AppError(
+            422, "invalid_steps",
+            "steps must be ['step1'], ['step2'], or ['step1', 'step2'].",
         )
 
     # Check for approved segments that would be invalidated
@@ -111,19 +96,23 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         (source_id,),
     ).fetchone()[0]
     if approved_count > 0 and not body.confirm:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "would_invalidate_approvals",
-                "message": f"Re-running step 2 will discard {approved_count} approved segments from this source.",
-                "detail": {"approved_count": approved_count},
-            },
+        raise AppError(
+            409, "would_invalidate_approvals",
+            f"Re-running step 2 will discard {approved_count} approved segments from this source.",
+            {"approved_count": approved_count},
         )
 
     enqueued = []
     now = _now()
+    current_status = source["status"]
 
     if "step1" in body.steps:
+        if not validate_source_transition(current_status, "step1_pending"):
+            raise AppError(
+                409, "invalid_source_status",
+                f"Cannot reprocess step 1 from source status '{current_status}'.",
+                {"from": current_status, "to": "step1_pending"},
+            )
         # Delete existing segments for this source
         conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
         conn.execute(
@@ -138,6 +127,12 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         enqueued.append({"id": job_id, "type": "vocal_separation", "source_id": source_id})
 
     elif "step2" in body.steps:
+        if not validate_source_transition(current_status, "step2_pending"):
+            raise AppError(
+                409, "invalid_source_status",
+                f"Cannot reprocess step 2 from source status '{current_status}'.",
+                {"from": current_status, "to": "step2_pending"},
+            )
         conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
         conn.execute(
             "UPDATE sources SET status='step2_pending', step2_error=NULL, updated_at=? WHERE id=?",
@@ -146,6 +141,13 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         conn.commit()
         job_id = enqueue(project_id, "diarisation", source_id=source_id)
         enqueued.append({"id": job_id, "type": "diarisation", "source_id": source_id})
+
+    # Update project status to processing
+    conn.execute(
+        "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
+        (now, project_id),
+    )
+    conn.commit()
 
     return {"enqueued_jobs": enqueued}
 
@@ -168,13 +170,9 @@ async def run_transcription(project_id: str):
     ).fetchall()
 
     if not segments:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "no_segments_to_transcribe",
-                "message": "No pending segments without transcripts.",
-                "detail": {},
-            },
+        raise AppError(
+            409, "no_segments_to_transcribe",
+            "No pending segments without transcripts.",
         )
 
     params = {"segment_ids": [s["id"] for s in segments]}
@@ -191,10 +189,7 @@ async def rerun_segment_transcription(project_id: str, segment_id: str):
         "SELECT id FROM segments WHERE id=? AND project_id=?", (segment_id, project_id)
     ).fetchone()
     if segment is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Segment not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Segment not found.")
 
     params = {"segment_ids": [segment_id]}
     job_id = enqueue(project_id, "transcription_segment", params=params)
@@ -240,13 +235,9 @@ async def trigger_export(project_id: str):
     ).fetchone()[0]
 
     if approved_count == 0:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "no_approved_segments",
-                "message": "There are no approved segments to export.",
-                "detail": {},
-            },
+        raise AppError(
+            409, "no_approved_segments",
+            "There are no approved segments to export.",
         )
 
     job_id = enqueue(project_id, "export", params={"segment_count": approved_count})
@@ -268,18 +259,12 @@ async def download_export(project_id: str):
     conn = _require_project(project_id)
     p = conn.execute("SELECT name, status FROM projects WHERE id=?", (project_id,)).fetchone()
     if p["status"] != "exported":
-        raise HTTPException(
-            404,
-            detail={"error": "export_not_ready", "message": "Export has not completed.", "detail": {}},
-        )
+        raise AppError(404, "export_not_ready", "Export has not completed.")
 
     pdir = project_dir(project_id)
     archive = pdir / "export.tar.gz"
     if not archive.exists():
-        raise HTTPException(
-            404,
-            detail={"error": "export_not_found", "message": "Export archive not found.", "detail": {}},
-        )
+        raise AppError(404, "export_not_found", "Export archive not found.")
 
     safe_name = p["name"].replace(" ", "_").replace("/", "-")
     return FileResponse(

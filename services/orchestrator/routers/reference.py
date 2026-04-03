@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, UploadFile, File
 
 from db import get_conn, project_dir, project_exists
+from errors import AppError
 
 router = APIRouter(prefix="/projects/{project_id}/reference", tags=["reference"])
 
@@ -21,17 +22,11 @@ def _now() -> str:
 
 def _require_project(project_id: str):
     if not project_exists(project_id):
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     conn = get_conn(project_id)
     p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
     if p is None:
-        raise HTTPException(
-            404,
-            detail={"error": "not_found", "message": "Project not found.", "detail": {}},
-        )
+        raise AppError(404, "not_found", "Project not found.")
     return conn
 
 
@@ -89,13 +84,10 @@ async def upload_reference(project_id: str, file: UploadFile = File(...)):
     if duration < MIN_DURATION_SECS:
         # Remove the file — it's invalid
         dest.unlink(missing_ok=True)
-        raise HTTPException(
-            422,
-            detail={
-                "error": "reference_too_short",
-                "message": f"Reference clip must be at least {MIN_DURATION_SECS} seconds. Uploaded clip is {duration:.1f} seconds.",
-                "detail": {"duration_secs": duration, "minimum_secs": MIN_DURATION_SECS},
-            },
+        raise AppError(
+            422, "reference_too_short",
+            f"Reference clip must be at least {MIN_DURATION_SECS} seconds. Uploaded clip is {duration:.1f} seconds.",
+            {"duration_secs": duration, "minimum_secs": MIN_DURATION_SECS},
         )
 
     conn.execute(

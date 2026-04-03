@@ -204,4 +204,4 @@ class TestDeleteProject:
 
         resp = client.request("DELETE", f"/projects/{project}", json={"confirm": True})
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "jobs_active"
+        assert resp.json()["error"] == "jobs_active"

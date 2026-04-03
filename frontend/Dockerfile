@@ -1,12 +1,14 @@
 FROM node:20-slim
 
+RUN corepack enable pnpm
+
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN npm run build
+RUN pnpm run build
 
 EXPOSE 3000
-CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "3000"]
+CMD ["pnpm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "3000"]

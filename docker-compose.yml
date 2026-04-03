@@ -17,6 +17,8 @@ services:
       - transcription
       - cleanup
     restart: unless-stopped
+    networks:
+      - flipsync
 
   vocal-separation:
     build: ./services/vocal-separation
@@ -31,6 +33,8 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    networks:
+      - flipsync
 
   diarisation:
     build: ./services/diarisation
@@ -47,6 +51,8 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    networks:
+      - flipsync
 
   transcription:
     build: ./services/transcription
@@ -61,12 +67,16 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    networks:
+      - flipsync
 
   cleanup:
     build: ./services/cleanup
     volumes:
       - ./data:/data
     restart: unless-stopped
+    networks:
+      - flipsync
 
   frontend:
     build: ./frontend
@@ -75,8 +85,14 @@ services:
     depends_on:
       - orchestrator
     restart: unless-stopped
+    networks:
+      - flipsync
 
 volumes:
   demucs-models:
   pyannote-models:
   whisper-models:
+
+networks:
+  flipsync:
+    driver: bridge

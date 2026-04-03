@@ -22,7 +22,7 @@ class TestReferenceUpload:
                 files={"file": ("short.wav", f, "audio/wav")},
             )
         assert resp.status_code == 422
-        body = resp.json()["detail"]
+        body = resp.json()
         assert body["error"] == "reference_too_short"
         assert "duration_secs" in body["detail"]
         assert body["detail"]["minimum_secs"] == 5.0

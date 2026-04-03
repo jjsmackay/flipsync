@@ -36,7 +36,7 @@ class TestPipelineStart:
     def test_start_with_no_pending_sources_returns_409(self, client, project):
         resp = client.post(f"/projects/{project}/pipeline/start")
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "no_pending_sources"
+        assert resp.json()["error"] == "no_pending_sources"
 
     def test_start_enqueues_vocal_separation_jobs(self, client, project):
         import db
@@ -102,7 +102,7 @@ class TestReprocess:
             json={"steps": ["step1"]},
         )
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "would_invalidate_approvals"
+        assert resp.json()["error"] == "would_invalidate_approvals"
 
     def test_reprocess_with_approved_segments_confirm_proceeds(self, client, project):
         import db
@@ -141,7 +141,7 @@ class TestTranscription:
     def test_run_transcription_no_segments_returns_409(self, client, project):
         resp = client.post(f"/projects/{project}/transcription/run")
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "no_segments_to_transcribe"
+        assert resp.json()["error"] == "no_segments_to_transcribe"
 
     def test_run_transcription_enqueues_bulk_job(self, client, project):
         import db
@@ -226,7 +226,7 @@ class TestExport:
     def test_export_with_no_approved_segments_returns_409(self, client, project):
         resp = client.post(f"/projects/{project}/export")
         assert resp.status_code == 409
-        assert resp.json()["detail"]["error"] == "no_approved_segments"
+        assert resp.json()["error"] == "no_approved_segments"
 
     def test_export_enqueues_export_job(self, client, project):
         import db

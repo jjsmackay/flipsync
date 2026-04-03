@@ -5,10 +5,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, project_exists
+from errors import AppError
 from state_machines import validate_segment_transition
 import shutil
 
@@ -202,31 +203,32 @@ async def create_project(body: ProjectCreate):
 async def get_project(project_id: str):
     detail = _project_detail(project_id)
     if detail is None:
-        raise HTTPException(404, detail={"error": "not_found", "message": "Project not found.", "detail": {}})
+        raise AppError(404, "not_found", "Project not found.")
     return detail
 
 
 @router.patch("/{project_id}")
 async def patch_project(project_id: str, body: ProjectPatch):
     if not project_exists(project_id):
-        raise HTTPException(404, detail={"error": "not_found", "message": "Project not found.", "detail": {}})
+        raise AppError(404, "not_found", "Project not found.")
     conn = get_conn(project_id)
     p = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     if p is None:
-        raise HTTPException(404, detail={"error": "not_found", "message": "Project not found.", "detail": {}})
+        raise AppError(404, "not_found", "Project not found.")
 
+    provided = body.model_fields_set
     updates: dict = {}
-    if body.name is not None:
+    if "name" in provided and body.name is not None:
         updates["name"] = body.name
-    if body.whisper_model is not None:
+    if "whisper_model" in provided and body.whisper_model is not None:
         updates["whisper_model"] = body.whisper_model
-    if body.language is not None:
-        updates["language"] = body.language
-    if body.target_duration_secs is not None:
+    if "language" in provided:
+        updates["language"] = body.language  # allows setting to None (auto-detect)
+    if "target_duration_secs" in provided and body.target_duration_secs is not None:
         updates["target_duration_secs"] = body.target_duration_secs
 
     old_threshold = p["match_threshold"]
-    new_threshold = body.match_threshold
+    new_threshold = body.match_threshold if "match_threshold" in provided else None
 
     if new_threshold is not None:
         updates["match_threshold"] = new_threshold
@@ -264,17 +266,14 @@ async def patch_project(project_id: str, body: ProjectPatch):
 @router.delete("/{project_id}")
 async def delete_project(project_id: str, body: ProjectDelete):
     if not body.confirm:
-        raise HTTPException(
-            422,
-            detail={"error": "confirm_required", "message": "Pass confirm=true to delete.", "detail": {}},
-        )
+        raise AppError(422, "confirm_required", "Pass confirm=true to delete.")
 
     if not project_exists(project_id):
-        raise HTTPException(404, detail={"error": "not_found", "message": "Project not found.", "detail": {}})
+        raise AppError(404, "not_found", "Project not found.")
     conn = get_conn(project_id)
     p = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     if p is None:
-        raise HTTPException(404, detail={"error": "not_found", "message": "Project not found.", "detail": {}})
+        raise AppError(404, "not_found", "Project not found.")
 
     # Reject if jobs are actively running
     active = conn.execute(
@@ -282,13 +281,9 @@ async def delete_project(project_id: str, body: ProjectDelete):
         (project_id,),
     ).fetchone()[0]
     if active > 0:
-        raise HTTPException(
-            409,
-            detail={
-                "error": "jobs_active",
-                "message": "Cannot delete project while jobs are running. Cancel or wait for completion.",
-                "detail": {},
-            },
+        raise AppError(
+            409, "jobs_active",
+            "Cannot delete project while jobs are running. Cancel or wait for completion.",
         )
 
     pdir = project_dir(project_id)
