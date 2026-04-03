@@ -3,3 +3,9 @@ uvicorn==0.30.6
 demucs==4.0.1
 torch
 torchaudio
+numpy
+httpx
+pytest
+pytest-asyncio
+anyio
+soundfile
