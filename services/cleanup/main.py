@@ -78,7 +78,7 @@ async def _run_job(
     total = len(segments)
     results = []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     cleaner_params = _CleanupParams(
         target_lufs=params.target_lufs,
         true_peak_dbtp=params.true_peak_dbtp,
