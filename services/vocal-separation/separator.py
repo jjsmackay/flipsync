@@ -11,8 +11,6 @@ import os
 from typing import Optional
 
 import numpy as np
-import torch
-import torchaudio
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +26,7 @@ VALID_MODELS = {"htdemucs", "mdx_extra"}
 
 def _load_model(model_name: str):
     """Load a Demucs model, caching it for reuse."""
+    import torch
     if model_name in _model_cache:
         return _model_cache[model_name]
 
@@ -43,11 +42,12 @@ def _load_model(model_name: str):
     return model
 
 
-def _apply_demucs(model, audio: torch.Tensor, sample_rate: int) -> torch.Tensor:
+def _apply_demucs(model, audio, sample_rate: int):
     """Run Demucs on a (channels, samples) tensor.
 
     Returns the vocals stem as a (channels, samples) tensor.
     """
+    import torch
     from demucs.apply import apply_model
 
     # Demucs expects (batch, channels, samples)
@@ -79,7 +79,7 @@ def separate(
     model_name: str = "htdemucs",
     chunk_secs: Optional[int] = None,
     progress_callback=None,
-) -> None:
+) -> None:  # noqa: E501
     """Separate vocals from audio file and write to output_path.
 
     Args:
@@ -93,6 +93,8 @@ def separate(
         torch.cuda.OutOfMemoryError: On CUDA OOM.
         FileNotFoundError: If input_path does not exist.
     """
+    import torchaudio
+
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
@@ -210,9 +212,7 @@ def compute_chunks(
     return chunks
 
 
-def stitch_chunks(
-    chunks: list[torch.Tensor], overlap_samples: int
-) -> torch.Tensor:
+def stitch_chunks(chunks: list, overlap_samples: int):
     """Stitch processed chunks with linear crossfade over the overlap region.
 
     Args:
@@ -222,6 +222,8 @@ def stitch_chunks(
     Returns:
         Stitched (channels, samples) tensor.
     """
+    import torch
+
     if len(chunks) == 0:
         raise ValueError("No chunks to stitch")
     if len(chunks) == 1:

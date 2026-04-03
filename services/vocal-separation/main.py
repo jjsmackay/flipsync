@@ -15,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import torch
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -91,6 +90,8 @@ def _set_progress(job_id: str, progress: int) -> None:
 
 def _run_separation(job: dict) -> None:
     """Blocking separation call — runs in a thread pool executor."""
+    import torch  # lazy — keeps top-level import torch-free so tests can mock separator
+
     job_id = job["job_id"]
     input_path = job["input_path"]
     output_path = job["output_path"]
@@ -195,7 +196,7 @@ def _run_separation(job: dict) -> None:
 
 async def _run_job_async(job: dict) -> None:
     """Kick off separation in the thread pool so the event loop stays free."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, _run_separation, job)
 
 
