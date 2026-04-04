@@ -182,3 +182,137 @@ class TestDeferredBugFixes:
         stats = _project_stats(project_id)
         cov = next(s for s in stats["source_coverage"] if s["source_id"] == source_id)
         assert cov["low_coverage_warning"] is False
+
+
+class TestVocalSeparationHandler:
+    async def test_success_updates_source_to_step2_pending(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step1_pending")
+        conn.execute("UPDATE sources SET audio_path=? WHERE id=?",
+                     (f"audio/raw/{source_id}.wav", source_id))
+        conn.commit()
+
+        svc_result = {
+            "job_id": "svc-job-1", "status": "complete", "progress": 100,
+            "output_path": f"/data/projects/{project_id}/audio/vocals/{source_id}.wav",
+            "error": None, "retry_with_chunk_secs": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-job-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=svc_result):
+            job_id = jobs.enqueue(project_id, "vocal_separation", source_id=source_id)
+            await jobs._handle_vocal_separation(project_id, job_id, source_id, {})
+
+        source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert source["status"] == "step2_pending"
+        assert source["vocals_path"] == f"audio/vocals/{source_id}.wav"
+        assert source["step1_model"] == "htdemucs"
+
+        # A diarisation job should have been enqueued
+        diar_job = conn.execute(
+            "SELECT * FROM jobs WHERE project_id=? AND type='diarisation'", (project_id,)
+        ).fetchone()
+        assert diar_job is not None
+        assert diar_job["source_id"] == source_id
+
+    async def test_success_with_custom_model(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step1_pending")
+        conn.execute("UPDATE sources SET audio_path=? WHERE id=?",
+                     (f"audio/raw/{source_id}.wav", source_id))
+        conn.commit()
+
+        svc_result = {
+            "job_id": "svc-1", "status": "complete", "progress": 100,
+            "output_path": f"/data/projects/{project_id}/audio/vocals/{source_id}.wav",
+            "error": None, "retry_with_chunk_secs": None,
+        }
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=svc_result):
+            job_id = jobs.enqueue(project_id, "vocal_separation", source_id=source_id,
+                                  params={"demucs_model": "mdx_extra"})
+            await jobs._handle_vocal_separation(project_id, job_id, source_id,
+                                                {"demucs_model": "mdx_extra"})
+
+        source = conn.execute("SELECT step1_model FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert source["step1_model"] == "mdx_extra"
+
+    async def test_oom_retry_succeeds_on_second_attempt(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step1_pending")
+        conn.execute("UPDATE sources SET audio_path=? WHERE id=?",
+                     (f"audio/raw/{source_id}.wav", source_id))
+        conn.commit()
+
+        first_fail = {
+            "job_id": "svc-1", "status": "failed", "error": "cuda_oom",
+            "retry_with_chunk_secs": 60,
+        }
+        retry_success = {
+            "job_id": "svc-2", "status": "complete", "progress": 100,
+            "output_path": f"/data/projects/{project_id}/audio/vocals/{source_id}.wav",
+            "error": None, "retry_with_chunk_secs": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}) as mock_submit, \
+             patch("jobs.poll_job", new_callable=AsyncMock, side_effect=[first_fail, retry_success]):
+            job_id = jobs.enqueue(project_id, "vocal_separation", source_id=source_id)
+            await jobs._handle_vocal_separation(project_id, job_id, source_id, {})
+
+        # Second submit call should have chunk_secs set
+        assert mock_submit.call_count == 2
+        second_call_payload = mock_submit.call_args_list[1][0][1]  # positional arg index 1 is payload
+        assert second_call_payload["chunk_secs"] == 60
+
+        source = conn.execute("SELECT status FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert source["status"] == "step2_pending"
+
+    async def test_oom_retry_fails_on_second_attempt_marks_step1_failed(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step1_pending")
+        conn.execute("UPDATE sources SET audio_path=? WHERE id=?",
+                     (f"audio/raw/{source_id}.wav", source_id))
+        conn.commit()
+
+        fail1 = {"job_id": "svc-1", "status": "failed", "error": "cuda_oom", "retry_with_chunk_secs": 60}
+        fail2 = {"job_id": "svc-2", "status": "failed", "error": "cuda_oom", "retry_with_chunk_secs": None}
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, side_effect=[fail1, fail2]):
+            job_id = jobs.enqueue(project_id, "vocal_separation", source_id=source_id)
+            await jobs._handle_vocal_separation(project_id, job_id, source_id, {})
+
+        source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert source["status"] == "step1_failed"
+        assert source["step1_error"] is not None
+
+        job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+
+    async def test_non_oom_failure_marks_step1_failed(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step1_pending")
+        conn.execute("UPDATE sources SET audio_path=? WHERE id=?",
+                     (f"audio/raw/{source_id}.wav", source_id))
+        conn.commit()
+
+        fail = {"job_id": "svc-1", "status": "failed", "error": "model_error", "retry_with_chunk_secs": None}
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=fail):
+            job_id = jobs.enqueue(project_id, "vocal_separation", source_id=source_id)
+            await jobs._handle_vocal_separation(project_id, job_id, source_id, {})
+
+        source = conn.execute("SELECT status, step1_error FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert source["status"] == "step1_failed"
+        assert "model_error" in source["step1_error"]

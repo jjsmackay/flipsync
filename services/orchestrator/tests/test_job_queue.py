@@ -216,8 +216,8 @@ class TestJobLifecycle:
         assert row["started_at"] is not None
         assert row["completed_at"] is not None
 
-    def test_stub_service_job_fails_gracefully(self, isolated_data_dir):
-        """Wave 1 stub handlers mark service jobs as failed with a clear message."""
+    def test_service_job_fails_gracefully_without_audio_path(self, isolated_data_dir):
+        """Vocal separation handler marks job as failed when source has no audio_path."""
         project_id = _make_project(isolated_data_dir)
         import jobs, db
         jobs._queues.clear()
@@ -241,7 +241,7 @@ class TestJobLifecycle:
         job_id = asyncio.run(run())
         row = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert row["status"] == "failed"
-        assert "service_not_yet_integrated" in row["error"]
+        assert "audio_path_missing" in row["error"]
 
     def test_cancel_running_jobs(self, isolated_data_dir):
         project_id = _make_project(isolated_data_dir)

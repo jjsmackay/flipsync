@@ -11,14 +11,27 @@ import logging
 import os
 import subprocess
 import uuid
+import uuid as _uuid_module
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 from db import get_conn, project_dir
+from service_client import submit_job, poll_job
 
 logger = logging.getLogger(__name__)
+
+
+def _get_service_url(service_name: str) -> str:
+    urls = {
+        "vocal_separation": os.environ.get("VOCAL_SEPARATION_URL", "http://vocal-separation:8001"),
+        "diarisation": os.environ.get("DIARISATION_URL", "http://diarisation:8002"),
+        "transcription": os.environ.get("TRANSCRIPTION_URL", "http://transcription:8003"),
+        "cleanup": os.environ.get("CLEANUP_URL", "http://cleanup:8004"),
+    }
+    return urls[service_name]
+
 
 # One asyncio.Lock per project to enforce one-at-a-time execution.
 _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -243,6 +256,85 @@ async def _get_audio_duration(wav_path: str) -> float | None:
         return None
 
 
+async def _handle_vocal_separation(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Submit to vocal-separation service; handle OOM retry with chunk_secs."""
+    conn = get_conn(project_id)
+    source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+    if source is None:
+        _fail_job(project_id, job_id, "source_not_found")
+        return
+
+    if not source["audio_path"]:
+        _fail_job(project_id, job_id, "audio_path_missing")
+        return
+
+    pdir = project_dir(project_id)
+    input_path = str(pdir / source["audio_path"])
+    output_path = str(pdir / "audio" / "vocals" / f"{source_id}.wav")
+
+    model = params.get("demucs_model", "htdemucs")
+    chunk_secs = params.get("chunk_secs", None)
+
+    conn.execute(
+        "UPDATE sources SET status='step1_running', updated_at=? WHERE id=?",
+        (_now(), source_id),
+    )
+    conn.commit()
+
+    svc_url = _get_service_url("vocal_separation")
+    service_job_id = job_id  # use orchestrator job_id for first attempt
+
+    payload = {
+        "job_id": service_job_id,
+        "input_path": input_path,
+        "output_path": output_path,
+        "model": model,
+        "chunk_secs": chunk_secs,
+    }
+
+    await submit_job(svc_url, payload)
+
+    async def _update_vs_progress(r):
+        _update_progress(project_id, job_id, r.get("progress", 0))
+
+    result = await poll_job(svc_url, service_job_id, on_progress=_update_vs_progress)
+
+    if result["status"] == "failed":
+        retry_secs = result.get("retry_with_chunk_secs")
+        if retry_secs and chunk_secs is None:
+            # OOM retry: submit a new service job with chunk_secs
+            retry_service_job_id = str(_uuid_module.uuid4())
+            retry_payload = {**payload, "job_id": retry_service_job_id, "chunk_secs": retry_secs}
+            await submit_job(svc_url, retry_payload)
+            result = await poll_job(svc_url, retry_service_job_id, on_progress=_update_vs_progress)
+
+    if result["status"] == "failed":
+        error = result.get("error", "vocal_separation_failed")
+        conn.execute(
+            "UPDATE sources SET status='step1_failed', step1_error=?, updated_at=? WHERE id=?",
+            (error, _now(), source_id),
+        )
+        conn.commit()
+        _fail_job(project_id, job_id, error)
+        _recompute_project_status(project_id)
+        return
+
+    # Success
+    vocals_path = f"audio/vocals/{source_id}.wav"
+    conn.execute(
+        "UPDATE sources SET status='step2_pending', vocals_path=?, step1_model=?, updated_at=? WHERE id=?",
+        (vocals_path, model, _now(), source_id),
+    )
+    conn.commit()
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+    # Enqueue diarisation for this source
+    enqueue(project_id, "diarisation", source_id=source_id)
+
+
 async def _handle_stub_service_job(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
@@ -263,7 +355,7 @@ async def _handle_stub_service_job(
 
 HANDLERS: dict[str, Callable] = {
     "extract_audio": _handle_extract_audio,
-    "vocal_separation": _handle_stub_service_job,
+    "vocal_separation": _handle_vocal_separation,
     "diarisation": _handle_stub_service_job,
     "transcription_bulk": _handle_stub_service_job,
     "transcription_segment": _handle_stub_service_job,
