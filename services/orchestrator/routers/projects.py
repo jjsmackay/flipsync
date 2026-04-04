@@ -56,7 +56,7 @@ def _project_stats(project_id: str) -> dict:
             "filename": s["filename"],
             "status": s["status"],
             "coverage_ratio": ratio,
-            "low_coverage_warning": ratio > 0 and ratio < 0.15,
+            "low_coverage_warning": s["coverage_ratio"] is not None and s["coverage_ratio"] < 0.15,
             "error": err,
         })
 

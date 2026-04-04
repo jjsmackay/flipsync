@@ -130,3 +130,55 @@ class TestServiceClient:
         assert result["status"] == "failed"
         assert result["error"] == "cuda_oom"
         assert result["retry_with_chunk_secs"] == 60
+
+
+class TestDeferredBugFixes:
+    def test_export_complete_sets_exported_status(self, isolated_data_dir):
+        """Bug #1: recompute_project_status must reach 'exported' after export job completes."""
+        from status import recompute_project_status
+        import db
+
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        now = _now()
+
+        # Simulate: export job just completed — status is still 'exporting'
+        conn.execute("UPDATE projects SET status='exporting', updated_at=? WHERE id=?", (now, project_id))
+        conn.execute(
+            "INSERT INTO jobs (id, project_id, type, status, created_at, completed_at) VALUES (?,?,'export','complete',?,?)",
+            (str(uuid.uuid4()), project_id, now, now),
+        )
+        conn.commit()
+
+        # After job completes, no active jobs, exporting → should become 'exported'
+        recompute_project_status(project_id)
+        status = conn.execute("SELECT status FROM projects WHERE id=?", (project_id,)).fetchone()["status"]
+        assert status == "exported"
+
+    def test_low_coverage_warning_at_zero(self, isolated_data_dir):
+        """Bug #2: coverage_ratio=0.0 should trigger low_coverage_warning."""
+        project_id = _make_project(isolated_data_dir)
+        import db
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        conn.execute("UPDATE sources SET coverage_ratio=0.0 WHERE id=?", (source_id,))
+        conn.commit()
+
+        from routers.projects import _project_stats
+        stats = _project_stats(project_id)
+        cov = next(s for s in stats["source_coverage"] if s["source_id"] == source_id)
+        assert cov["low_coverage_warning"] is True
+
+    def test_low_coverage_warning_not_triggered_when_null(self, isolated_data_dir):
+        """coverage_ratio IS NULL (not yet diarised) should NOT warn."""
+        project_id = _make_project(isolated_data_dir)
+        import db
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step1_pending")
+        # coverage_ratio is NULL by default
+
+        from routers.projects import _project_stats
+        stats = _project_stats(project_id)
+        cov = next(s for s in stats["source_coverage"] if s["source_id"] == source_id)
+        assert cov["low_coverage_warning"] is False

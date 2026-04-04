@@ -30,7 +30,11 @@ def recompute_project_status(project_id: str) -> None:
     has_sources = len(sources) > 0
     has_active_jobs = active_jobs > 0
     all_sources_complete = has_sources and all(s["status"] == "complete" for s in sources)
-    export_complete = project["status"] == "exported"
+    completed_export = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND type='export' AND status='complete'",
+        (project_id,),
+    ).fetchone()[0]
+    export_complete = completed_export > 0
 
     new_status = compute_project_status(
         project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete
