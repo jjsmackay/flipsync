@@ -14,7 +14,12 @@ import httpx
 
 
 async def submit_job(service_url: str, payload: dict) -> dict:
-    """POST /jobs to a processing service. Returns the 202 response body."""
+    """POST /jobs to a processing service. Returns the 202 response body.
+
+    Raises:
+        httpx.HTTPStatusError: if the service returns a non-2xx status.
+        httpx.RequestError: on connection failure (refused, timeout, DNS).
+    """
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{service_url}/jobs", json=payload)
         resp.raise_for_status()
@@ -31,6 +36,10 @@ async def poll_job(
 
     Calls on_progress(result) on each non-terminal poll — must be async if provided.
     Returns the final result dict.
+
+    Raises:
+        httpx.HTTPStatusError: if the service returns a non-2xx status on any poll.
+        httpx.RequestError: on connection failure.
     """
     async with httpx.AsyncClient(timeout=30.0) as client:
         while True:

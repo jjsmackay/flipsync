@@ -113,3 +113,20 @@ class TestServiceClient:
 
         assert result["status"] == "complete"
         assert progress_calls == [50]
+
+    async def test_poll_job_returns_on_failed(self):
+        import httpx
+        import respx
+        from service_client import poll_job
+
+        with respx.mock:
+            respx.get("http://svc:8001/jobs/abc").mock(
+                return_value=httpx.Response(200, json={
+                    "job_id": "abc", "status": "failed",
+                    "error": "cuda_oom", "retry_with_chunk_secs": 60
+                })
+            )
+            result = await poll_job("http://svc:8001", "abc", poll_interval=0)
+        assert result["status"] == "failed"
+        assert result["error"] == "cuda_oom"
+        assert result["retry_with_chunk_secs"] == 60
