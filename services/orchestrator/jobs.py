@@ -460,6 +460,106 @@ async def _handle_diarisation(
             enqueue(project_id, "transcription_bulk", params=tx_params)
 
 
+async def _handle_transcription_bulk(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Transcribe a batch of segments; write results incrementally with deduplication."""
+    conn = get_conn(project_id)
+    segment_ids = params.get("segment_ids", [])
+
+    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
+    pdir = project_dir(project_id)
+
+    segments_data = conn.execute(
+        f"SELECT id, raw_path FROM segments WHERE id IN ({','.join('?' * len(segment_ids))})",
+        segment_ids,
+    ).fetchall()
+
+    payload = {
+        "job_id": job_id,
+        "segments": [
+            {"id": s["id"], "wav_path": str(pdir / s["raw_path"])}
+            for s in segments_data
+        ],
+        "model": project["whisper_model"],
+        "language": project["language"],
+        "batch_size": 16,
+    }
+
+    svc_url = _get_service_url("transcription")
+    await submit_job(svc_url, payload)
+
+    written_ids: set[str] = set()
+
+    def _write_completed_segments(completed):
+        for seg in completed:
+            if seg["id"] not in written_ids:
+                conn.execute(
+                    "UPDATE segments SET transcript=?, transcript_confidence=?, updated_at=? WHERE id=?",
+                    (seg["transcript"], seg.get("transcript_confidence"), _now(), seg["id"]),
+                )
+                written_ids.add(seg["id"])
+        conn.commit()
+
+    async def _on_progress(r):
+        _write_completed_segments(r.get("completed_segments", []))
+        _update_progress(project_id, job_id, r.get("progress", 0))
+
+    result = await poll_job(svc_url, job_id, on_progress=_on_progress)
+
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "transcription_failed"))
+        _recompute_project_status(project_id)
+        return
+
+    _write_completed_segments(result.get("completed_segments", []))
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+
+async def _handle_transcription_segment(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Re-transcribe a single segment; overwrites transcript but preserves transcript_edited."""
+    conn = get_conn(project_id)
+    segment_id = params["segment_ids"][0]
+    seg = conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,)).fetchone()
+    if seg is None:
+        _fail_job(project_id, job_id, "segment_not_found")
+        return
+
+    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
+    pdir = project_dir(project_id)
+
+    payload = {
+        "job_id": job_id,
+        "segments": [{"id": segment_id, "wav_path": str(pdir / seg["raw_path"])}],
+        "model": project["whisper_model"],
+        "language": project["language"],
+        "batch_size": 16,
+    }
+
+    svc_url = _get_service_url("transcription")
+    await submit_job(svc_url, payload)
+    result = await poll_job(svc_url, job_id)
+
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "transcription_failed"))
+        _recompute_project_status(project_id)
+        return
+
+    for seg_result in result.get("completed_segments", []):
+        if seg_result["id"] == segment_id:
+            # Only update transcript and confidence — NOT transcript_edited
+            conn.execute(
+                "UPDATE segments SET transcript=?, transcript_confidence=?, updated_at=? WHERE id=?",
+                (seg_result["transcript"], seg_result.get("transcript_confidence"), _now(), segment_id),
+            )
+    conn.commit()
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+
 async def _handle_stub_service_job(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
@@ -482,8 +582,8 @@ HANDLERS: dict[str, Callable] = {
     "extract_audio": _handle_extract_audio,
     "vocal_separation": _handle_vocal_separation,
     "diarisation": _handle_diarisation,
-    "transcription_bulk": _handle_stub_service_job,
-    "transcription_segment": _handle_stub_service_job,
+    "transcription_bulk": _handle_transcription_bulk,
+    "transcription_segment": _handle_transcription_segment,
     "export": _handle_stub_service_job,
 }
 

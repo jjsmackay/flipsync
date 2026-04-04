@@ -507,3 +507,159 @@ class TestDiarisationHandler:
         job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert job["status"] == "failed"
         assert "reference" in job["error"]
+
+
+class TestTranscriptionBulkHandler:
+    async def test_writes_transcripts(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg1 = _insert_segment(conn, project_id, source_id, status="pending")
+        seg2 = _insert_segment(conn, project_id, source_id, status="pending")
+
+        final_result = {
+            "job_id": "svc-1", "status": "complete", "progress": 100,
+            "completed_segments": [
+                {"id": seg1, "transcript": "Hello world", "transcript_confidence": 0.95},
+                {"id": seg2, "transcript": "Goodbye", "transcript_confidence": 0.88},
+            ],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=final_result):
+            job_id = jobs.enqueue(project_id, "transcription_bulk",
+                                  params={"segment_ids": [seg1, seg2]})
+            await jobs._handle_transcription_bulk(project_id, job_id, None,
+                                                  {"segment_ids": [seg1, seg2]})
+
+        s1 = conn.execute("SELECT transcript, transcript_confidence FROM segments WHERE id=?", (seg1,)).fetchone()
+        s2 = conn.execute("SELECT transcript FROM segments WHERE id=?", (seg2,)).fetchone()
+        assert s1["transcript"] == "Hello world"
+        assert abs(s1["transcript_confidence"] - 0.95) < 0.001
+        assert s2["transcript"] == "Goodbye"
+
+    async def test_deduplicates_cumulative_results(self, isolated_data_dir):
+        """completed_segments is cumulative — seg1 may appear in both progress and final result."""
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg1 = _insert_segment(conn, project_id, source_id, status="pending")
+        seg2 = _insert_segment(conn, project_id, source_id, status="pending")
+
+        progress_result = {
+            "job_id": "svc-1", "status": "running", "progress": 50,
+            "completed_segments": [
+                {"id": seg1, "transcript": "Hello", "transcript_confidence": 0.9},
+            ],
+        }
+        final_result = {
+            "job_id": "svc-1", "status": "complete", "progress": 100,
+            "completed_segments": [
+                {"id": seg1, "transcript": "Hello", "transcript_confidence": 0.9},
+                {"id": seg2, "transcript": "World", "transcript_confidence": 0.85},
+            ],
+            "error": None,
+        }
+
+        async def fake_poll(svc_url, job_id, poll_interval=2.0, on_progress=None):
+            if on_progress:
+                await on_progress(progress_result)
+            return final_result
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", side_effect=fake_poll):
+            job_id = jobs.enqueue(project_id, "transcription_bulk",
+                                  params={"segment_ids": [seg1, seg2]})
+            await jobs._handle_transcription_bulk(project_id, job_id, None,
+                                                  {"segment_ids": [seg1, seg2]})
+
+        rows = conn.execute(
+            "SELECT id, transcript FROM segments WHERE source_id=? AND transcript IS NOT NULL",
+            (source_id,)
+        ).fetchall()
+        assert len(rows) == 2
+        transcripts = {r["id"]: r["transcript"] for r in rows}
+        assert transcripts[seg1] == "Hello"
+        assert transcripts[seg2] == "World"
+
+    async def test_failure_marks_job_failed(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg1 = _insert_segment(conn, project_id, source_id, status="pending")
+
+        fail = {"job_id": "svc-1", "status": "failed", "error": "model_load_failed",
+                "completed_segments": [], "progress": 0}
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=fail):
+            job_id = jobs.enqueue(project_id, "transcription_bulk",
+                                  params={"segment_ids": [seg1]})
+            await jobs._handle_transcription_bulk(project_id, job_id, None, {"segment_ids": [seg1]})
+
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        assert "model_load_failed" in job["error"]
+
+
+class TestTranscriptionSegmentHandler:
+    async def test_overwrites_transcript_and_confidence(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="pending",
+                                 transcript="Old transcript")
+
+        final_result = {
+            "job_id": "svc-1", "status": "complete", "progress": 100,
+            "completed_segments": [
+                {"id": seg_id, "transcript": "New transcript", "transcript_confidence": 0.92},
+            ],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=final_result):
+            job_id = jobs.enqueue(project_id, "transcription_segment",
+                                  params={"segment_ids": [seg_id]})
+            await jobs._handle_transcription_segment(project_id, job_id, None,
+                                                     {"segment_ids": [seg_id]})
+
+        seg = conn.execute("SELECT transcript, transcript_confidence FROM segments WHERE id=?",
+                           (seg_id,)).fetchone()
+        assert seg["transcript"] == "New transcript"
+        assert abs(seg["transcript_confidence"] - 0.92) < 0.001
+
+    async def test_preserves_transcript_edited(self, isolated_data_dir):
+        """Re-transcribing must not touch transcript_edited."""
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="pending",
+                                 transcript="Old", transcript_edited="User edit preserved")
+
+        final_result = {
+            "job_id": "svc-1", "status": "complete", "progress": 100,
+            "completed_segments": [
+                {"id": seg_id, "transcript": "Machine new", "transcript_confidence": 0.88},
+            ],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=final_result):
+            job_id = jobs.enqueue(project_id, "transcription_segment",
+                                  params={"segment_ids": [seg_id]})
+            await jobs._handle_transcription_segment(project_id, job_id, None,
+                                                     {"segment_ids": [seg_id]})
+
+        seg = conn.execute("SELECT transcript, transcript_edited FROM segments WHERE id=?",
+                           (seg_id,)).fetchone()
+        assert seg["transcript"] == "Machine new"
+        assert seg["transcript_edited"] == "User edit preserved"
