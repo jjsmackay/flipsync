@@ -560,18 +560,158 @@ async def _handle_transcription_segment(
     _recompute_project_status(project_id)
 
 
-async def _handle_stub_service_job(
+async def _handle_export(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
-    """Stub handler for Wave 2 service jobs (vocal_separation, diarisation, etc.).
+    """Run cleanup on all approved segments, write manifest.json, create tar.gz archive."""
+    import json as _json
+    import tarfile as _tarfile
 
-    In Wave 1 these are not called — the pipeline/start endpoint is not wired
-    to external services yet. This exists so the job type is recognised and
-    doesn't error with 'No handler registered'.
-    """
-    # Wave 3 will replace this with real HTTP polling against the service.
-    logger.info("Stub handler called for job in project %s (Wave 3 will implement this)", project_id)
-    _fail_job(project_id, job_id, "service_not_yet_integrated")
+    conn = get_conn(project_id)
+    pdir = project_dir(project_id)
+
+    approved = conn.execute(
+        """SELECT s.id, s.raw_path, src.filename as source_filename
+           FROM segments s JOIN sources src ON s.source_id = src.id
+           WHERE s.project_id=? AND s.status='approved'""",
+        (project_id,),
+    ).fetchall()
+
+    if not approved:
+        _fail_job(project_id, job_id, "no_approved_segments")
+        return
+
+    export_dir = pdir / "export"
+    export_dir.mkdir(exist_ok=True)
+
+    project = conn.execute("SELECT target_lufs FROM projects WHERE id=?", (project_id,)).fetchone()
+    target_lufs = project["target_lufs"] if project["target_lufs"] else -23.0
+
+    cleanup_segments = [
+        {
+            "id": s["id"],
+            "input_path": str(pdir / s["raw_path"]),
+            "output_path": str(export_dir / f"{s['id']}.wav"),
+        }
+        for s in approved
+    ]
+
+    payload = {
+        "job_id": job_id,
+        "segments": cleanup_segments,
+        "params": {
+            "target_lufs": target_lufs,
+            "true_peak_dbtp": -2.0,
+            "lra": 7.0,
+            "highpass_hz": 80,
+            "silence_threshold_db": -50.0,
+            "silence_min_duration_secs": 0.1,
+            "clipping_threshold_db": -0.1,
+            "clipping_min_consecutive_samples": 3,
+            "output_sample_rate": 22050,
+            "output_channels": 1,
+        },
+    }
+
+    svc_url = _get_service_url("cleanup")
+    await submit_job(svc_url, payload)
+
+    async def _update_export_progress(r):
+        _update_progress(project_id, job_id, r.get("progress", 0))
+
+    result = await poll_job(svc_url, job_id, on_progress=_update_export_progress)
+
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "cleanup_failed"))
+        _recompute_project_status(project_id)
+        return
+
+    now = _now()
+    for seg_result in result.get("results", []):
+        seg_id = seg_result["id"]
+        if seg_result.get("error"):
+            flags_raw = conn.execute("SELECT flags FROM segments WHERE id=?", (seg_id,)).fetchone()
+            flags = _json.loads(flags_raw["flags"] or "[]")
+            flags.append(f"cleanup_error: {seg_result['error']}")
+            conn.execute(
+                "UPDATE segments SET status='auto_rejected', flags=?, updated_at=? WHERE id=?",
+                (_json.dumps(flags), now, seg_id),
+            )
+        elif seg_result.get("auto_rejected"):
+            conn.execute(
+                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
+                (now, seg_id),
+            )
+        elif seg_result.get("clipping_warning"):
+            conn.execute(
+                "UPDATE segments SET status='clipping_warning', clipping_warning=1, updated_at=? WHERE id=?",
+                (now, seg_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE segments SET export_path=?, updated_at=? WHERE id=?",
+                (f"export/{seg_id}.wav", now, seg_id),
+            )
+    conn.commit()
+
+    # Write manifest.json from DB using COALESCE(transcript_edited, transcript)
+    exported_segs = conn.execute(
+        """SELECT s.id, s.export_path, COALESCE(s.transcript_edited, s.transcript) AS text,
+                  src.filename AS source, s.start_secs, s.end_secs, s.duration_secs,
+                  s.match_confidence, s.transcript_confidence
+           FROM segments s JOIN sources src ON s.source_id = src.id
+           WHERE s.project_id=? AND s.export_path IS NOT NULL
+           ORDER BY src.filename, s.start_secs""",
+        (project_id,),
+    ).fetchall()
+
+    manifest_segments = []
+    for s in exported_segs:
+        if not s["text"]:
+            logger.warning("Segment %s has no transcript, excluding from manifest", s["id"])
+            continue
+        manifest_segments.append({
+            "id": s["id"],
+            "audio_file": f"{s['id']}.wav",
+            "text": s["text"],
+            "source": s["source"],
+            "start_secs": s["start_secs"],
+            "end_secs": s["end_secs"],
+            "duration_secs": s["duration_secs"],
+            "match_confidence": s["match_confidence"],
+            "transcript_confidence": s["transcript_confidence"],
+        })
+
+    total_duration = sum(s["duration_secs"] for s in manifest_segments)
+    manifest = {
+        "version": "1",
+        "project_id": project_id,
+        "exported_at": _now(),
+        "speaker": "target",
+        "segments": manifest_segments,
+        "stats": {
+            "segment_count": len(manifest_segments),
+            "total_duration_secs": total_duration,
+        },
+    }
+    (export_dir / "manifest.json").write_text(_json.dumps(manifest, indent=2))
+
+    # Package tar.gz (WAVs + manifest only)
+    archive_path = pdir / "export.tar.gz"
+    with _tarfile.open(str(archive_path), "w:gz") as tar:
+        tar.add(str(export_dir / "manifest.json"), arcname="manifest.json")
+        for seg in manifest_segments:
+            wav_file = export_dir / seg["audio_file"]
+            if wav_file.exists():
+                tar.add(str(wav_file), arcname=seg["audio_file"])
+
+    # Set project status to exported directly — recompute will verify via completed export job
+    conn.execute(
+        "UPDATE projects SET status='exported', updated_at=? WHERE id=?",
+        (_now(), project_id),
+    )
+    conn.commit()
+    _complete_job(project_id, job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +724,7 @@ HANDLERS: dict[str, Callable] = {
     "diarisation": _handle_diarisation,
     "transcription_bulk": _handle_transcription_bulk,
     "transcription_segment": _handle_transcription_segment,
-    "export": _handle_stub_service_job,
+    "export": _handle_export,
 }
 
 

@@ -663,3 +663,204 @@ class TestTranscriptionSegmentHandler:
                            (seg_id,)).fetchone()
         assert seg["transcript"] == "Machine new"
         assert seg["transcript_edited"] == "User edit preserved"
+
+
+class TestExportHandler:
+    def _approved_segment_result(self, seg_id):
+        return {
+            "id": seg_id,
+            "output_path": f"/data/export/{seg_id}.wav",
+            "clipping_warning": False,
+            "auto_rejected": False,
+            "error": None,
+        }
+
+    def _make_fake_wav(self, path):
+        """Create a minimal fake WAV file for testing."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"RIFF" + b"\x00" * 36)
+
+    async def test_success_creates_archive_and_manifest(self, isolated_data_dir):
+        import db, jobs, tarfile, json
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="approved",
+                                 transcript="Hello world")
+
+        pdir = Path(str(isolated_data_dir)) / "projects" / project_id
+        self._make_fake_wav(pdir / "segments" / "raw" / f"{seg_id}.wav")
+
+        cleanup_result = {
+            "job_id": "svc-1", "status": "complete",
+            "results": [self._approved_segment_result(seg_id)],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=cleanup_result):
+            conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project_id,))
+            conn.commit()
+            job_id = jobs.enqueue(project_id, "export", params={"segment_count": 1})
+            await jobs._handle_export(project_id, job_id, None, {"segment_count": 1})
+
+        archive = pdir / "export.tar.gz"
+        assert archive.exists()
+
+        with tarfile.open(str(archive), "r:gz") as tar:
+            names = tar.getnames()
+        assert "manifest.json" in names
+
+        status = conn.execute("SELECT status FROM projects WHERE id=?", (project_id,)).fetchone()["status"]
+        assert status == "exported"
+
+    async def test_manifest_uses_coalesce_transcript_edited(self, isolated_data_dir):
+        import db, jobs, tarfile, json as _json
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="approved",
+                                 transcript="Original", transcript_edited="User edit")
+
+        pdir = Path(str(isolated_data_dir)) / "projects" / project_id
+        self._make_fake_wav(pdir / "segments" / "raw" / f"{seg_id}.wav")
+
+        cleanup_result = {
+            "job_id": "svc-1", "status": "complete",
+            "results": [self._approved_segment_result(seg_id)],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=cleanup_result):
+            conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project_id,))
+            conn.commit()
+            job_id = jobs.enqueue(project_id, "export", params={"segment_count": 1})
+            await jobs._handle_export(project_id, job_id, None, {"segment_count": 1})
+
+        archive = pdir / "export.tar.gz"
+        with tarfile.open(str(archive), "r:gz") as tar:
+            manifest_data = _json.loads(tar.extractfile("manifest.json").read())
+
+        assert manifest_data["segments"][0]["text"] == "User edit"
+
+    async def test_clipping_warning_sets_column_and_status(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="approved",
+                                 transcript="Clipping")
+
+        pdir = Path(str(isolated_data_dir)) / "projects" / project_id
+        self._make_fake_wav(pdir / "segments" / "raw" / f"{seg_id}.wav")
+
+        cleanup_result = {
+            "job_id": "svc-1", "status": "complete",
+            "results": [{
+                "id": seg_id, "output_path": None,
+                "clipping_warning": True, "auto_rejected": False, "error": None,
+            }],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=cleanup_result):
+            conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project_id,))
+            conn.commit()
+            job_id = jobs.enqueue(project_id, "export", params={"segment_count": 1})
+            await jobs._handle_export(project_id, job_id, None, {"segment_count": 1})
+
+        seg = conn.execute("SELECT status, clipping_warning FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert seg["status"] == "clipping_warning"
+        assert seg["clipping_warning"] == 1
+
+    async def test_auto_rejected_sets_status(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="approved",
+                                 transcript="Silent")
+
+        pdir = Path(str(isolated_data_dir)) / "projects" / project_id
+        self._make_fake_wav(pdir / "segments" / "raw" / f"{seg_id}.wav")
+
+        cleanup_result = {
+            "job_id": "svc-1", "status": "complete",
+            "results": [{
+                "id": seg_id, "output_path": None,
+                "clipping_warning": False, "auto_rejected": True, "error": None,
+            }],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=cleanup_result):
+            conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project_id,))
+            conn.commit()
+            job_id = jobs.enqueue(project_id, "export", params={"segment_count": 1})
+            await jobs._handle_export(project_id, job_id, None, {"segment_count": 1})
+
+        seg = conn.execute("SELECT status FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert seg["status"] == "auto_rejected"
+
+    async def test_ffmpeg_error_marks_auto_rejected_with_cleanup_error_flag(self, isolated_data_dir):
+        import db, jobs, json as _json
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="approved",
+                                 transcript="Error seg")
+
+        pdir = Path(str(isolated_data_dir)) / "projects" / project_id
+        self._make_fake_wav(pdir / "segments" / "raw" / f"{seg_id}.wav")
+
+        cleanup_result = {
+            "job_id": "svc-1", "status": "complete",
+            "results": [{
+                "id": seg_id, "output_path": None,
+                "clipping_warning": False, "auto_rejected": False,
+                "error": "ffmpeg_error: exit code 1",
+            }],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=cleanup_result):
+            conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project_id,))
+            conn.commit()
+            job_id = jobs.enqueue(project_id, "export", params={"segment_count": 1})
+            await jobs._handle_export(project_id, job_id, None, {"segment_count": 1})
+
+        seg = conn.execute("SELECT status, flags FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert seg["status"] == "auto_rejected"
+        flags = _json.loads(seg["flags"])
+        assert any("cleanup_error" in f for f in flags)
+
+    async def test_project_becomes_exported(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "complete")
+        seg_id = _insert_segment(conn, project_id, source_id, status="approved",
+                                 transcript="OK")
+
+        pdir = Path(str(isolated_data_dir)) / "projects" / project_id
+        self._make_fake_wav(pdir / "segments" / "raw" / f"{seg_id}.wav")
+
+        cleanup_result = {
+            "job_id": "svc-1", "status": "complete",
+            "results": [self._approved_segment_result(seg_id)],
+            "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=cleanup_result):
+            conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project_id,))
+            conn.commit()
+            job_id = jobs.enqueue(project_id, "export", params={"segment_count": 1})
+            await jobs._handle_export(project_id, job_id, None, {"segment_count": 1})
+
+        project = conn.execute("SELECT status FROM projects WHERE id=?", (project_id,)).fetchone()
+        assert project["status"] == "exported"
