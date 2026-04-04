@@ -11,7 +11,6 @@ import logging
 import os
 import subprocess
 import uuid
-import uuid as _uuid_module
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Any, Callable, Coroutine
 
 from db import get_conn, project_dir
 from service_client import submit_job, poll_job
+from state_machines import validate_source_transition
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +277,15 @@ async def _handle_vocal_separation(
     model = params.get("demucs_model", "htdemucs")
     chunk_secs = params.get("chunk_secs", None)
 
+    if not validate_source_transition(source["status"], "step1_running"):
+        logger.warning(
+            "Vocal separation for source %s: invalid transition %s → step1_running, failing job",
+            source_id, source["status"],
+        )
+        _fail_job(project_id, job_id, f"invalid_source_state: {source['status']} → step1_running")
+        _recompute_project_status(project_id)
+        return
+
     conn.execute(
         "UPDATE sources SET status='step1_running', updated_at=? WHERE id=?",
         (_now(), source_id),
@@ -284,7 +293,7 @@ async def _handle_vocal_separation(
     conn.commit()
 
     svc_url = _get_service_url("vocal_separation")
-    service_job_id = job_id  # use orchestrator job_id for first attempt
+    service_job_id = job_id  # reuse orchestrator job_id as the service-side job_id for initial attempt
 
     payload = {
         "job_id": service_job_id,
@@ -305,7 +314,7 @@ async def _handle_vocal_separation(
         retry_secs = result.get("retry_with_chunk_secs")
         if retry_secs and chunk_secs is None:
             # OOM retry: submit a new service job with chunk_secs
-            retry_service_job_id = str(_uuid_module.uuid4())
+            retry_service_job_id = str(uuid.uuid4())
             retry_payload = {**payload, "job_id": retry_service_job_id, "chunk_secs": retry_secs}
             await submit_job(svc_url, retry_payload)
             result = await poll_job(svc_url, retry_service_job_id, on_progress=_update_vs_progress)
