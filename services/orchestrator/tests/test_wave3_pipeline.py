@@ -316,3 +316,194 @@ class TestVocalSeparationHandler:
         source = conn.execute("SELECT status, step1_error FROM sources WHERE id=?", (source_id,)).fetchone()
         assert source["status"] == "step1_failed"
         assert "model_error" in source["step1_error"]
+
+
+class TestDiarisationHandler:
+    def _make_diar_result(self, project_id, source_id, segments_data):
+        """Build a mock diarisation poll result."""
+        segments = []
+        for d in segments_data:
+            seg_id = str(uuid.uuid4())
+            segments.append({
+                "id": seg_id,
+                "start_secs": d["start"],
+                "end_secs": d["end"],
+                "speaker_label": d.get("speaker", "SPEAKER_00"),
+                "match_confidence": d["confidence"],
+                "wav_path": f"/data/projects/{project_id}/segments/raw/{seg_id}.wav",
+            })
+        return {
+            "job_id": "svc-diar-1",
+            "status": "complete",
+            "segments": segments,
+            "coverage_ratio": 0.25,
+            "error": None,
+        }
+
+    async def test_writes_segments_to_db(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir, match_threshold=0.75)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step2_pending")
+        conn.execute("UPDATE sources SET vocals_path=? WHERE id=?",
+                     (f"audio/vocals/{source_id}.wav", source_id))
+        conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project_id,))
+        conn.commit()
+
+        diar_result = self._make_diar_result(project_id, source_id, [
+            {"start": 0.0, "end": 5.0, "confidence": 0.9},
+            {"start": 6.0, "end": 10.0, "confidence": 0.6},
+            {"start": 11.0, "end": 15.0, "confidence": 0.8},
+        ])
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-diar-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=diar_result):
+            job_id = jobs.enqueue(project_id, "diarisation", source_id=source_id)
+            await jobs._handle_diarisation(project_id, job_id, source_id, {})
+
+        segments = conn.execute("SELECT * FROM segments WHERE source_id=?", (source_id,)).fetchall()
+        assert len(segments) == 3
+
+        pending = [s for s in segments if s["status"] == "pending"]
+        below = [s for s in segments if s["status"] == "below_threshold"]
+        assert len(pending) == 2
+        assert len(below) == 1
+
+        src = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert src["status"] == "complete"
+        assert abs(src["coverage_ratio"] - 0.25) < 0.001
+
+    async def test_segments_use_relative_raw_path(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step2_pending")
+        conn.execute("UPDATE sources SET vocals_path=? WHERE id=?",
+                     (f"audio/vocals/{source_id}.wav", source_id))
+        conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project_id,))
+        conn.commit()
+
+        seg_id = str(uuid.uuid4())
+        diar_result = {
+            "job_id": "svc-1", "status": "complete",
+            "segments": [{
+                "id": seg_id, "start_secs": 0.0, "end_secs": 5.0,
+                "speaker_label": "SPEAKER_00", "match_confidence": 0.9,
+                "wav_path": f"/data/projects/{project_id}/segments/raw/{seg_id}.wav",
+            }],
+            "coverage_ratio": 0.2, "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=diar_result):
+            job_id = jobs.enqueue(project_id, "diarisation", source_id=source_id)
+            await jobs._handle_diarisation(project_id, job_id, source_id, {})
+
+        seg = conn.execute("SELECT raw_path FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert seg["raw_path"] == f"segments/raw/{seg_id}.wav"
+
+    async def test_auto_triggers_transcription_when_all_sources_complete(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+
+        existing_source = _insert_source(conn, project_id, "complete")
+        active_source = _insert_source(conn, project_id, "step2_pending")
+        conn.execute("UPDATE sources SET vocals_path=? WHERE id=?",
+                     (f"audio/vocals/{active_source}.wav", active_source))
+        conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project_id,))
+        conn.commit()
+
+        seg_id = str(uuid.uuid4())
+        diar_result = {
+            "job_id": "svc-1", "status": "complete",
+            "segments": [{
+                "id": seg_id, "start_secs": 0.0, "end_secs": 5.0,
+                "speaker_label": "SPEAKER_00", "match_confidence": 0.9,
+                "wav_path": f"/data/projects/{project_id}/segments/raw/{seg_id}.wav",
+            }],
+            "coverage_ratio": 0.2, "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=diar_result):
+            job_id = jobs.enqueue(project_id, "diarisation", source_id=active_source)
+            await jobs._handle_diarisation(project_id, job_id, active_source, {})
+
+        tx_job = conn.execute(
+            "SELECT * FROM jobs WHERE project_id=? AND type='transcription_bulk'", (project_id,)
+        ).fetchone()
+        assert tx_job is not None
+
+    async def test_does_not_trigger_transcription_while_other_sources_pending(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+
+        active_source = _insert_source(conn, project_id, "step2_pending")
+        still_running = _insert_source(conn, project_id, "step1_running")
+        conn.execute("UPDATE sources SET vocals_path=? WHERE id=?",
+                     (f"audio/vocals/{active_source}.wav", active_source))
+        conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project_id,))
+        conn.commit()
+
+        seg_id = str(uuid.uuid4())
+        diar_result = {
+            "job_id": "svc-1", "status": "complete",
+            "segments": [{
+                "id": seg_id, "start_secs": 0.0, "end_secs": 5.0,
+                "speaker_label": "SPEAKER_00", "match_confidence": 0.9,
+                "wav_path": f"/data/projects/{project_id}/segments/raw/{seg_id}.wav",
+            }],
+            "coverage_ratio": 0.2, "error": None,
+        }
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=diar_result):
+            job_id = jobs.enqueue(project_id, "diarisation", source_id=active_source)
+            await jobs._handle_diarisation(project_id, job_id, active_source, {})
+
+        tx_job = conn.execute(
+            "SELECT * FROM jobs WHERE project_id=? AND type='transcription_bulk'", (project_id,)
+        ).fetchone()
+        assert tx_job is None
+
+    async def test_failure_marks_source_step2_failed(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step2_pending")
+        conn.execute("UPDATE sources SET vocals_path=? WHERE id=?",
+                     (f"audio/vocals/{source_id}.wav", source_id))
+        conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project_id,))
+        conn.commit()
+
+        fail = {"job_id": "svc-1", "status": "failed", "error": "diarisation_failed", "segments": []}
+
+        with patch("jobs.submit_job", new_callable=AsyncMock, return_value={"job_id": "svc-1"}), \
+             patch("jobs.poll_job", new_callable=AsyncMock, return_value=fail):
+            job_id = jobs.enqueue(project_id, "diarisation", source_id=source_id)
+            await jobs._handle_diarisation(project_id, job_id, source_id, {})
+
+        src = conn.execute("SELECT status, step2_error FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert src["status"] == "step2_failed"
+        assert "diarisation_failed" in src["step2_error"]
+
+    async def test_no_reference_clip_marks_step2_failed(self, isolated_data_dir):
+        import db, jobs
+        project_id = _make_project(isolated_data_dir)
+        conn = db.get_conn(project_id)
+        source_id = _insert_source(conn, project_id, "step2_pending")
+        conn.execute("UPDATE sources SET vocals_path=? WHERE id=?",
+                     (f"audio/vocals/{source_id}.wav", source_id))
+        # reference_path is NULL by default
+        conn.commit()
+
+        job_id = jobs.enqueue(project_id, "diarisation", source_id=source_id)
+        await jobs._handle_diarisation(project_id, job_id, source_id, {})
+
+        src = conn.execute("SELECT status FROM sources WHERE id=?", (source_id,)).fetchone()
+        assert src["status"] == "step2_failed"
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        assert "reference" in job["error"]

@@ -344,6 +344,122 @@ async def _handle_vocal_separation(
     enqueue(project_id, "diarisation", source_id=source_id)
 
 
+async def _handle_diarisation(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Submit to diarisation service; write segments to DB; auto-trigger transcription."""
+    conn = get_conn(project_id)
+    source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+    if source is None:
+        _fail_job(project_id, job_id, "source_not_found")
+        return
+
+    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not project["reference_path"]:
+        conn.execute(
+            "UPDATE sources SET status='step2_failed', step2_error='no_reference_clip', updated_at=? WHERE id=?",
+            (_now(), source_id),
+        )
+        conn.commit()
+        _fail_job(project_id, job_id, "no_reference_clip: upload a reference audio clip first")
+        _recompute_project_status(project_id)
+        return
+
+    if not validate_source_transition(source["status"], "step2_running"):
+        logger.warning(
+            "Diarisation for source %s: invalid transition %s → step2_running, failing job",
+            source_id, source["status"],
+        )
+        _fail_job(project_id, job_id, f"invalid_source_state: {source['status']} → step2_running")
+        _recompute_project_status(project_id)
+        return
+
+    pdir = project_dir(project_id)
+    input_path = str(pdir / source["vocals_path"])
+    reference_path = str(pdir / project["reference_path"])
+    output_dir = str(pdir / "segments" / "raw")
+
+    conn.execute(
+        "UPDATE sources SET status='step2_running', updated_at=? WHERE id=?",
+        (_now(), source_id),
+    )
+    conn.commit()
+
+    svc_url = _get_service_url("diarisation")
+    payload = {
+        "job_id": job_id,
+        "input_path": input_path,
+        "reference_path": reference_path,
+        "output_dir": output_dir,
+        "params": {
+            "min_segment_duration": 1.0,
+            "min_speakers": 1,
+            "max_speakers": 10,
+        },
+    }
+
+    await submit_job(svc_url, payload)
+
+    async def _update_diar_progress(r):
+        _update_progress(project_id, job_id, r.get("progress", 0))
+
+    result = await poll_job(svc_url, job_id, on_progress=_update_diar_progress)
+
+    if result["status"] == "failed":
+        error = result.get("error", "diarisation_failed")
+        conn.execute(
+            "UPDATE sources SET status='step2_failed', step2_error=?, updated_at=? WHERE id=?",
+            (error, _now(), source_id),
+        )
+        conn.commit()
+        _fail_job(project_id, job_id, error)
+        _recompute_project_status(project_id)
+        return
+
+    # Write segments to DB
+    threshold = project["match_threshold"]
+    now = _now()
+    for seg in result.get("segments", []):
+        status = "pending" if seg["match_confidence"] >= threshold else "below_threshold"
+        raw_path = f"segments/raw/{seg['id']}.wav"
+        conn.execute(
+            """
+            INSERT INTO segments
+                (id, project_id, source_id, raw_path, start_secs, end_secs,
+                 speaker_label, match_confidence, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (seg["id"], project_id, source_id, raw_path,
+             seg["start_secs"], seg["end_secs"], seg["speaker_label"],
+             seg["match_confidence"], status, now, now),
+        )
+
+    conn.execute(
+        "UPDATE sources SET status='complete', coverage_ratio=?, updated_at=? WHERE id=?",
+        (result.get("coverage_ratio"), _now(), source_id),
+    )
+    conn.commit()
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+    # Auto-trigger transcription if all sources are now in terminal states
+    in_progress = conn.execute(
+        """SELECT COUNT(*) FROM sources
+           WHERE project_id=? AND status IN ('step1_pending','step1_running','step2_pending','step2_running')""",
+        (project_id,),
+    ).fetchone()[0]
+
+    if in_progress == 0:
+        segments_to_transcribe = conn.execute(
+            """SELECT id, raw_path FROM segments
+               WHERE project_id=? AND status IN ('pending','maybe') AND transcript IS NULL""",
+            (project_id,),
+        ).fetchall()
+        if segments_to_transcribe:
+            tx_params = {"segment_ids": [s["id"] for s in segments_to_transcribe]}
+            enqueue(project_id, "transcription_bulk", params=tx_params)
+
+
 async def _handle_stub_service_job(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
@@ -365,7 +481,7 @@ async def _handle_stub_service_job(
 HANDLERS: dict[str, Callable] = {
     "extract_audio": _handle_extract_audio,
     "vocal_separation": _handle_vocal_separation,
-    "diarisation": _handle_stub_service_job,
+    "diarisation": _handle_diarisation,
     "transcription_bulk": _handle_stub_service_job,
     "transcription_segment": _handle_stub_service_job,
     "export": _handle_stub_service_job,
