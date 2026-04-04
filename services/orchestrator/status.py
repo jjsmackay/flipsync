@@ -40,8 +40,9 @@ def recompute_project_status(project_id: str) -> None:
         project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete
     )
 
-    conn.execute(
-        "UPDATE projects SET status=?, updated_at=? WHERE id=?",
-        (new_status, _now(), project_id),
-    )
-    conn.commit()
+    if new_status != project["status"]:
+        conn.execute(
+            "UPDATE projects SET status=?, updated_at=? WHERE id=?",
+            (new_status, _now(), project_id),
+        )
+        conn.commit()

@@ -10,11 +10,14 @@ import json
 import logging
 import os
 import subprocess
+import tarfile
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Coroutine
+
+DEFAULT_TARGET_LUFS = -23.0
 
 from db import get_conn, project_dir
 from service_client import submit_job, poll_job
@@ -293,10 +296,9 @@ async def _handle_vocal_separation(
     conn.commit()
 
     svc_url = _get_service_url("vocal_separation")
-    service_job_id = job_id  # reuse orchestrator job_id as the service-side job_id for initial attempt
 
     payload = {
-        "job_id": service_job_id,
+        "job_id": job_id,
         "input_path": input_path,
         "output_path": output_path,
         "model": model,
@@ -308,7 +310,7 @@ async def _handle_vocal_separation(
     async def _update_vs_progress(r):
         _update_progress(project_id, job_id, r.get("progress", 0))
 
-    result = await poll_job(svc_url, service_job_id, on_progress=_update_vs_progress)
+    result = await poll_job(svc_url, job_id, on_progress=_update_vs_progress)
 
     if result["status"] == "failed":
         retry_secs = result.get("retry_with_chunk_secs")
@@ -467,6 +469,10 @@ async def _handle_transcription_bulk(
     conn = get_conn(project_id)
     segment_ids = params.get("segment_ids", [])
 
+    if not segment_ids:
+        _fail_job(project_id, job_id, "no_segment_ids")
+        return
+
     project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
     pdir = project_dir(project_id)
 
@@ -548,13 +554,15 @@ async def _handle_transcription_segment(
         _recompute_project_status(project_id)
         return
 
-    for seg_result in result.get("completed_segments", []):
-        if seg_result["id"] == segment_id:
-            # Only update transcript and confidence — NOT transcript_edited
-            conn.execute(
-                "UPDATE segments SET transcript=?, transcript_confidence=?, updated_at=? WHERE id=?",
-                (seg_result["transcript"], seg_result.get("transcript_confidence"), _now(), segment_id),
-            )
+    seg_result = next(
+        (s for s in result.get("completed_segments", []) if s["id"] == segment_id),
+        None,
+    )
+    if seg_result:
+        conn.execute(
+            "UPDATE segments SET transcript=?, transcript_confidence=?, updated_at=? WHERE id=?",
+            (seg_result["transcript"], seg_result.get("transcript_confidence"), _now(), segment_id),
+        )
     conn.commit()
     _complete_job(project_id, job_id)
     _recompute_project_status(project_id)
@@ -564,9 +572,6 @@ async def _handle_export(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
     """Run cleanup on all approved segments, write manifest.json, create tar.gz archive."""
-    import json as _json
-    import tarfile as _tarfile
-
     conn = get_conn(project_id)
     pdir = project_dir(project_id)
 
@@ -585,7 +590,7 @@ async def _handle_export(
     export_dir.mkdir(exist_ok=True)
 
     project = conn.execute("SELECT target_lufs FROM projects WHERE id=?", (project_id,)).fetchone()
-    target_lufs = project["target_lufs"] if project["target_lufs"] else -23.0
+    target_lufs = project["target_lufs"] or DEFAULT_TARGET_LUFS
 
     cleanup_segments = [
         {
@@ -631,11 +636,11 @@ async def _handle_export(
         seg_id = seg_result["id"]
         if seg_result.get("error"):
             flags_raw = conn.execute("SELECT flags FROM segments WHERE id=?", (seg_id,)).fetchone()
-            flags = _json.loads(flags_raw["flags"] or "[]")
+            flags = json.loads(flags_raw["flags"] or "[]")
             flags.append(f"cleanup_error: {seg_result['error']}")
             conn.execute(
                 "UPDATE segments SET status='auto_rejected', flags=?, updated_at=? WHERE id=?",
-                (_json.dumps(flags), now, seg_id),
+                (json.dumps(flags), now, seg_id),
             )
         elif seg_result.get("auto_rejected"):
             conn.execute(
@@ -694,11 +699,11 @@ async def _handle_export(
             "total_duration_secs": total_duration,
         },
     }
-    (export_dir / "manifest.json").write_text(_json.dumps(manifest, indent=2))
+    (export_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
     # Package tar.gz (WAVs + manifest only)
     archive_path = pdir / "export.tar.gz"
-    with _tarfile.open(str(archive_path), "w:gz") as tar:
+    with tarfile.open(str(archive_path), "w:gz") as tar:
         tar.add(str(export_dir / "manifest.json"), arcname="manifest.json")
         for seg in manifest_segments:
             wav_file = export_dir / seg["audio_file"]
