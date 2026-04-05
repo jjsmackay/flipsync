@@ -1,8 +1,9 @@
 """Project status recomputation — shared by jobs and routers."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
-from db import get_conn
+from db import get_conn, project_dir
 from state_machines import compute_project_status
 
 
@@ -30,14 +31,20 @@ def recompute_project_status(project_id: str) -> None:
     has_sources = len(sources) > 0
     has_active_jobs = active_jobs > 0
     all_sources_complete = has_sources and all(s["status"] == "complete" for s in sources)
-    export_complete = project["status"] == "exported"
+
+    # Fix for deferred bug: check for actual export archive existence rather than
+    # circular status check. A completed export job means the archive exists.
+    pdir = project_dir(project_id)
+    archive_exists = (pdir / "export.tar.gz").exists()
+    export_complete = archive_exists and not has_active_jobs
 
     new_status = compute_project_status(
         project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete
     )
 
-    conn.execute(
-        "UPDATE projects SET status=?, updated_at=? WHERE id=?",
-        (new_status, _now(), project_id),
-    )
-    conn.commit()
+    if new_status != project["status"]:
+        conn.execute(
+            "UPDATE projects SET status=?, updated_at=? WHERE id=?",
+            (new_status, _now(), project_id),
+        )
+        conn.commit()
