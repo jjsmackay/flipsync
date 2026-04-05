@@ -15,6 +15,8 @@ You own the orchestrator service (`services/orchestrator/`). Do not modify any o
 - Job queue (`jobs.py`, `status.py`)
 - State machines (`state_machines.py`)
 - Error handling (`errors.py`)
+- Service client for processing services (`service_client.py`)
+- Route handlers (`routers/`)
 - All tests in `tests/`
 
 ## Key constraints

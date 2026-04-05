@@ -213,6 +213,10 @@ Frontend needs:
 - **Node:** Available via nvm. Package manager is `pnpm` (enabled via `corepack enable pnpm`).
 - **Docker:** Available in rootless mode. `docker compose up --build` from repo root.
 - **Orchestrator tests:** `cd services/orchestrator && uv run --with fastapi --with uvicorn --with python-multipart --with aiofiles --with httpx --with pytest --with pytest-asyncio --with anyio python -m pytest tests/ -v`
+- **Vocal separation tests:** `cd services/vocal-separation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with anyio --with soundfile --with numpy python -m pytest tests/ -v`
+- **Diarisation tests:** `cd services/diarisation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with soundfile --with numpy python -m pytest tests/ -v`
+- **Transcription tests:** `cd services/transcription && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio python -m pytest tests/ -v`
+- **Cleanup tests:** `cd services/cleanup && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with numpy --with soundfile python -m pytest tests/ -v`
 
 ## Error handling pattern
 
@@ -223,8 +227,11 @@ Processing services should return the same flat format directly.
 ## Current status
 
 - **Wave 0 (scaffolding):** Complete.
-- **Wave 1 (orchestrator core):** Complete. All endpoints, state machines, job queue, tests passing (143 pass, 4 skipped).
-- **Next:** Wave 2 (processing services — can be built in parallel) or Wave 3 (orchestrator integration with real services).
+- **Wave 1 (orchestrator core):** Complete.
+- **Wave 2 (processing services):** Complete. All four services (vocal-separation, diarisation, transcription, cleanup) implemented with tests.
+- **Wave 3 (orchestrator integration):** Complete. Service client, pipeline orchestration, polling, OOM retry, threshold re-evaluation all wired.
+- **Wave 5 (frontend scaffold):** Typed React foundation merged. Pages, hooks, API layer, types scaffolded.
+- **Next:** Wave 4 (Segments API + Export) and Wave 5 (frontend feature implementation).
 
 ## Docker notes
 
