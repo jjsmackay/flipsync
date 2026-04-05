@@ -116,7 +116,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         # Delete existing segments for this source
         conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
         conn.execute(
-            "UPDATE sources SET status='step1_pending', step1_error=NULL, step2_error=NULL, updated_at=? WHERE id=?",
+            "UPDATE sources SET status='step1_pending', vocals_path=NULL, step1_error=NULL, step2_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
         )
         conn.commit()
@@ -175,7 +175,12 @@ async def run_transcription(project_id: str):
             "No pending segments without transcripts.",
         )
 
-    params = {"segment_ids": [s["id"] for s in segments]}
+    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
+    params = {
+        "segment_ids": [s["id"] for s in segments],
+        "model": project["whisper_model"],
+        "language": project["language"],
+    }
     job_id = enqueue(project_id, "transcription_bulk", params=params)
 
     return {"enqueued_job": {"id": job_id, "type": "transcription_bulk", "segment_count": len(segments)}}
