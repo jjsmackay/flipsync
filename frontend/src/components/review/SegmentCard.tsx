@@ -1,0 +1,57 @@
+import type { Segment } from '../../types/api'
+import { ConfidenceBadge } from '../ui/ConfidenceBadge'
+import { StatusBadge } from '../ui/StatusBadge'
+
+interface SegmentCardProps {
+  segment: Segment
+  selected: boolean
+  onClick: () => void
+}
+
+function formatDuration(secs: number): string {
+  return `${secs.toFixed(1)}s`
+}
+
+export function SegmentCard({ segment, selected, onClick }: SegmentCardProps) {
+  const displayTranscript = segment.transcript_edited ?? segment.transcript
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        'w-full text-left px-3 py-2.5 bg-white border-b border-gray-100 hover:bg-gray-50 transition-colors',
+        'flex flex-col gap-1 focus:outline-none focus:bg-indigo-50',
+        selected ? 'border-l-4 border-l-indigo-500 pl-2' : 'border-l-4 border-l-transparent',
+      ].join(' ')}
+    >
+      {/* Top row: badges, duration, status dot, clipping */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <ConfidenceBadge value={segment.match_confidence} />
+        <span className="text-xs text-gray-500 font-mono">{formatDuration(segment.duration_secs)}</span>
+        <StatusBadge status={segment.status} dot />
+        {segment.clipping_warning && (
+          <span title="Clipping warning" className="text-orange-500 text-xs">
+            ⚡
+          </span>
+        )}
+      </div>
+
+      {/* Transcript preview */}
+      <p
+        className="text-sm text-gray-700 leading-snug overflow-hidden"
+        style={{
+          display: '-webkit-box',
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}
+      >
+        {displayTranscript ?? <span className="italic text-gray-400">No transcript</span>}
+      </p>
+
+      {/* Source filename */}
+      <p className="text-xs text-gray-400 truncate">{segment.source_filename}</p>
+    </button>
+  )
+}
