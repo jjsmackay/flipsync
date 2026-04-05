@@ -10,6 +10,7 @@ interface UsePollingResult<T> {
   data: T | null
   error: Error | null
   isLoading: boolean
+  refetch: () => Promise<void>
 }
 
 export function usePolling<T>(
@@ -75,5 +76,5 @@ export function usePolling<T>(
     }
   }, [enabled, intervalMs, execute])
 
-  return { data, error, isLoading }
+  return { data, error, isLoading, refetch: execute }
 }
