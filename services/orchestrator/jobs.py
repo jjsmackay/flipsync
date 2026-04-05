@@ -11,11 +11,12 @@ import os
 import tarfile
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable
 
 from db import get_conn, project_dir
+import service_client
+from status import recompute_project_status as _recompute_project_status, _now
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,6 @@ async def _handle_extract_audio(
     input_path = pdir / source["file_path"]
     output_path = pdir / "audio" / "raw" / f"{source_id}.wav"
 
-    # Update source status to extracting
     conn.execute(
         "UPDATE sources SET status='extracting', updated_at=? WHERE id=?",
         (_now(), source_id),
@@ -201,7 +201,6 @@ async def _handle_extract_audio(
         _recompute_project_status(project_id)
         return
 
-    # Get duration via ffprobe
     duration_secs = await _get_audio_duration(str(output_path))
 
     conn.execute(
@@ -245,7 +244,7 @@ async def _handle_vocal_separation(
     On OOM failure with retry_with_chunk_secs: resubmit with chunk_secs.
     On second failure: mark source step1_failed.
     """
-    from service_client import submit_job, poll_until_complete
+
 
     conn = get_conn(project_id)
     source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
@@ -275,7 +274,7 @@ async def _handle_vocal_separation(
     }
 
     try:
-        await submit_job("vocal_separation", payload)
+        await service_client.submit_job("vocal_separation", payload)
     except Exception as exc:
         conn.execute(
             "UPDATE sources SET status='step1_failed', step1_error=?, updated_at=? WHERE id=?",
@@ -291,7 +290,7 @@ async def _handle_vocal_separation(
         if progress:
             _update_progress(project_id, job_id, progress)
 
-    result = await poll_until_complete("vocal_separation", job_id, on_progress=on_progress)
+    result = await service_client.poll_until_complete("vocal_separation", job_id, on_progress=on_progress)
 
     if result["status"] == "failed":
         retry_chunk = result.get("retry_with_chunk_secs")
@@ -307,8 +306,8 @@ async def _handle_vocal_separation(
                 "chunk_secs": retry_chunk,
             }
             try:
-                await submit_job("vocal_separation", retry_payload)
-                result = await poll_until_complete("vocal_separation", retry_job_id, on_progress=on_progress)
+                await service_client.submit_job("vocal_separation", retry_payload)
+                result = await service_client.poll_until_complete("vocal_separation", retry_job_id, on_progress=on_progress)
             except Exception as exc:
                 result = {"status": "failed", "error": str(exc)}
 
@@ -323,7 +322,6 @@ async def _handle_vocal_separation(
             _recompute_project_status(project_id)
             return
 
-    # Success: update source
     conn.execute(
         """
         UPDATE sources
@@ -357,7 +355,7 @@ async def _handle_diarisation(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
     """Submit diarisation to external service, write segments to DB on completion."""
-    from service_client import submit_job, poll_until_complete
+
 
     conn = get_conn(project_id)
     source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
@@ -398,7 +396,7 @@ async def _handle_diarisation(
     }
 
     try:
-        await submit_job("diarisation", payload)
+        await service_client.submit_job("diarisation", payload)
     except Exception as exc:
         conn.execute(
             "UPDATE sources SET status='step2_failed', step2_error=?, updated_at=? WHERE id=?",
@@ -414,7 +412,7 @@ async def _handle_diarisation(
         if progress:
             _update_progress(project_id, job_id, progress)
 
-    result = await poll_until_complete("diarisation", job_id, on_progress=on_progress)
+    result = await service_client.poll_until_complete("diarisation", job_id, on_progress=on_progress)
 
     if result["status"] == "failed":
         error = result.get("error", "unknown_error")
@@ -509,7 +507,7 @@ async def _handle_transcription_bulk(
 ) -> None:
     """Submit bulk transcription to external service. Writes results incrementally,
     deduplicating cumulative completed_segments."""
-    from service_client import submit_job, poll_until_complete
+
 
     conn = get_conn(project_id)
     segment_ids = params.get("segment_ids", [])
@@ -520,16 +518,17 @@ async def _handle_transcription_bulk(
 
     project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
 
-    # Build segment list with wav_paths
+    # Build segment list with wav_paths (bulk query)
     data_prefix = _data_prefix()
-    seg_list = []
-    for sid in segment_ids:
-        seg = conn.execute("SELECT id, raw_path FROM segments WHERE id=?", (sid,)).fetchone()
-        if seg:
-            seg_list.append({
-                "id": seg["id"],
-                "wav_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
-            })
+    placeholders = ",".join("?" * len(segment_ids))
+    rows = conn.execute(
+        f"SELECT id, raw_path FROM segments WHERE id IN ({placeholders})",
+        segment_ids,
+    ).fetchall()
+    seg_list = [
+        {"id": r["id"], "wav_path": f"{data_prefix}/projects/{project_id}/{r['raw_path']}"}
+        for r in rows
+    ]
 
     if not seg_list:
         _fail_job(project_id, job_id, "no_valid_segments")
@@ -548,11 +547,18 @@ async def _handle_transcription_bulk(
     }
 
     try:
-        await submit_job("transcription", payload)
+        await service_client.submit_job("transcription", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
         _recompute_project_status(project_id)
         return
+
+    # Pre-load durations for short-transcript flagging (avoids N+1 in poll loop)
+    dur_rows = conn.execute(
+        f"SELECT id, duration_secs FROM segments WHERE id IN ({placeholders})",
+        segment_ids,
+    ).fetchall()
+    seg_durations: dict[str, float | None] = {r["id"]: r["duration_secs"] for r in dur_rows}
 
     # Track already-written segment IDs to deduplicate cumulative results
     written_ids: set[str] = set()
@@ -578,13 +584,12 @@ async def _handle_transcription_bulk(
                 """,
                 (cs["transcript"], cs.get("transcript_confidence"), now, seg_id, project_id),
             )
-            # Flag short segments
-            seg_row = conn.execute("SELECT duration_secs FROM segments WHERE id=?", (seg_id,)).fetchone()
-            if seg_row and seg_row["duration_secs"] is not None and seg_row["duration_secs"] < 2.0:
+            dur = seg_durations.get(seg_id)
+            if dur is not None and dur < 2.0:
                 _add_flag(conn, seg_id, "short_transcript")
         conn.commit()
 
-    result = await poll_until_complete("transcription", job_id, on_progress=on_progress)
+    result = await service_client.poll_until_complete("transcription", job_id, on_progress=on_progress)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
@@ -602,8 +607,6 @@ async def _handle_transcription_segment(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
     """Re-transcribe a single segment. Overwrites transcript + confidence, preserves transcript_edited."""
-    from service_client import submit_job, poll_until_complete
-
     conn = get_conn(project_id)
     segment_ids = params.get("segment_ids", [])
     if not segment_ids:
@@ -633,20 +636,19 @@ async def _handle_transcription_segment(
     }
 
     try:
-        await submit_job("transcription", payload)
+        await service_client.submit_job("transcription", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
         _recompute_project_status(project_id)
         return
 
-    result = await poll_until_complete("transcription", job_id)
+    result = await service_client.poll_until_complete("transcription", job_id)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
         _recompute_project_status(project_id)
         return
 
-    # Write the result — overwrites transcript + confidence, preserves transcript_edited
     completed = result.get("completed_segments", [])
     now = _now()
     for cs in completed:
@@ -675,7 +677,7 @@ async def _handle_export(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
     """Export pipeline: submit cleanup for approved segments, write manifest, package archive."""
-    from service_client import submit_job, poll_until_complete
+
 
     conn = get_conn(project_id)
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
@@ -728,7 +730,7 @@ async def _handle_export(
     }
 
     try:
-        await submit_job("cleanup", cleanup_payload)
+        await service_client.submit_job("cleanup", cleanup_payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"cleanup_submit_failed: {exc}")
         _recompute_project_status(project_id)
@@ -739,7 +741,7 @@ async def _handle_export(
         if progress:
             _update_progress(project_id, job_id, progress)
 
-    result = await poll_until_complete("cleanup", job_id, on_progress=on_progress)
+    result = await service_client.poll_until_complete("cleanup", job_id, on_progress=on_progress)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
@@ -902,16 +904,6 @@ HANDLERS: dict[str, Callable] = {
 
 
 # ---------------------------------------------------------------------------
-# Project status recomputation (delegates to shared module)
-# ---------------------------------------------------------------------------
-
-
-def _recompute_project_status(project_id: str) -> None:
-    from status import recompute_project_status
-    recompute_project_status(project_id)
-
-
-# ---------------------------------------------------------------------------
 # Startup recovery
 # ---------------------------------------------------------------------------
 
@@ -939,10 +931,3 @@ async def recover_jobs() -> None:
             _ensure_runner(project_id)
 
 
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
