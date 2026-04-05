@@ -17,11 +17,14 @@ interface SegmentDetailProps {
   onSpectrogramToggle: () => void
 }
 
-function formatTime(secs: number): string {
-  const m = Math.floor(secs / 60)
-  const s = (secs % 60).toFixed(1)
-  return `${m}:${s.padStart(4, '0')}`
+function formatTimestamp(secs: number): string {
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = Math.floor(secs % 60)
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
+
+const PLAYBACK_RATES = [0.75, 1.0, 1.25, 1.5]
 
 export function SegmentDetail({
   projectId,
@@ -48,6 +51,48 @@ export function SegmentDetail({
     setError(null)
     setSaving(false)
   }, [segment.id])
+
+  // Keyboard shortcuts (Space/R/E/[/]) — only when not editing
+  useEffect(() => {
+    if (isEditing) return
+    function onKey(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      switch (e.key) {
+        case ' ':
+          e.preventDefault()
+          audio.toggle()
+          break
+        case 'r':
+        case 'R':
+          e.preventDefault()
+          audio.restart()
+          break
+        case 'e':
+        case 'E':
+          e.preventDefault()
+          startEditing()
+          break
+        case '[': {
+          e.preventDefault()
+          const idx = PLAYBACK_RATES.indexOf(audio.playbackRate)
+          const prev = idx <= 0 ? PLAYBACK_RATES[PLAYBACK_RATES.length - 1] : PLAYBACK_RATES[idx - 1]
+          audio.setPlaybackRate(prev)
+          break
+        }
+        case ']': {
+          e.preventDefault()
+          const idx = PLAYBACK_RATES.indexOf(audio.playbackRate)
+          const next = idx >= PLAYBACK_RATES.length - 1 ? PLAYBACK_RATES[0] : PLAYBACK_RATES[idx + 1]
+          audio.setPlaybackRate(next)
+          break
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, audio])
 
   function startEditing() {
     const current = segment.transcript_edited ?? segment.transcript ?? ''
@@ -118,7 +163,7 @@ export function SegmentDetail({
           )}
         </div>
         <p className="text-xs text-gray-500 truncate">
-          {segment.source_filename} &nbsp;·&nbsp; {formatTime(segment.start_secs)} – {formatTime(segment.end_secs)}
+          {segment.source_filename} &nbsp;·&nbsp; {formatTimestamp(segment.start_secs)} – {formatTimestamp(segment.end_secs)}
           &nbsp;({segment.duration_secs.toFixed(1)}s)
         </p>
       </div>
@@ -157,13 +202,27 @@ export function SegmentDetail({
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-gray-600 uppercase tracking-wide">Transcript</span>
           {!isEditing && (
-            <button
-              type="button"
-              onClick={startEditing}
-              className="text-xs text-indigo-600 hover:text-indigo-800 focus:outline-none"
-            >
-              Edit (E)
-            </button>
+            <div className="flex items-center gap-2">
+              {segment.transcript_edited !== null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void patchSegment(projectId, segment.id, { transcript_edited: null })
+                    onTranscriptChange(segment.id, '')
+                  }}
+                  className="text-xs text-gray-400 hover:text-red-600 focus:outline-none"
+                >
+                  Undo edit
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={startEditing}
+                className="text-xs text-indigo-600 hover:text-indigo-800 focus:outline-none"
+              >
+                Edit (E)
+              </button>
+            </div>
           )}
         </div>
 
@@ -200,7 +259,10 @@ export function SegmentDetail({
             onClick={startEditing}
             className="text-sm text-gray-700 cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 min-h-[2.5rem]"
           >
-            {displayTranscript ?? <span className="italic text-gray-400">No transcript — click to add</span>}
+            {displayTranscript !== null
+              ? displayTranscript || <span className="italic text-gray-400">No transcript — click to add</span>
+              : <span className="italic text-gray-400">Transcript pending</span>
+            }
           </p>
         )}
       </div>
@@ -215,9 +277,10 @@ export function SegmentDetail({
         <button
           type="button"
           onClick={() => void handleStatusAction('approved')}
+          title={segment.clipping_warning ? 'Segment has clipping warning' : undefined}
           className="flex-1 py-2 rounded text-sm font-medium bg-green-100 text-green-800 hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-green-400"
         >
-          Approve (A)
+          {segment.clipping_warning && '⚡ '}Approve (A)
         </button>
         <button
           type="button"

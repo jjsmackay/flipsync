@@ -27,8 +27,6 @@ export function ReviewQueuePage() {
   // Project data (for ExportButton, sources list)
   const { project, refetch: refetchProject } = useProjectPolling(projectId!)
 
-  // Suppress unused variable warning — refetchProject available for future use
-  void refetchProject
 
   // Fetch segments when filter or refreshKey changes
   useEffect(() => {
@@ -162,7 +160,7 @@ export function ReviewQueuePage() {
           <div className="p-2 border-b border-gray-100 shrink-0">
             <BulkOperations
               projectId={projectId!}
-              onApplied={() => setRefreshKey(k => k + 1)}
+              onApplied={() => { setRefreshKey(k => k + 1); void refetchProject() }}
               sources={sources.map(s => ({ source_id: s.source_id, filename: s.filename }))}
             />
           </div>

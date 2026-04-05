@@ -150,7 +150,7 @@ export interface PatchProjectRequest {
 
 export interface PatchSegmentRequest {
   status?: SegmentStatus
-  transcript_edited?: string
+  transcript_edited?: string | null
 }
 
 export interface BulkFilter {
