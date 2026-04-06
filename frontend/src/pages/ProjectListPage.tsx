@@ -5,15 +5,8 @@ import { getProjects, deleteProject } from '../api/client'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { CreateProjectModal } from '../components/project/CreateProjectModal'
 import type { ProjectSummary } from '../types/api'
+import { formatDuration } from '../utils/format'
 
-function formatDuration(secs: number): string {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = Math.floor(secs % 60)
-  if (h > 0) return `${h}h ${m}m`
-  if (m > 0) return `${m}m ${s}s`
-  return `${s}s`
-}
 
 function formatDate(iso: string): string {
   const d = new Date(iso)
@@ -88,6 +81,22 @@ function ProjectCard({ project, onDeleted }: ProjectCardProps) {
           <div className="text-xs text-gray-500">approved</div>
         </div>
       </div>
+
+      {/* Progress toward target */}
+      {project.target_duration_secs != null && project.target_duration_secs > 0 && (
+        <div className="mb-4">
+          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+            <span>{formatDuration(project.stats.approved_duration_secs)}</span>
+            <span>{formatDuration(project.target_duration_secs)} target</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-1.5">
+            <div
+              className="bg-green-500 h-1.5 rounded-full transition-all"
+              style={{ width: `${Math.min(100, (project.stats.approved_duration_secs / project.target_duration_secs) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Footer row: delete button */}
       <div className="flex justify-end">

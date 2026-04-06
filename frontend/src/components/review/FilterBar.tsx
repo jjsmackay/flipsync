@@ -8,6 +8,7 @@ interface FilterBarProps {
 }
 
 const STATUS_OPTIONS = [
+  { value: '', label: 'All' },
   { value: 'pending,maybe', label: 'Pending + Maybe' },
   { value: 'pending', label: 'Pending' },
   { value: 'maybe', label: 'Maybe' },
@@ -15,6 +16,7 @@ const STATUS_OPTIONS = [
   { value: 'rejected', label: 'Rejected' },
   { value: 'clipping_warning', label: 'Clipping warning' },
   { value: 'below_threshold', label: 'Below threshold' },
+  { value: 'auto_rejected', label: 'Auto-rejected' },
 ]
 
 const SORT_OPTIONS = [

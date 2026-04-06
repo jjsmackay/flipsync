@@ -1,4 +1,5 @@
 import type { ProjectDetailStats, ProjectConfig } from '../../types/api'
+import { formatDurationCoarse as formatDuration } from '../../utils/format'
 import { ProgressBar } from '../ui/ProgressBar'
 
 interface StatsPanelProps {
@@ -6,12 +7,6 @@ interface StatsPanelProps {
   config: ProjectConfig
 }
 
-function formatDuration(secs: number): string {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
-}
 
 interface StatBoxProps {
   label: string

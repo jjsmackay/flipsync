@@ -11,6 +11,8 @@ import { BulkOperations } from '../components/review/BulkOperations'
 import { Timeline } from '../components/review/Timeline'
 import { KeyboardHelp } from '../components/review/KeyboardHelp'
 import { ExportButton } from '../components/export/ExportButton'
+import { formatDuration } from '../utils/format'
+
 
 export function ReviewQueuePage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -124,7 +126,7 @@ export function ReviewQueuePage() {
   }
 
   const sources = project?.stats.source_coverage ?? []
-  const totalDuration = segments.reduce((sum, s) => sum + s.duration_secs, 0)
+  const timelineSpan = segments.reduce((max, s) => Math.max(max, s.end_secs), 0)
 
   return (
     <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
@@ -134,7 +136,13 @@ export function ReviewQueuePage() {
           ← {project?.name ?? 'Dashboard'}
         </Link>
         <span className="text-gray-300">|</span>
-        <span className="text-sm text-gray-600">{pagination.total} segments</span>
+        {project && (
+          <span className="text-sm text-gray-600">
+            {formatDuration(project.stats.approved_duration_secs)} / {formatDuration(project.config.target_duration_secs)} approved
+          </span>
+        )}
+        <span className="text-gray-300">|</span>
+        <span className="text-sm text-gray-500">{pagination.total} segments</span>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => setShowHelp(h => !h)} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">? Shortcuts</button>
           {project && <ExportButton project={project} />}
@@ -149,7 +157,7 @@ export function ReviewQueuePage() {
       {/* Timeline */}
       {segments.length > 0 && (
         <div className="px-4 pb-2 shrink-0">
-          <Timeline segments={segments} totalDuration={totalDuration} selectedSegmentId={selectedId} onSegmentSelect={id => setSelectedId(id)} />
+          <Timeline segments={segments} totalDuration={timelineSpan} selectedSegmentId={selectedId} onSegmentSelect={id => setSelectedId(id)} />
         </div>
       )}
 

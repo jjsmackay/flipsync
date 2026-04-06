@@ -166,6 +166,32 @@ export function SegmentDetail({
           {segment.source_filename} &nbsp;·&nbsp; {formatTimestamp(segment.start_secs)} – {formatTimestamp(segment.end_secs)}
           &nbsp;({segment.duration_secs.toFixed(1)}s)
         </p>
+        {segment.flags && segment.flags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {segment.flags.map((flag) => {
+              const isCleanupError = flag.startsWith('cleanup_error')
+              return (
+                <span
+                  key={flag}
+                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs ${
+                    isCleanupError
+                      ? 'bg-red-50 text-red-700'
+                      : 'bg-amber-50 text-amber-700'
+                  }`}
+                  title={
+                    flag === 'short_transcript'
+                      ? 'Short segment: transcript confidence may be unreliable'
+                      : isCleanupError
+                        ? flag.replace('cleanup_error: ', '')
+                        : flag
+                  }
+                >
+                  {flag === 'short_transcript' ? 'Short transcript' : isCleanupError ? 'Cleanup error' : flag}
+                </span>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Waveform */}
@@ -206,9 +232,13 @@ export function SegmentDetail({
               {segment.transcript_edited !== null && (
                 <button
                   type="button"
-                  onClick={() => {
-                    void patchSegment(projectId, segment.id, { transcript_edited: null })
-                    onTranscriptChange(segment.id, '')
+                  onClick={async () => {
+                    try {
+                      await patchSegment(projectId, segment.id, { transcript_edited: null })
+                      onTranscriptChange(segment.id, segment.transcript ?? '')
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : 'Undo failed')
+                    }
                   }}
                   className="text-xs text-gray-400 hover:text-red-600 focus:outline-none"
                 >

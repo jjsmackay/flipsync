@@ -1,21 +1,18 @@
 import { useState } from 'react'
 import type { ProjectDetail } from '../../types/api'
 import { triggerExport, getExportDownloadUrl } from '../../api/client'
+import { formatDurationCoarse as formatDuration } from '../../utils/format'
 
 type ExportState = 'idle' | 'confirm' | 'exporting' | 'ready'
 
 interface ExportButtonProps {
   project: ProjectDetail
+  clippingCount?: number
+  noTranscriptCount?: number
 }
 
-function formatDuration(secs: number): string {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
-}
 
-export function ExportButton({ project }: ExportButtonProps) {
+export function ExportButton({ project, clippingCount = 0, noTranscriptCount = 0 }: ExportButtonProps) {
   const [state, setState] = useState<ExportState>('idle')
   const [exportError, setExportError] = useState<string | null>(null)
 
@@ -47,15 +44,23 @@ export function ExportButton({ project }: ExportButtonProps) {
 
   if (state === 'confirm') {
     return (
-      <div className="flex items-center gap-3 px-3 py-2 bg-blue-50 border border-blue-200 rounded text-xs">
+      <div className="flex flex-col gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded text-xs">
         <div className="text-gray-700">
-          <span className="font-medium">{approvedCount} segments</span>
-          {' · '}
-          <span>{formatDuration(approvedDuration)}</span>
+          <p className="font-medium">{approvedCount} segments · {formatDuration(approvedDuration)} of audio</p>
+          {clippingCount > 0 && (
+            <p className="text-amber-600 mt-1">Segments with clipping warnings: {clippingCount}</p>
+          )}
+          {noTranscriptCount > 0 && (
+            <p className="text-amber-600 mt-0.5">Segments without transcripts: {noTranscriptCount}</p>
+          )}
+          <p className="text-gray-500 mt-1">
+            This will clean and normalise all approved segments. The previous export (if any) will be replaced.
+          </p>
           {hasLowCoverage && (
-            <span className="ml-2 text-amber-600">⚠ Some sources have low coverage</span>
+            <p className="text-amber-600 mt-1">Some sources have low target speaker coverage.</p>
           )}
         </div>
+        <div className="flex items-center gap-2">
         <button
           onClick={() => setState('idle')}
           className="px-2 py-1 text-gray-500 hover:text-gray-700 border border-gray-300 rounded bg-white"
@@ -81,6 +86,7 @@ export function ExportButton({ project }: ExportButtonProps) {
         {exportError && (
           <span className="text-red-600">{exportError}</span>
         )}
+        </div>
       </div>
     )
   }
