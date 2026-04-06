@@ -230,8 +230,8 @@ Processing services should return the same flat format directly.
 - **Wave 1 (orchestrator core):** Complete.
 - **Wave 2 (processing services):** Complete. All four services (vocal-separation, diarisation, transcription, cleanup) implemented with tests.
 - **Wave 3 (orchestrator integration):** Complete. Service client, pipeline orchestration, polling, OOM retry, threshold re-evaluation all wired.
-- **Wave 5 (frontend scaffold):** Typed React foundation merged. Pages, hooks, API layer, types scaffolded.
-- **Next:** Wave 4 (Segments API + Export) and Wave 5 (frontend feature implementation).
+- **Wave 5 (frontend):** Complete. Project list, dashboard, review queue, export flow, keyboard nav, timeline. Merged to main.
+- **Next:** Wave 4 (Segments API + Export).
 
 ## Docker notes
 

@@ -22,6 +22,10 @@ You own the frontend (`frontend/`). Do not modify any service directory or the o
 - **Audio: full file download per segment, not streaming.** No Range header support. Segments are small (~1–2 MB).
 - **Error responses from the API** are shaped: `{"error": "snake_case", "message": "Human-readable.", "detail": {}}`.
 
+## Shared utilities
+
+- `src/utils/format.ts` — `formatDuration` (h/m/s) and `formatDurationCoarse` (h/m). Use these instead of local helpers.
+
 ## Commands
 
 - `pnpm install` — install dependencies
