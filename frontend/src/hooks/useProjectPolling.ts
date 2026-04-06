@@ -11,6 +11,7 @@ interface UseProjectPollingResult {
   project: ProjectDetail | null
   isLoading: boolean
   error: Error | null
+  refetch: () => Promise<void>
 }
 
 export function useProjectPolling(
@@ -32,11 +33,11 @@ export function useProjectPolling(
   // Use 3s when jobs are running, 10s when idle.
   const intervalMs = hasActiveJobs ? 3000 : 10000
 
-  const { data: project, isLoading, error } = usePolling(fetchFn, {
+  const { data: project, isLoading, error, refetch } = usePolling(fetchFn, {
     intervalMs,
     enabled,
     onData: handleData,
   })
 
-  return { project, isLoading, error }
+  return { project, isLoading, error, refetch }
 }

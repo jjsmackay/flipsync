@@ -157,13 +157,13 @@ export function reprocessSource(
 // ---- Transcription ----
 
 export function runTranscription(projectId: string): Promise<unknown> {
-  return request(`/projects/${projectId}/transcription`, {
+  return request(`/projects/${projectId}/transcription/run`, {
     method: 'POST',
   })
 }
 
 export function rerunSegmentTranscription(projectId: string, segmentId: string): Promise<unknown> {
-  return request(`/projects/${projectId}/segments/${segmentId}/transcription`, {
+  return request(`/projects/${projectId}/segments/${segmentId}/transcription/rerun`, {
     method: 'POST',
   })
 }

@@ -1,6 +1,6 @@
 // ---- Status enums ----
 
-export type ProjectStatus = 'new' | 'processing' | 'review' | 'complete'
+export type ProjectStatus = 'new' | 'ready' | 'processing' | 'review' | 'exporting' | 'exported'
 
 export type SegmentStatus =
   | 'pending'
@@ -12,8 +12,9 @@ export type SegmentStatus =
   | 'auto_rejected'
 
 export type SourceStatus =
-  | 'uploading'
+  | 'uploaded'
   | 'extracting'
+  | 'extraction_failed'
   | 'step1_pending'
   | 'step1_running'
   | 'step1_failed'
@@ -21,7 +22,6 @@ export type SourceStatus =
   | 'step2_running'
   | 'step2_failed'
   | 'complete'
-  | 'extraction_failed'
 
 // ---- Projects ----
 
@@ -38,6 +38,7 @@ export interface ProjectSummary {
   created_at: string
   updated_at: string
   stats: ProjectStats
+  target_duration_secs?: number
 }
 
 export interface ProjectConfig {
@@ -101,6 +102,7 @@ export interface Segment {
   transcript_confidence: number | null
   status: SegmentStatus
   clipping_warning: boolean
+  flags: string[] | null
   audio_url: string
 }
 
@@ -150,7 +152,7 @@ export interface PatchProjectRequest {
 
 export interface PatchSegmentRequest {
   status?: SegmentStatus
-  transcript_edited?: string
+  transcript_edited?: string | null
 }
 
 export interface BulkFilter {
