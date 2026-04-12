@@ -4,14 +4,13 @@ This is Wave 4 scope but included in Wave 1 to allow endpoint tests.
 """
 
 import json
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from db import get_conn, project_dir, project_exists
+from db import project_dir, require_project, utc_now
 from errors import AppError
 from state_machines import validate_segment_transition, BULK_ACTION_SOURCES
 from status import recompute_project_status
@@ -19,18 +18,22 @@ from status import recompute_project_status
 router = APIRouter(prefix="/projects/{project_id}/segments", tags=["segments"])
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _require_project(project_id: str):
-    if not project_exists(project_id):
-        raise AppError(404, "not_found", "Project not found.")
-    conn = get_conn(project_id)
-    p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        raise AppError(404, "not_found", "Project not found.")
-    return conn
+def _serialize_segment(row, project_id: str) -> dict:
+    return {
+        "id": row["id"],
+        "source_id": row["source_id"],
+        "source_filename": row["source_filename"],
+        "start_secs": row["start_secs"],
+        "end_secs": row["end_secs"],
+        "duration_secs": row["duration_secs"],
+        "match_confidence": row["match_confidence"],
+        "transcript": row["transcript"],
+        "transcript_edited": row["transcript_edited"],
+        "transcript_confidence": row["transcript_confidence"],
+        "status": row["status"],
+        "clipping_warning": bool(row["clipping_warning"]),
+        "audio_url": f"/projects/{project_id}/segments/{row['id']}/audio",
+    }
 
 
 VALID_SORT_FIELDS = {"match_confidence", "duration_secs", "start_secs", "transcript_confidence"}
@@ -52,7 +55,7 @@ async def list_segments(
     per_page: int = 50,
     count_only: bool = False,
 ):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     if sort not in VALID_SORT_FIELDS:
         raise AppError(422, "invalid_sort", f"sort must be one of {sorted(VALID_SORT_FIELDS)}.")
@@ -108,23 +111,7 @@ async def list_segments(
         [*params, per_page, offset],
     ).fetchall()
 
-    segments_out = []
-    for r in rows:
-        segments_out.append({
-            "id": r["id"],
-            "source_id": r["source_id"],
-            "source_filename": r["source_filename"],
-            "start_secs": r["start_secs"],
-            "end_secs": r["end_secs"],
-            "duration_secs": r["duration_secs"],
-            "match_confidence": r["match_confidence"],
-            "transcript": r["transcript"],
-            "transcript_edited": r["transcript_edited"],
-            "transcript_confidence": r["transcript_confidence"],
-            "status": r["status"],
-            "clipping_warning": bool(r["clipping_warning"]),
-            "audio_url": f"/projects/{project_id}/segments/{r['id']}/audio",
-        })
+    segments_out = [_serialize_segment(r, project_id) for r in rows]
 
     return {
         "segments": segments_out,
@@ -139,7 +126,7 @@ async def list_segments(
 
 @router.get("/{segment_id}/audio")
 async def get_segment_audio(project_id: str, segment_id: str):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
     seg = conn.execute(
         "SELECT raw_path FROM segments WHERE id=? AND project_id=?", (segment_id, project_id)
     ).fetchone()
@@ -160,9 +147,15 @@ class SegmentPatch(BaseModel):
 
 @router.patch("/{segment_id}")
 async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
     seg = conn.execute(
-        "SELECT * FROM segments WHERE id=? AND project_id=?", (segment_id, project_id)
+        """
+        SELECT seg.*, src.filename AS source_filename
+        FROM segments seg
+        JOIN sources src ON src.id = seg.source_id
+        WHERE seg.id=? AND seg.project_id=?
+        """,
+        (segment_id, project_id),
     ).fetchone()
     if seg is None:
         raise AppError(404, "not_found", "Segment not found.")
@@ -181,19 +174,29 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
     if body.transcript_edited is not None:
         updates["transcript_edited"] = body.transcript_edited
 
-    if updates:
-        updates["updated_at"] = _now()
-        set_clause = ", ".join(f"{k}=?" for k in updates)
-        conn.execute(
-            f"UPDATE segments SET {set_clause} WHERE id=?",
-            (*updates.values(), segment_id),
-        )
-        conn.commit()
-        if "status" in updates:
-            recompute_project_status(project_id)
+    if not updates:
+        return _serialize_segment(seg, project_id)
 
-    updated = conn.execute("SELECT * FROM segments WHERE id=?", (segment_id,)).fetchone()
-    return dict(updated)
+    updates["updated_at"] = utc_now()
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    conn.execute(
+        f"UPDATE segments SET {set_clause} WHERE id=?",
+        (*updates.values(), segment_id),
+    )
+    conn.commit()
+    if "status" in updates:
+        recompute_project_status(project_id)
+
+    updated = conn.execute(
+        """
+        SELECT seg.*, src.filename AS source_filename
+        FROM segments seg
+        JOIN sources src ON src.id = seg.source_id
+        WHERE seg.id=?
+        """,
+        (segment_id,),
+    ).fetchone()
+    return _serialize_segment(updated, project_id)
 
 
 class BulkFilter(BaseModel):
@@ -220,7 +223,7 @@ BULK_ACTION_TARGET: dict[str, str] = {
 
 @router.post("/bulk")
 async def bulk_action(project_id: str, body: BulkRequest):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     if body.action not in BULK_ACTION_TARGET:
         raise AppError(
@@ -262,7 +265,7 @@ async def bulk_action(project_id: str, body: BulkRequest):
         params.append(f.max_duration)
 
     where = " AND ".join(conditions)
-    now = _now()
+    now = utc_now()
     result = conn.execute(
         f"UPDATE segments SET status=?, updated_at=? WHERE {where}",
         [to_status, now, *params],

@@ -1,14 +1,9 @@
 """Project status recomputation — shared by jobs and routers."""
 
-from datetime import datetime, timezone
 from pathlib import Path
 
-from db import get_conn, project_dir
+from db import get_conn, project_dir, utc_now
 from state_machines import compute_project_status
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def recompute_project_status(project_id: str) -> None:
@@ -45,6 +40,6 @@ def recompute_project_status(project_id: str) -> None:
     if new_status != project["status"]:
         conn.execute(
             "UPDATE projects SET status=?, updated_at=? WHERE id=?",
-            (new_status, _now(), project_id),
+            (new_status, utc_now(), project_id),
         )
         conn.commit()

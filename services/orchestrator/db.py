@@ -6,6 +6,7 @@ Connections use WAL mode for concurrent reads during writes.
 
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -97,6 +98,25 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             (mf.name,),
         )
         conn.commit()
+
+
+def utc_now() -> str:
+    """Return the current UTC time as an ISO-8601 string with Z suffix."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def require_project(project_id: str) -> sqlite3.Connection:
+    """Return a DB connection for project_id, or raise AppError 404."""
+    # Import here to avoid circular dependency (errors imports nothing from db).
+    from errors import AppError
+
+    if not project_exists(project_id):
+        raise AppError(404, "not_found", "Project not found.")
+    conn = get_conn(project_id)
+    p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+    if p is None:
+        raise AppError(404, "not_found", "Project not found.")
+    return conn
 
 
 def list_project_ids() -> list[str]:

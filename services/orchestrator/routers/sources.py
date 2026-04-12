@@ -2,7 +2,6 @@
 
 import os
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -10,7 +9,7 @@ import aiofiles
 from fastapi import APIRouter, UploadFile, File
 from pydantic import BaseModel
 
-from db import get_conn, project_dir, project_exists
+from db import project_dir, require_project, utc_now
 from errors import AppError
 from jobs import enqueue
 from status import recompute_project_status
@@ -20,23 +19,9 @@ router = APIRouter(prefix="/projects/{project_id}/sources", tags=["sources"])
 CHUNK_SIZE = 1024 * 1024  # 1 MB streaming chunks
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _require_project(project_id: str):
-    if not project_exists(project_id):
-        raise AppError(404, "not_found", "Project not found.")
-    conn = get_conn(project_id)
-    p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        raise AppError(404, "not_found", "Project not found.")
-    return conn
-
-
 @router.post("", status_code=202)
 async def upload_source(project_id: str, file: UploadFile = File(...)):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     source_id = str(uuid.uuid4())
     filename = file.filename or "upload"
@@ -52,7 +37,7 @@ async def upload_source(project_id: str, file: UploadFile = File(...)):
                 break
             await out.write(chunk)
 
-    now = _now()
+    now = utc_now()
     conn.execute(
         """
         INSERT INTO sources (id, project_id, filename, file_path, status, created_at, updated_at)
@@ -79,7 +64,7 @@ class SourceDelete(BaseModel):
 
 @router.delete("/{source_id}")
 async def delete_source(project_id: str, source_id: str, body: SourceDelete):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     source = conn.execute(
         "SELECT * FROM sources WHERE id=? AND project_id=?", (source_id, project_id)

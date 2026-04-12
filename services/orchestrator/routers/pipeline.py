@@ -1,31 +1,16 @@
 """Pipeline control endpoints: start, reprocess, transcription triggers."""
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from db import get_conn, project_dir, project_exists
+from db import project_dir, require_project, utc_now
 from errors import AppError
 from jobs import enqueue
 from state_machines import validate_source_transition
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["pipeline"])
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _require_project(project_id: str):
-    if not project_exists(project_id):
-        raise AppError(404, "not_found", "Project not found.")
-    conn = get_conn(project_id)
-    p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        raise AppError(404, "not_found", "Project not found.")
-    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +20,7 @@ def _require_project(project_id: str):
 
 @router.post("/pipeline/start", status_code=202)
 async def start_pipeline(project_id: str):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     pending_sources = conn.execute(
         "SELECT id FROM sources WHERE project_id=? AND status='step1_pending'",
@@ -55,7 +40,7 @@ async def start_pipeline(project_id: str):
 
     conn.execute(
         "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
-        (_now(), project_id),
+        (utc_now(), project_id),
     )
     conn.commit()
 
@@ -75,7 +60,7 @@ class ReprocessRequest(BaseModel):
 
 @router.post("/sources/{source_id}/reprocess", status_code=202)
 async def reprocess_source(project_id: str, source_id: str, body: ReprocessRequest):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     source = conn.execute(
         "SELECT * FROM sources WHERE id=? AND project_id=?", (source_id, project_id)
@@ -103,7 +88,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         )
 
     enqueued = []
-    now = _now()
+    now = utc_now()
     current_status = source["status"]
 
     if "step1" in body.steps:
@@ -159,7 +144,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
 
 @router.post("/transcription/run", status_code=202)
 async def run_transcription(project_id: str):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     segments = conn.execute(
         """
@@ -188,7 +173,7 @@ async def run_transcription(project_id: str):
 
 @router.post("/segments/{segment_id}/transcription/rerun", status_code=202)
 async def rerun_segment_transcription(project_id: str, segment_id: str):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     segment = conn.execute(
         "SELECT id FROM segments WHERE id=? AND project_id=?", (segment_id, project_id)
@@ -209,7 +194,7 @@ async def rerun_segment_transcription(project_id: str, segment_id: str):
 
 @router.get("/jobs")
 async def list_jobs(project_id: str, status: Optional[str] = None, limit: int = 20):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     if status:
         rows = conn.execute(
@@ -232,7 +217,7 @@ async def list_jobs(project_id: str, status: Optional[str] = None, limit: int = 
 
 @router.post("/export", status_code=202)
 async def trigger_export(project_id: str):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     approved_count = conn.execute(
         "SELECT COUNT(*) FROM segments WHERE project_id=? AND status='approved'",
@@ -249,7 +234,7 @@ async def trigger_export(project_id: str):
 
     conn.execute(
         "UPDATE projects SET status='exporting', updated_at=? WHERE id=?",
-        (_now(), project_id),
+        (utc_now(), project_id),
     )
     conn.commit()
 
@@ -261,7 +246,7 @@ async def download_export(project_id: str):
     from fastapi.responses import FileResponse
     from db import project_dir
 
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
     p = conn.execute("SELECT name, status FROM projects WHERE id=?", (project_id,)).fetchone()
     if p["status"] != "exported":
         raise AppError(404, "export_not_ready", "Export has not completed.")

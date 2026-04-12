@@ -1,17 +1,16 @@
 """Project CRUD endpoints."""
 
 import json
+import shutil
 import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, project_exists
+from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, project_exists, utc_now
 from errors import AppError
 from state_machines import validate_segment_transition
-import shutil
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -19,10 +18,6 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _project_stats(project_id: str) -> dict:
@@ -105,6 +100,9 @@ def _project_detail(project_id: str) -> dict:
         "id": p["id"],
         "name": p["name"],
         "status": p["status"],
+        "created_at": p["created_at"],
+        "updated_at": p["updated_at"],
+        "target_duration_secs": p["target_duration_secs"],
         "config": {
             "whisper_model": p["whisper_model"],
             "language": p["language"],
@@ -171,6 +169,7 @@ async def list_projects():
             "status": p["status"],
             "created_at": p["created_at"],
             "updated_at": p["updated_at"],
+            "target_duration_secs": p["target_duration_secs"],
             "stats": {
                 "approved_count": stats_row["approved_count"] or 0,
                 "approved_duration_secs": stats_row["approved_duration_secs"] or 0.0,
@@ -183,7 +182,7 @@ async def list_projects():
 @router.post("", status_code=201)
 async def create_project(body: ProjectCreate):
     project_id = str(uuid.uuid4())
-    now = _now()
+    now = utc_now()
     create_project_db(project_id)
     conn = get_conn(project_id)
     conn.execute(
@@ -240,7 +239,7 @@ async def patch_project(project_id: str, body: ProjectPatch):
                 WHERE project_id=? AND status='below_threshold'
                   AND match_confidence >= ?
                 """,
-                (_now(), project_id, new_threshold),
+                (utc_now(), project_id, new_threshold),
             )
             conn.execute(
                 """
@@ -248,11 +247,11 @@ async def patch_project(project_id: str, body: ProjectPatch):
                 WHERE project_id=? AND status='pending'
                   AND match_confidence < ?
                 """,
-                (_now(), project_id, new_threshold),
+                (utc_now(), project_id, new_threshold),
             )
 
     if updates:
-        updates["updated_at"] = _now()
+        updates["updated_at"] = utc_now()
         set_clause = ", ".join(f"{k}=?" for k in updates)
         conn.execute(
             f"UPDATE projects SET {set_clause} WHERE id=?",

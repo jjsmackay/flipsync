@@ -1,33 +1,18 @@
 """Reference clip upload endpoint."""
 
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 import aiofiles
 from fastapi import APIRouter, UploadFile, File
 
-from db import get_conn, project_dir, project_exists
+from db import project_dir, require_project, utc_now
 from errors import AppError
 
 router = APIRouter(prefix="/projects/{project_id}/reference", tags=["reference"])
 
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 MIN_DURATION_SECS = 5.0
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _require_project(project_id: str):
-    if not project_exists(project_id):
-        raise AppError(404, "not_found", "Project not found.")
-    conn = get_conn(project_id)
-    p = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        raise AppError(404, "not_found", "Project not found.")
-    return conn
 
 
 def _get_duration(path: str) -> float:
@@ -66,7 +51,7 @@ def _get_duration(path: str) -> float:
 
 @router.post("")
 async def upload_reference(project_id: str, file: UploadFile = File(...)):
-    conn = _require_project(project_id)
+    conn = require_project(project_id)
 
     pdir = project_dir(project_id)
     dest = pdir / "reference.wav"
@@ -92,7 +77,7 @@ async def upload_reference(project_id: str, file: UploadFile = File(...)):
 
     conn.execute(
         "UPDATE projects SET reference_path='reference.wav', updated_at=? WHERE id=?",
-        (_now(), project_id),
+        (utc_now(), project_id),
     )
     conn.commit()
 

@@ -14,9 +14,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
-from db import get_conn, project_dir
+from db import get_conn, project_dir, utc_now as _now
 import service_client
-from status import recompute_project_status as _recompute_project_status, _now
+from status import recompute_project_status as _recompute_project_status
 
 logger = logging.getLogger(__name__)
 

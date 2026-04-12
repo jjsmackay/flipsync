@@ -89,8 +89,10 @@ export function patchProject(projectId: string, req: PatchProjectRequest): Promi
 }
 
 export function deleteProject(projectId: string, confirm: boolean): Promise<{ deleted: boolean }> {
-  return request(`/projects/${projectId}${toQueryString({ confirm })}`, {
+  return request(`/projects/${projectId}`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm }),
   })
 }
 
@@ -113,8 +115,10 @@ export function deleteSource(
   sourceId: string,
   confirm: boolean,
 ): Promise<{ deleted_segment_count: number; deleted_approved_count: number }> {
-  return request(`/projects/${projectId}/sources/${sourceId}${toQueryString({ confirm })}`, {
+  return request(`/projects/${projectId}/sources/${sourceId}`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm }),
   })
 }
 
@@ -147,10 +151,10 @@ export function reprocessSource(
   params?: Record<string, unknown>,
   confirm?: boolean,
 ): Promise<unknown> {
-  return request(`/projects/${projectId}/sources/${sourceId}/reprocess${toQueryString({ confirm })}`, {
+  return request(`/projects/${projectId}/sources/${sourceId}/reprocess`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ steps, params }),
+    body: JSON.stringify({ steps, params, confirm }),
   })
 }
 
