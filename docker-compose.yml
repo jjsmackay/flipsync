@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   orchestrator:
     build: ./services/orchestrator
@@ -6,7 +8,7 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - DATA_DIR=/data
+      - DATABASE_DIR=/data/projects
       - VOCAL_SEPARATION_URL=http://vocal-separation:8001
       - DIARISATION_URL=http://diarisation:8002
       - TRANSCRIPTION_URL=http://transcription:8003
@@ -16,6 +18,12 @@ services:
       - diarisation
       - transcription
       - cleanup
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
     networks:
       - flipsync
@@ -25,6 +33,14 @@ services:
     volumes:
       - ./data:/data
       - demucs-models:/root/.cache/torch
+    environment:
+      - DEMUCS_MODEL=htdemucs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     deploy:
       resources:
         reservations:
@@ -40,9 +56,15 @@ services:
     build: ./services/diarisation
     volumes:
       - ./data:/data
-      - pyannote-models:/root/.cache/huggingface
+      - pyannote-models:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     deploy:
       resources:
         reservations:
@@ -59,6 +81,14 @@ services:
     volumes:
       - ./data:/data
       - whisper-models:/root/.cache/huggingface
+    environment:
+      - WHISPER_MODEL=large-v2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     deploy:
       resources:
         reservations:
@@ -74,6 +104,12 @@ services:
     build: ./services/cleanup
     volumes:
       - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     networks:
       - flipsync
@@ -82,8 +118,16 @@ services:
     build: ./frontend
     ports:
       - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
     depends_on:
       - orchestrator
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     networks:
       - flipsync
