@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from errors import AppError, app_error_handler
 from jobs import recover_jobs, shutdown_runners
-from routers import projects, sources, reference, pipeline, segments
+from routers import projects, sources, reference, pipeline, segments, models, previews
 from service_client import SERVICE_URLS, check_health, close_client
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,11 @@ async def lifespan(app: FastAPI):
     # reference to each task so it is not garbage-collected mid-flight.
     tasks: set[asyncio.Task] = set()
     for name in SERVICE_URLS:
+        # xtts is an optional profile-gated service; a 300 s startup poll against
+        # an absent container is just log noise. Its readiness is checked
+        # on-demand by the Models/Previews endpoints via is_healthy.
+        if name == "xtts":
+            continue
         task = asyncio.create_task(check_health(name))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
@@ -100,6 +105,8 @@ app.include_router(sources.router)
 app.include_router(reference.router)
 app.include_router(pipeline.router)
 app.include_router(segments.router)
+app.include_router(models.router)
+app.include_router(previews.router)
 
 
 @app.get("/health")

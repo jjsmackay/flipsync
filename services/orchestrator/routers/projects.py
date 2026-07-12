@@ -73,10 +73,15 @@ def _project_stats(project_id: str) -> dict:
 def _active_jobs(project_id: str) -> list[dict]:
     conn = get_conn(project_id)
     rows = conn.execute(
-        "SELECT id, type, status, progress FROM jobs WHERE project_id=? AND status IN ('queued','running')",
+        "SELECT id, type, status, progress, progress_detail FROM jobs WHERE project_id=? AND status IN ('queued','running')",
         (project_id,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["progress_detail"] = json.loads(r["progress_detail"]) if r["progress_detail"] else None
+        out.append(d)
+    return out
 
 
 def _recent_failed_jobs(project_id: str) -> list[dict]:

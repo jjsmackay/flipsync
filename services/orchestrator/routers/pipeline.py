@@ -1,5 +1,6 @@
 """Pipeline control endpoints: start, reprocess, transcription triggers."""
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter
@@ -277,7 +278,13 @@ async def list_jobs(project_id: str, status: Optional[str] = None, limit: int = 
             (project_id, limit),
         ).fetchall()
 
-    return {"jobs": [dict(r) for r in rows]}
+    jobs_out = []
+    for r in rows:
+        d = dict(r)
+        if "progress_detail" in d:
+            d["progress_detail"] = json.loads(d["progress_detail"]) if d["progress_detail"] else None
+        jobs_out.append(d)
+    return {"jobs": jobs_out}
 
 
 # ---------------------------------------------------------------------------

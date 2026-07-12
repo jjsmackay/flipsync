@@ -352,6 +352,19 @@ def _update_progress(project_id: str, job_id: str, progress: int) -> None:
     conn.commit()
 
 
+def _update_progress_detail(project_id: str, job_id: str, detail: dict) -> None:
+    """Persist the full rich-progress object (JSON) for long-running jobs.
+
+    ``progress`` stays the 0-100 integer; ``progress_detail`` carries the
+    fine-tune epoch/step/loss/ETA object so the dashboard survives refreshes."""
+    conn = get_conn(project_id)
+    conn.execute(
+        "UPDATE jobs SET progress_detail=? WHERE id=?",
+        (json.dumps(detail), job_id),
+    )
+    conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Job handlers
 # ---------------------------------------------------------------------------
@@ -1219,7 +1232,171 @@ def _clear_transcription_error_flag(conn, segment_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Export handler (cleanup service + manifest + tar.gz)
+# Shared cleanup step (used by export and dataset_build)
+# ---------------------------------------------------------------------------
+
+
+class CleanupError(Exception):
+    """Raised by _run_cleanup on a submit failure or a job-level cleanup failure.
+
+    The message is the error string to surface on the failing job (and, for
+    dataset builds, the model row)."""
+
+
+async def _run_cleanup(
+    project_id: str,
+    project_row: Any,
+    segments: list,
+    job_id: str,
+    on_progress: Callable | None = None,
+) -> list[dict]:
+    """Submit a cleanup job for the given segments and poll until complete.
+
+    Each segment row must expose ``id`` and ``raw_path``. Cleaned WAVs are
+    written to ``export/{id}.wav`` on the shared volume. Returns the service's
+    per-segment ``results`` list. Raises CleanupError on submit failure or a
+    job-level cleanup failure.
+    """
+    data_prefix = _data_prefix()
+    cleanup_segments = [
+        {
+            "id": seg["id"],
+            "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
+            "output_path": f"{data_prefix}/projects/{project_id}/export/{seg['id']}.wav",
+        }
+        for seg in segments
+    ]
+
+    cleanup_payload = {
+        "job_id": job_id,
+        "segments": cleanup_segments,
+        "params": {
+            "target_lufs": project_row["target_lufs"],
+            "true_peak_dbtp": -2.0,
+            "lra": 7.0,
+            "highpass_hz": 80,
+            "silence_threshold_db": -50.0,
+            "silence_min_duration_secs": 0.1,
+            "clipping_threshold_db": -0.1,
+            "clipping_min_consecutive_samples": 3,
+            "output_sample_rate": 22050,
+            "output_channels": 1,
+        },
+    }
+
+    try:
+        await _submit_with_retry("cleanup", cleanup_payload)
+    except Exception as exc:
+        raise CleanupError(f"cleanup_submit_failed: {exc}")
+
+    result = await service_client.poll_until_complete("cleanup", job_id, on_progress=on_progress)
+    if result["status"] == "failed":
+        raise CleanupError(result.get("error", "unknown_error"))
+    return result.get("results", [])
+
+
+def _apply_cleanup_results(conn, results: list[dict]) -> None:
+    """Apply cleanup per-segment results to the database (commits on completion).
+
+    - FFmpeg error → ``auto_rejected`` status + ``cleanup_error`` flag
+    - silent-after-trim → ``auto_rejected`` status
+    - clipping → ``clipping_warning`` status + column + ``export_path``
+    - success → ``export_path`` recorded
+    """
+    now = _now()
+    for seg_result in results:
+        seg_id = seg_result["id"]
+
+        if seg_result.get("error"):
+            # FFmpeg error — auto_reject with cleanup_error flag
+            conn.execute(
+                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
+                (now, seg_id),
+            )
+            _add_flag(conn, seg_id, f"cleanup_error: {seg_result['error']}")
+
+        elif seg_result.get("auto_rejected"):
+            # Silent after trim
+            conn.execute(
+                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
+                (now, seg_id),
+            )
+
+        elif seg_result.get("clipping_warning"):
+            # Clipping detected — the cleaned WAV is still exported (with the
+            # flag recorded in the manifest); set the column, the status, AND
+            # export_path so the segment appears in the manifest.
+            conn.execute(
+                """
+                UPDATE segments
+                SET status='clipping_warning', clipping_warning=1, export_path=?, updated_at=?
+                WHERE id=?
+                """,
+                (f"export/{seg_id}.wav", now, seg_id),
+            )
+
+        else:
+            # Success — record export_path
+            conn.execute(
+                "UPDATE segments SET export_path=?, updated_at=? WHERE id=?",
+                (f"export/{seg_id}.wav", now, seg_id),
+            )
+
+    conn.commit()
+
+
+def _select_dataset_segments(
+    conn, mode: str, min_confidence: float | None
+) -> tuple[list, dict]:
+    """Select segments for a dataset build, applying training filters.
+
+    ``approved`` mode selects ``status='approved'``; ``auto`` mode selects
+    ``match_confidence >= min_confidence`` (default 0.85) with status not
+    ``rejected``/``auto_rejected``. Training filters then drop segments outside
+    the [1.0, 11.0] s range and any carrying a ``cleanup_error`` flag.
+
+    Returns ``(kept_rows, dropped)`` where ``dropped`` counts
+    ``{too_short, too_long, flagged}``.
+    """
+    if mode == "auto":
+        floor = min_confidence if min_confidence is not None else 0.85
+        rows = conn.execute(
+            """
+            SELECT seg.*, src.filename AS source_filename
+            FROM segments seg JOIN sources src ON src.id = seg.source_id
+            WHERE seg.match_confidence >= ?
+              AND seg.status NOT IN ('rejected', 'auto_rejected')
+            """,
+            (floor,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT seg.*, src.filename AS source_filename
+            FROM segments seg JOIN sources src ON src.id = seg.source_id
+            WHERE seg.status = 'approved'
+            """,
+        ).fetchall()
+
+    kept: list = []
+    dropped = {"too_short": 0, "too_long": 0, "flagged": 0}
+    for r in rows:
+        dur = r["duration_secs"] or 0.0
+        if dur < 1.0:
+            dropped["too_short"] += 1
+            continue
+        if dur > 11.0:
+            dropped["too_long"] += 1
+            continue
+        flags = json.loads(r["flags"]) if r["flags"] else []
+        if any(str(f).startswith("cleanup_error") for f in flags):
+            dropped["flagged"] += 1
+            continue
+        kept.append(r)
+    return kept, dropped
+
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -1421,6 +1598,7 @@ async def _handle_export(
             archive_tmp.unlink()
 
 
+
 def _write_manifest(
     project_id: str, project: Any, pdir: Path, export_dir: Path | None = None
 ) -> list[str]:
@@ -1516,6 +1694,383 @@ def _package_archive(
 
 
 # ---------------------------------------------------------------------------
+# Dataset build handler (v1.5) — shared cleanup + manifest for a model
+# ---------------------------------------------------------------------------
+
+
+async def _handle_dataset_build(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Build a fine-tune dataset for a model: select segments, clean any lacking
+    cleaned audio, write models/{model_id}/dataset.json (absolute audio paths)."""
+    conn = get_conn(project_id)
+    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    model_id = params.get("model_id")
+    mode = params.get("mode", "approved")
+    min_confidence = params.get("min_confidence")
+
+    def _fail_model(msg: str) -> None:
+        conn.execute(
+            "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
+            (msg, _now(), model_id),
+        )
+        conn.commit()
+
+    # Re-select at run time — approvals/thresholds may have moved since enqueue.
+    kept, dropped = _select_dataset_segments(conn, mode, min_confidence)
+    total_dur = sum((r["duration_secs"] or 0.0) for r in kept)
+    if total_dur < 300.0:
+        msg = f"insufficient dataset ({total_dur:.1f}s selected, 300s required)"
+        _fail_model(msg)
+        _fail_job(project_id, job_id, msg)
+        _recompute_project_status(project_id)
+        return
+
+    # Clean only segments that lack cleaned audio; cleanup occupies 0-80%.
+    to_clean = [r for r in kept if r["export_path"] is None]
+
+    def on_progress(result):
+        progress = result.get("progress", 0)
+        if progress:
+            _update_progress(project_id, job_id, int(progress * 0.8))
+
+    if to_clean:
+        try:
+            results = await _run_cleanup(project_id, project, to_clean, job_id, on_progress)
+        except CleanupError as exc:
+            _fail_model(str(exc))
+            _fail_job(project_id, job_id, str(exc))
+            _recompute_project_status(project_id)
+            return
+        _apply_cleanup_results(conn, results)
+
+    _update_progress(project_id, job_id, 80)
+
+    # Re-read the kept set: some may have been auto_rejected during cleanup;
+    # keep only those with cleaned audio available (absolute export path).
+    kept_ids = [r["id"] for r in kept]
+    placeholders = ",".join("?" * len(kept_ids))
+    rows = conn.execute(
+        f"""
+        SELECT seg.*, src.filename AS source_filename
+        FROM segments seg JOIN sources src ON src.id = seg.source_id
+        WHERE seg.id IN ({placeholders})
+        """,
+        kept_ids,
+    ).fetchall()
+    final = [r for r in rows if r["status"] != "auto_rejected" and r["export_path"] is not None]
+
+    # Write the dataset manifest (export-manifest schema, absolute audio paths).
+    data_prefix = _data_prefix()
+    models_dir = project_dir(project_id) / "models" / model_id
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_segments = []
+    total_duration = 0.0
+    for r in final:
+        text = r["transcript_edited"] or r["transcript"]
+        if text is None:
+            logger.warning("Segment %s has no transcript, excluding from dataset", r["id"])
+            continue
+        dur = r["duration_secs"] or 0.0
+        total_duration += dur
+        manifest_segments.append({
+            "id": r["id"],
+            "audio_file": f"{data_prefix}/projects/{project_id}/{r['export_path']}",
+            "text": text,
+            "source": r["source_filename"],
+            "start_secs": r["start_secs"],
+            "end_secs": r["end_secs"],
+            "duration_secs": dur,
+            "match_confidence": r["match_confidence"],
+            "transcript_confidence": r["transcript_confidence"],
+        })
+
+    manifest = {
+        "version": "1",
+        "project_id": project_id,
+        "exported_at": _now(),
+        "speaker": "target",
+        "segments": manifest_segments,
+        "selection": {
+            "mode": mode,
+            "min_confidence": min_confidence,
+            "dropped": dropped,
+        },
+        "stats": {
+            "segment_count": len(manifest_segments),
+            "total_duration_secs": total_duration,
+        },
+    }
+    (models_dir / "dataset.json").write_text(json.dumps(manifest, indent=2))
+
+    conn.execute(
+        """
+        UPDATE models
+        SET segment_count=?, dataset_duration_secs=?, dataset_manifest_path=?, updated_at=?
+        WHERE id=?
+        """,
+        (len(manifest_segments), total_duration, f"models/{model_id}/dataset.json", _now(), model_id),
+    )
+    conn.commit()
+
+    _update_progress(project_id, job_id, 100)
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+
+# ---------------------------------------------------------------------------
+# Fine-tune handler (v1.5) — XTTS service
+# ---------------------------------------------------------------------------
+
+
+async def _handle_finetune(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Submit an XTTS-v2 fine-tune and poll (10 s) to completion.
+
+    Guards on the model row (dataset build must have succeeded). Mirrors the
+    vocal-separation OOM retry: on failure with retry_with, resubmit once with
+    merged params and a fresh job id."""
+    conn = get_conn(project_id)
+    model_id = params.get("model_id")
+    hyper = params.get("params", {}) or {}
+
+    model = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
+    if model is None or model["dataset_manifest_path"] is None or model["status"] != "pending":
+        _fail_job(project_id, job_id, "dataset build did not complete")
+        _recompute_project_status(project_id)
+        return
+
+    conn.execute(
+        "UPDATE models SET status='training', updated_at=? WHERE id=?",
+        (_now(), model_id),
+    )
+    conn.commit()
+
+    project = conn.execute("SELECT language FROM projects WHERE id=?", (project_id,)).fetchone()
+    language = project["language"] or "en"
+
+    data_prefix = _data_prefix()
+    manifest_path = f"{data_prefix}/projects/{project_id}/{model['dataset_manifest_path']}"
+    output_dir = f"{data_prefix}/projects/{project_id}/models/{model_id}"
+
+    hyperparams = {
+        "epochs": hyper.get("epochs", 10),
+        "batch_size": hyper.get("batch_size", 3),
+        "grad_accum": hyper.get("grad_accum", 1),
+        "learning_rate": hyper.get("learning_rate", 5e-6),
+    }
+
+    def make_payload(hp: dict) -> dict:
+        return {
+            "job_id": str(uuid.uuid4()),
+            "type": "finetune",
+            "manifest_path": manifest_path,
+            "output_dir": output_dir,
+            "params": {**hp, "language": language, "eval_split": 0.1},
+        }
+
+    def on_progress(result):
+        detail = result.get("progress")
+        if not isinstance(detail, dict):
+            return
+        epoch = detail.get("epoch") or 0
+        total_epochs = detail.get("total_epochs") or 1
+        step = detail.get("step") or 0
+        total_steps = detail.get("total_steps") or 1
+        pct = int(((epoch - 1) + step / max(total_steps, 1)) / max(total_epochs, 1) * 100)
+        _update_progress(project_id, job_id, max(0, min(99, pct)))
+        _update_progress_detail(project_id, job_id, detail)
+
+    def _fail(msg: str) -> None:
+        conn.execute(
+            "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
+            (msg, _now(), model_id),
+        )
+        conn.commit()
+        _fail_job(project_id, job_id, msg)
+        _recompute_project_status(project_id)
+
+    payload = make_payload(hyperparams)
+    try:
+        await _submit_with_retry("xtts", payload)
+    except Exception as exc:
+        _fail(f"submit_failed: {exc}")
+        return
+
+    result = await service_client.poll_until_complete(
+        "xtts", payload["job_id"], interval_secs=10.0, on_progress=on_progress
+    )
+
+    if result["status"] == "failed":
+        retry_with = result.get("retry_with")
+        if retry_with:
+            logger.info("Fine-tune OOM for model %s, retrying with %s", model_id, retry_with)
+            retry_payload = make_payload({**hyperparams, **retry_with})
+            try:
+                await _submit_with_retry("xtts", retry_payload)
+                result = await service_client.poll_until_complete(
+                    "xtts", retry_payload["job_id"], interval_secs=10.0, on_progress=on_progress
+                )
+            except Exception as exc:
+                result = {"status": "failed", "error": str(exc)}
+
+        if result["status"] == "failed":
+            _fail(result.get("error", "unknown_error"))
+            return
+
+    res = result.get("result") or {}
+    conn.execute(
+        """
+        UPDATE models
+        SET status='ready', checkpoint_dir=?, eval_loss=?, updated_at=?
+        WHERE id=?
+        """,
+        (f"models/{model_id}", res.get("final_eval_loss"), _now(), model_id),
+    )
+    conn.commit()
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+
+# ---------------------------------------------------------------------------
+# Preview handler (v1.5) — XTTS synthesise
+# ---------------------------------------------------------------------------
+
+
+def _resolve_conditioning(
+    conn, project_row: Any, project_id: str, source: str | None, segment_count: int
+) -> tuple[str, list[str]]:
+    """Resolve a conditioning source to absolute WAV paths on /data.
+
+    Returns ``(resolved_source, abs_paths)``. Raises LookupError when the
+    requested (or, for source=None, any) source has no audio available.
+
+    - ``reference_clip`` → the project reference clip (single element)
+    - ``segments_raw`` → top-N by match_confidence, status not rejected/
+      auto_rejected, duration 2-12 s → raw_path
+    - ``segments_cleaned`` → same query + export_path present → export_path
+    - ``None`` → best available: cleaned, then raw, then reference
+    """
+    data_prefix = _data_prefix()
+
+    def _abs(rel: str) -> str:
+        return f"{data_prefix}/projects/{project_id}/{rel}"
+
+    def try_reference():
+        ref = project_row["reference_path"]
+        if ref:
+            return "reference_clip", [_abs(ref)]
+        return None
+
+    def try_segments(cleaned: bool):
+        col = "export_path" if cleaned else "raw_path"
+        extra = "AND seg.export_path IS NOT NULL" if cleaned else ""
+        rows = conn.execute(
+            f"""
+            SELECT seg.{col} AS p FROM segments seg
+            WHERE seg.status NOT IN ('rejected', 'auto_rejected')
+              AND seg.duration_secs BETWEEN 2 AND 12
+              {extra}
+            ORDER BY seg.match_confidence DESC
+            LIMIT ?
+            """,
+            (segment_count,),
+        ).fetchall()
+        if rows:
+            return ("segments_cleaned" if cleaned else "segments_raw"), [_abs(r["p"]) for r in rows]
+        return None
+
+    if source == "reference_clip":
+        res = try_reference()
+        if res:
+            return res
+        raise LookupError("no reference clip available")
+    if source == "segments_raw":
+        res = try_segments(False)
+        if res:
+            return res
+        raise LookupError("no raw segments available")
+    if source == "segments_cleaned":
+        res = try_segments(True)
+        if res:
+            return res
+        raise LookupError("no cleaned segments available")
+
+    # source is None: prefer cleaned, then raw, then reference.
+    for attempt in (lambda: try_segments(True), lambda: try_segments(False), try_reference):
+        res = attempt()
+        if res:
+            return res
+    raise LookupError("no conditioning audio available")
+
+
+async def _handle_preview(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Synthesise a preview WAV via the XTTS service (zero-shot or fine-tuned)."""
+    conn = get_conn(project_id)
+    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+    text = params.get("text", "")
+    model_id = params.get("model_id")
+    cond = params.get("conditioning") or {}
+    source = cond.get("source")
+    segment_count = cond.get("segment_count", 5)
+
+    checkpoint_dir = None
+    if model_id:
+        model = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
+        if model is None or model["status"] != "ready":
+            _fail_job(project_id, job_id, "model_not_ready")
+            _recompute_project_status(project_id)
+            return
+        cp = model["checkpoint_dir"] or f"models/{model_id}"
+        checkpoint_dir = f"{_data_prefix()}/projects/{project_id}/{cp}"
+
+    try:
+        _resolved, reference_wavs = _resolve_conditioning(
+            conn, project, project_id, source, segment_count
+        )
+    except LookupError as exc:
+        _fail_job(project_id, job_id, f"conditioning_unavailable: {exc}")
+        _recompute_project_status(project_id)
+        return
+
+    previews_dir = project_dir(project_id) / "previews"
+    previews_dir.mkdir(parents=True, exist_ok=True)
+    output_path = f"{_data_prefix()}/projects/{project_id}/previews/{job_id}.wav"
+
+    payload = {
+        "job_id": job_id,
+        "type": "synthesise",
+        "text": text,
+        "language": project["language"] or "en",
+        "reference_wavs": reference_wavs,
+        "checkpoint_dir": checkpoint_dir,
+        "output_path": output_path,
+        "params": {"temperature": 0.65},
+    }
+
+    try:
+        await _submit_with_retry("xtts", payload)
+    except Exception as exc:
+        _fail_job(project_id, job_id, f"submit_failed: {exc}")
+        _recompute_project_status(project_id)
+        return
+
+    result = await service_client.poll_until_complete("xtts", job_id)
+
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "unknown_error"))
+        _recompute_project_status(project_id)
+        return
+
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+
+# ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
 
@@ -1546,6 +2101,9 @@ HANDLERS: dict[str, Callable] = {
     "transcription_bulk": _handle_transcription_bulk,
     "transcription_segment": _handle_transcription_segment,
     "export": _handle_export,
+    "dataset_build": _handle_dataset_build,
+    "finetune": _handle_finetune,
+    "preview": _handle_preview,
 }
 
 
