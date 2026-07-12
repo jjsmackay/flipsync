@@ -36,39 +36,39 @@ export function StatsPanel({ stats, config }: StatsPanelProps) {
         <StatBox
           label="Approved"
           value={stats.approved_count}
-          colorClass="bg-green-50 text-green-800"
+          colorClass="bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300"
         />
         <StatBox
           label="Auto-approved"
           value={stats.auto_approved_count}
-          colorClass="bg-teal-50 text-teal-800"
+          colorClass="bg-teal-50 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300"
         />
         <StatBox
           label="Pending"
           value={stats.pending_count}
-          colorClass="bg-gray-50 text-gray-800"
+          colorClass="bg-gray-50 text-gray-800 dark:bg-gray-800 dark:text-gray-200"
         />
         <StatBox
           label="Maybe"
           value={stats.maybe_count}
-          colorClass="bg-yellow-50 text-yellow-800"
+          colorClass="bg-yellow-50 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300"
         />
         <StatBox
           label="Rejected"
           value={stats.rejected_count}
-          colorClass="bg-red-50 text-red-800"
+          colorClass="bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300"
         />
         <StatBox
           label="Below threshold"
           value={stats.below_threshold_count}
-          colorClass="bg-gray-100 text-gray-600"
+          colorClass="bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
         />
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-4">
-        <p className="text-sm font-medium text-gray-700 mb-2">
+      <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           Approved duration
-          <span className="ml-2 text-xs font-normal text-gray-400">(includes auto-approved)</span>
+          <span className="ml-2 text-xs font-normal text-gray-400 dark:text-gray-500">(includes auto-approved)</span>
         </p>
         <ProgressBar
           value={progressValue}

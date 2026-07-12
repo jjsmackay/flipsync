@@ -40,12 +40,12 @@ const DEFAULT_ORDER_FOR_SORT: Record<string, 'asc' | 'desc'> = {
 
 export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
   return (
-    <div className="flex flex-wrap gap-3 items-center py-2 px-4 bg-white border-b border-gray-200">
+    <div className="flex flex-wrap gap-3 items-center py-2 px-4 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
       {/* Status */}
-      <label className="flex items-center gap-1.5 text-sm text-gray-600">
+      <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
         Status
         <select
-          className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm text-gray-800 dark:text-gray-100 bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400"
           value={filter.status}
           onChange={e => onChange({ status: e.target.value })}
         >
@@ -59,10 +59,10 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
 
       {/* Source — only show if multiple sources */}
       {sources.length > 1 && (
-        <label className="flex items-center gap-1.5 text-sm text-gray-600">
+        <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
           Source
           <select
-            className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400 max-w-[180px] truncate"
+            className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm text-gray-800 dark:text-gray-100 bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400 max-w-[180px] truncate"
             value={filter.source_id}
             onChange={e => onChange({ source_id: e.target.value })}
           >
@@ -77,7 +77,7 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
       )}
 
       {/* Min confidence */}
-      <label className="flex items-center gap-1.5 text-sm text-gray-600">
+      <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
         Min confidence
         <input
           type="range"
@@ -88,13 +88,13 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
           onChange={e => onChange({ min_confidence: parseFloat(e.target.value) })}
           className="w-24 accent-indigo-600"
         />
-        <span className="font-mono text-xs text-gray-700 w-8 text-right">
+        <span className="font-mono text-xs text-gray-700 dark:text-gray-300 w-8 text-right">
           {(filter.min_confidence * 100).toFixed(0)}%
         </span>
       </label>
 
       {/* Min duration */}
-      <label className="flex items-center gap-1.5 text-sm text-gray-600">
+      <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
         Min duration
         <input
           type="number"
@@ -103,16 +103,16 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
           value={filter.min_duration || ''}
           placeholder="0"
           onChange={e => onChange({ min_duration: parseFloat(e.target.value) || 0 })}
-          className="border border-gray-300 rounded px-2 py-1 text-sm w-16 text-gray-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm w-16 text-gray-800 dark:text-gray-100 dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400"
         />
-        <span className="text-xs text-gray-500">s</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">s</span>
       </label>
 
       {/* Sort */}
-      <label className="flex items-center gap-1.5 text-sm text-gray-600">
+      <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
         Sort
         <select
-          className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+          className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm text-gray-800 dark:text-gray-100 bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-indigo-400"
           value={filter.sort}
           onChange={e => {
             const sort = e.target.value
@@ -131,7 +131,7 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
       <button
         type="button"
         onClick={() => onChange({ order: filter.order === 'asc' ? 'desc' : 'asc' })}
-        className="border border-gray-300 rounded px-2 py-1 text-sm bg-white hover:bg-gray-50 text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+        className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm bg-white dark:bg-gray-900 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-400"
         title={filter.order === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
       >
         {filter.order === 'asc' ? '↑' : '↓'}

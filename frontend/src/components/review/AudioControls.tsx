@@ -32,7 +32,7 @@ export function AudioControls({
         type="button"
         onClick={onRestart}
         title="Restart (R)"
-        className="text-gray-500 hover:text-gray-800 text-lg leading-none focus:outline-none focus:ring-2 focus:ring-indigo-400 rounded"
+        className="text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 text-lg leading-none focus:outline-none focus:ring-2 focus:ring-indigo-400 rounded"
       >
         ↩
       </button>
@@ -48,7 +48,7 @@ export function AudioControls({
       </button>
 
       {/* Time display */}
-      <span className="font-mono text-xs text-gray-600 tabular-nums min-w-[72px]">
+      <span className="font-mono text-xs text-gray-600 dark:text-gray-400 tabular-nums min-w-[72px]">
         {formatTime(currentTime)} / {formatTime(duration)}
       </span>
 
@@ -63,7 +63,7 @@ export function AudioControls({
               'px-1.5 py-0.5 rounded text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400',
               playbackRate === rate
                 ? 'bg-indigo-600 text-white'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600',
             ].join(' ')}
           >
             {rate}×

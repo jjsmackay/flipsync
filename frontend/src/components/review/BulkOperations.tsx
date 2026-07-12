@@ -143,33 +143,33 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
   }
 
   return (
-    <div className="border border-slate-200 rounded-lg bg-white">
+    <div className="border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-gray-800">
       <button
         onClick={() => setExpanded(e => !e)}
-        className="w-full flex items-center justify-between px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 rounded-lg"
+        className="w-full flex items-center justify-between px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg"
       >
         <span>Bulk operations</span>
-        <span className="text-xs text-slate-400">{expanded ? '▲' : '▼'}</span>
+        <span className="text-xs text-slate-400 dark:text-slate-500">{expanded ? '▲' : '▼'}</span>
       </button>
 
       {expanded && (
         <div className="px-4 pb-4 space-y-4">
           {resultCount !== null && (
-            <div className="rounded bg-green-50 border border-green-200 text-green-800 text-sm px-3 py-2">
+            <div className="rounded bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-300 text-sm px-3 py-2">
               Applied — {resultCount} segment{resultCount !== 1 ? 's' : ''} affected.
             </div>
           )}
 
           {/* Presets */}
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Presets</p>
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Presets</p>
             <div className="flex flex-wrap gap-2">
               {PRESETS.map((preset, i) => (
                 <button
                   key={i}
                   onClick={() => handlePreset(i)}
                   disabled={applyingPreset !== null}
-                  className="text-xs px-3 py-1.5 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="text-xs px-3 py-1.5 rounded border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 hover:bg-slate-100 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 dark:text-slate-200"
                 >
                   {applyingPreset === i ? 'Applying…' : preset.label}
                 </button>
@@ -177,18 +177,18 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
             </div>
           </div>
 
-          <hr className="border-slate-200" />
+          <hr className="border-slate-200 dark:border-slate-700" />
 
           {/* Custom */}
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Custom</p>
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Custom</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Action</label>
+                <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Action</label>
                 <select
                   value={action}
                   onChange={e => setAction(e.target.value as BulkSegmentRequest['action'])}
-                  className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                  className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 >
                   <option value="approve">Approve</option>
                   <option value="reject">Reject</option>
@@ -198,11 +198,11 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
               </div>
 
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Status filter</label>
+                <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Status filter</label>
                 <select
                   value={filterStatus}
                   onChange={e => setFilterStatus(e.target.value as SegmentStatus | '')}
-                  className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                  className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 >
                   <option value="">Any</option>
                   {STATUS_VALUES.map(s => (
@@ -212,7 +212,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
               </div>
 
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Min confidence</label>
+                <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Min confidence</label>
                 <input
                   type="number"
                   min={0}
@@ -221,12 +221,12 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   value={minConfidence}
                   onChange={e => setMinConfidence(e.target.value)}
                   placeholder="e.g. 0.85"
-                  className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                  className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 />
               </div>
 
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Min duration (s)</label>
+                <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Min duration (s)</label>
                 <input
                   type="number"
                   min={0}
@@ -234,12 +234,12 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   value={minDuration}
                   onChange={e => setMinDuration(e.target.value)}
                   placeholder="e.g. 2.0"
-                  className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                  className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 />
               </div>
 
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Max duration (s)</label>
+                <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Max duration (s)</label>
                 <input
                   type="number"
                   min={0}
@@ -247,17 +247,17 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   value={maxDuration}
                   onChange={e => setMaxDuration(e.target.value)}
                   placeholder="e.g. 2.0"
-                  className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                  className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 />
               </div>
 
               {sources.length > 1 && (
                 <div>
-                  <label className="block text-xs text-slate-600 mb-1">Source</label>
+                  <label className="block text-xs text-slate-600 dark:text-slate-400 mb-1">Source</label>
                   <select
                     value={sourceId}
                     onChange={e => setSourceId(e.target.value)}
-                    className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                    className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                   >
                     <option value="">All sources</option>
                     {sources.map(s => (
@@ -269,7 +269,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
             </div>
 
             <div className="flex items-center gap-3 mt-3">
-              <span className="text-sm text-slate-600">
+              <span className="text-sm text-slate-600 dark:text-slate-400">
                 {previewing
                   ? 'Counting…'
                   : previewCount !== null
@@ -287,7 +287,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
             </div>
 
             {bulkError && (
-              <p className="mt-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">
+              <p className="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-2 py-1">
                 {bulkError}
               </p>
             )}
