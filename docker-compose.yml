@@ -82,6 +82,8 @@ services:
     image: ghcr.io/jjsmackay/flipsync/frontend:latest
     ports:
       - "3000:3000"
+    environment:
+      - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-}
     depends_on:
       - orchestrator
     restart: unless-stopped
