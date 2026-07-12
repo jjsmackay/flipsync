@@ -316,7 +316,7 @@ async def _handle_extract_audio(
     conn.execute(
         """
         UPDATE sources
-        SET status='step1_pending', audio_path=?, duration_secs=?, updated_at=?
+        SET status='separation_pending', audio_path=?, duration_secs=?, updated_at=?
         WHERE id=?
         """,
         (f"audio/raw/{source_id}.wav", duration_secs, _now(), source_id),
@@ -352,7 +352,7 @@ async def _handle_vocal_separation(
     """Submit vocal separation to external service and poll until complete.
 
     On OOM failure with retry_with_chunk_secs: resubmit with chunk_secs.
-    On second failure: mark source step1_failed.
+    On second failure: mark source separation_failed.
     """
 
 
@@ -363,9 +363,9 @@ async def _handle_vocal_separation(
         _recompute_project_status(project_id)
         return
 
-    # Transition source to step1_running
+    # Transition source to separation_running
     conn.execute(
-        "UPDATE sources SET status='step1_running', step1_error=NULL, updated_at=? WHERE id=?",
+        "UPDATE sources SET status='separation_running', separation_error=NULL, updated_at=? WHERE id=?",
         (_now(), source_id),
     )
     conn.commit()
@@ -387,7 +387,7 @@ async def _handle_vocal_separation(
         await _submit_with_retry("vocal_separation", payload)
     except Exception as exc:
         conn.execute(
-            "UPDATE sources SET status='step1_failed', step1_error=?, updated_at=? WHERE id=?",
+            "UPDATE sources SET status='separation_failed', separation_error=?, updated_at=? WHERE id=?",
             (str(exc), _now(), source_id),
         )
         conn.commit()
@@ -424,7 +424,7 @@ async def _handle_vocal_separation(
         if result["status"] == "failed":
             error = result.get("error", "unknown_error")
             conn.execute(
-                "UPDATE sources SET status='step1_failed', step1_error=?, updated_at=? WHERE id=?",
+                "UPDATE sources SET status='separation_failed', separation_error=?, updated_at=? WHERE id=?",
                 (error, _now(), source_id),
             )
             conn.commit()
@@ -435,7 +435,7 @@ async def _handle_vocal_separation(
     conn.execute(
         """
         UPDATE sources
-        SET status='step2_pending', vocals_path=?, step1_model=?, step1_error=NULL, updated_at=?
+        SET status='diarisation_pending', vocals_path=?, separation_model=?, separation_error=NULL, updated_at=?
         WHERE id=?
         """,
         (f"audio/vocals/{source_id}.wav", model, _now(), source_id),
@@ -451,8 +451,8 @@ async def _handle_vocal_separation(
 def _auto_enqueue_diarisation(project_id: str, source_id: str) -> None:
     """After vocal separation succeeds, auto-enqueue diarisation for this source.
 
-    This is the reference gate. With a reference set, step 2 chains straight
-    through. Without one, the source rests at step2_pending (untouched) and the
+    This is the reference gate. With a reference set, diarisation chains straight
+    through. Without one, the source rests at diarisation_pending (untouched) and the
     project settles into awaiting_reference; POST /pipeline/continue picks up
     from here once a reference is set.
     """
@@ -485,16 +485,16 @@ async def _handle_diarisation(
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     if not project["reference_path"]:
         conn.execute(
-            "UPDATE sources SET status='step2_failed', step2_error='no_reference_clip', updated_at=? WHERE id=?",
+            "UPDATE sources SET status='diarisation_failed', diarisation_error='no_reference_clip', updated_at=? WHERE id=?",
             (_now(), source_id),
         )
         conn.commit()
         _fail_job(project_id, job_id, "no_reference_clip")
         return
 
-    # Transition source to step2_running
+    # Transition source to diarisation_running
     conn.execute(
-        "UPDATE sources SET status='step2_running', step2_error=NULL, updated_at=? WHERE id=?",
+        "UPDATE sources SET status='diarisation_running', diarisation_error=NULL, updated_at=? WHERE id=?",
         (_now(), source_id),
     )
     conn.commit()
@@ -516,7 +516,7 @@ async def _handle_diarisation(
         await _submit_with_retry("diarisation", payload)
     except Exception as exc:
         conn.execute(
-            "UPDATE sources SET status='step2_failed', step2_error=?, updated_at=? WHERE id=?",
+            "UPDATE sources SET status='diarisation_failed', diarisation_error=?, updated_at=? WHERE id=?",
             (str(exc), _now(), source_id),
         )
         conn.commit()
@@ -534,7 +534,7 @@ async def _handle_diarisation(
     if result["status"] == "failed":
         error = result.get("error", "unknown_error")
         conn.execute(
-            "UPDATE sources SET status='step2_failed', step2_error=?, updated_at=? WHERE id=?",
+            "UPDATE sources SET status='diarisation_failed', diarisation_error=?, updated_at=? WHERE id=?",
             (error, _now(), source_id),
         )
         conn.commit()
@@ -572,7 +572,7 @@ async def _handle_diarisation(
     conn.execute(
         """
         UPDATE sources
-        SET status='complete', coverage_ratio=?, step2_error=NULL, updated_at=?
+        SET status='complete', coverage_ratio=?, diarisation_error=NULL, updated_at=?
         WHERE id=?
         """,
         (coverage, now, source_id),
@@ -592,7 +592,7 @@ def _maybe_auto_transcribe(project_id: str) -> None:
     conn = get_conn(project_id)
     in_progress = conn.execute(
         """SELECT COUNT(*) FROM sources
-           WHERE project_id=? AND status IN ('step1_pending','step1_running','step2_pending','step2_running')""",
+           WHERE project_id=? AND status IN ('separation_pending','separation_running','diarisation_pending','diarisation_running')""",
         (project_id,),
     ).fetchone()[0]
     if in_progress > 0:

@@ -25,7 +25,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _insert_source(conn, project_id, status="step1_pending", vocals_path=None):
+def _insert_source(conn, project_id, status="separation_pending", vocals_path=None):
     source_id = str(uuid.uuid4())
     now = _now()
     conn.execute(
@@ -90,39 +90,39 @@ def _enqueue_and_run(project_id, job_type, source_id=None, params=None):
 class TestComputeStatusAwaitingReference:
     def test_processing_wins_with_active_jobs(self):
         # A running scout counts as an active job → processing, even with no
-        # reference and a step2_pending source.
+        # reference and a diarisation_pending source.
         assert compute_project_status(
             "processing", has_sources=True, has_active_jobs=True,
             all_sources_complete=False, export_complete=False,
-            reference_set=False, has_step2_pending=True,
+            reference_set=False, has_diarisation_pending=True,
         ) == "processing"
 
     def test_review_wins_when_all_complete(self):
         assert compute_project_status(
             "processing", has_sources=True, has_active_jobs=False,
             all_sources_complete=True, export_complete=False,
-            reference_set=False, has_step2_pending=False,
+            reference_set=False, has_diarisation_pending=False,
         ) == "review"
 
-    def test_awaiting_reference_when_step2_pending_and_no_reference(self):
+    def test_awaiting_reference_when_diarisation_pending_and_no_reference(self):
         assert compute_project_status(
             "processing", has_sources=True, has_active_jobs=False,
             all_sources_complete=False, export_complete=False,
-            reference_set=False, has_step2_pending=True,
+            reference_set=False, has_diarisation_pending=True,
         ) == "awaiting_reference"
 
     def test_ready_when_reference_set(self):
         assert compute_project_status(
             "processing", has_sources=True, has_active_jobs=False,
             all_sources_complete=False, export_complete=False,
-            reference_set=True, has_step2_pending=True,
+            reference_set=True, has_diarisation_pending=True,
         ) == "ready"
 
-    def test_ready_when_nothing_step2_pending(self):
+    def test_ready_when_nothing_diarisation_pending(self):
         assert compute_project_status(
             "processing", has_sources=True, has_active_jobs=False,
             all_sources_complete=False, export_complete=False,
-            reference_set=False, has_step2_pending=False,
+            reference_set=False, has_diarisation_pending=False,
         ) == "ready"
 
 
@@ -136,7 +136,7 @@ class TestReferenceGate:
         import jobs
 
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step1_pending")
+        source_id = _insert_source(conn, project, "separation_pending")
 
         async def mock_submit(service, payload):
             return {"job_id": payload["job_id"]}
@@ -153,7 +153,7 @@ class TestReferenceGate:
             assert jobs._queues[project].empty()
 
         source = conn.execute("SELECT status FROM sources WHERE id=?", (source_id,)).fetchone()
-        assert source["status"] == "step2_pending"
+        assert source["status"] == "diarisation_pending"
 
         p = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()
         assert p["status"] == "awaiting_reference"
@@ -167,7 +167,7 @@ class TestPipelineContinue:
     def test_continue_without_reference_returns_409(self, client, project):
         import db
         conn = db.get_conn(project)
-        _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/x.wav")
+        _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/x.wav")
 
         resp = client.post(f"/projects/{project}/pipeline/continue")
         assert resp.status_code == 409
@@ -189,8 +189,8 @@ class TestPipelineContinue:
         conn = db.get_conn(project)
         conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project,))
         conn.commit()
-        _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/a.wav")
-        _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/b.wav")
+        _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/a.wav")
+        _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/b.wav")
 
         resp = client.post(f"/projects/{project}/pipeline/continue")
         assert resp.status_code == 202
@@ -210,7 +210,7 @@ class TestScoutHandler:
     def test_scout_payload_and_candidates(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending",
+        source_id = _insert_source(conn, project, "diarisation_pending",
                                    vocals_path=f"audio/vocals/{uuid.uuid4()}.wav")
 
         captured = {}
@@ -258,12 +258,12 @@ class TestScoutHandler:
 
         # Source status is never touched by a scout.
         src = conn.execute("SELECT status FROM sources WHERE id=?", (source_id,)).fetchone()
-        assert src["status"] == "step2_pending"
+        assert src["status"] == "diarisation_pending"
 
     def test_scout_replaces_previous_candidates(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending",
+        source_id = _insert_source(conn, project, "diarisation_pending",
                                    vocals_path="audio/vocals/v.wav")
 
         speakers_by_run = [
@@ -295,7 +295,7 @@ class TestScoutHandler:
     def test_scout_fails_when_vocals_not_ready(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step1_pending", vocals_path=None)
+        source_id = _insert_source(conn, project, "separation_pending", vocals_path=None)
 
         job_id = _enqueue_and_run(project, "scout_speakers", source_id=source_id)
         job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -316,7 +316,7 @@ class TestScoutEndpoints:
     def test_scout_vocals_not_ready_returns_422(self, client, project):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step1_pending", vocals_path=None)
+        source_id = _insert_source(conn, project, "separation_pending", vocals_path=None)
 
         resp = client.post(f"/projects/{project}/reference/scout", json={"source_id": source_id})
         assert resp.status_code == 422
@@ -325,7 +325,7 @@ class TestScoutEndpoints:
     def test_scout_enqueues_and_project_processing(self, client, project):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/v.wav")
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
 
         resp = client.post(f"/projects/{project}/reference/scout", json={"source_id": source_id})
         assert resp.status_code == 202
@@ -342,7 +342,7 @@ class TestScoutEndpoints:
     def test_get_scout_running_shape(self, client, project):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/v.wav")
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         job_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO jobs (id, project_id, source_id, type, status, progress, created_at) VALUES (?,?,?,?,?,?,?)",
@@ -361,7 +361,7 @@ class TestScoutEndpoints:
     def test_get_scout_complete_shape_sorted(self, client, project):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/v.wav")
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         job_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO jobs (id, project_id, source_id, type, status, created_at) VALUES (?,?,?,?,?,?)",
@@ -391,7 +391,7 @@ class TestScoutEndpoints:
     def test_sample_streams_wav(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/v.wav")
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         pdir = db.project_dir(project)
         montage_rel = "reference_candidates/j1/SPEAKER_00.wav"
         montage_abs = pdir / montage_rel
@@ -412,7 +412,7 @@ class TestScoutEndpoints:
     def test_select_too_short_returns_422(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/v.wav")
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         pdir = db.project_dir(project)
         montage_rel = "reference_candidates/j1/SPEAKER_00.wav"
         montage_abs = pdir / montage_rel
@@ -431,7 +431,7 @@ class TestScoutEndpoints:
     def test_select_happy_path_sets_reference_and_origin(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending", vocals_path="audio/vocals/v.wav")
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         pdir = db.project_dir(project)
         montage_rel = "reference_candidates/j1/SPEAKER_02.wav"
         montage_abs = pdir / montage_rel

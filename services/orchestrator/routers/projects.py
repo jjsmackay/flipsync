@@ -40,14 +40,14 @@ def _project_stats(project_id: str) -> dict:
     ).fetchone()
 
     sources = conn.execute(
-        "SELECT id, filename, status, coverage_ratio, step1_error, step2_error FROM sources WHERE project_id=?",
+        "SELECT id, filename, status, coverage_ratio, separation_error, diarisation_error FROM sources WHERE project_id=?",
         (project_id,),
     ).fetchall()
 
     source_coverage = []
     for s in sources:
         ratio = s["coverage_ratio"] or 0.0
-        err = s["step1_error"] or s["step2_error"]
+        err = s["separation_error"] or s["diarisation_error"]
         source_coverage.append({
             "source_id": s["id"],
             "filename": s["filename"],

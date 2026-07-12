@@ -136,7 +136,7 @@ class TestExtractAudioJob:
         source_row = conn.execute("SELECT status, audio_path FROM sources WHERE id=?", (source_id,)).fetchone()
 
         assert row["status"] == "complete", f"Job failed: {row['error']}"
-        assert source_row["status"] == "step1_pending"
+        assert source_row["status"] == "separation_pending"
         assert source_row["audio_path"] is not None
 
         # Check the extracted WAV exists
@@ -233,7 +233,7 @@ class TestJobLifecycle:
         source_id = str(uuid.uuid4())
         now = _now()
         conn.execute(
-            "INSERT INTO sources (id, project_id, filename, file_path, status, created_at, updated_at) VALUES (?,?,?,?,'step1_pending',?,?)",
+            "INSERT INTO sources (id, project_id, filename, file_path, status, created_at, updated_at) VALUES (?,?,?,?,'separation_pending',?,?)",
             (source_id, project_id, "ep.wav", "source/ep.wav", now, now),
         )
         conn.commit()

@@ -17,7 +17,7 @@ import { formatDuration } from '../../utils/format'
 const MIN_REFERENCE_SECS = 5
 
 // Sources whose vocals stem is ready — the only ones a scout can run against.
-const SCOUTABLE_STATUSES = new Set(['step2_pending', 'step2_running', 'step2_failed', 'complete'])
+const SCOUTABLE_STATUSES = new Set(['diarisation_pending', 'diarisation_running', 'diarisation_failed', 'complete'])
 
 interface SetReferencePanelProps {
   project: ProjectDetail

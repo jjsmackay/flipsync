@@ -28,7 +28,7 @@ Any step can be re-run in isolation. Re-running step 1 for a file invalidates it
 **Input:** Video file (any container format FFmpeg supports)  
 **Output:** `audio/raw/{source_id}.wav` — 16-bit PCM WAV, 44.1 kHz, stereo preserved
 
-The orchestrator enqueues an `extract_audio` job immediately after writing the uploaded file to disk. Extraction runs FFmpeg as a subprocess within the orchestrator (not a separate service). This is a queued job, not a synchronous call — large video files (1–4 GB) can take 30–60+ seconds to extract, and the upload handler should return promptly. The source status moves to `extracting` when the job starts and `step1_pending` when it completes.
+The orchestrator enqueues an `extract_audio` job immediately after writing the uploaded file to disk. Extraction runs FFmpeg as a subprocess within the orchestrator (not a separate service). This is a queued job, not a synchronous call — large video files (1–4 GB) can take 30–60+ seconds to extract, and the upload handler should return promptly. The source status moves to `extracting` when the job starts and `separation_pending` when it completes.
 
 If extraction fails (corrupt file, unsupported codec), the source file is marked `extraction_failed` and the user is notified. Processing does not proceed for that file. The user must delete and re-upload.
 

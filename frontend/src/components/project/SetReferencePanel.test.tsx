@@ -31,7 +31,7 @@ const mockContinuePipeline = vi.mocked(continuePipeline)
 
 function makeProject(overrides: Partial<ProjectDetail> = {}): ProjectDetail {
   const sources: { source_id: string; filename: string; status: SourceStatus }[] = [
-    { source_id: 'src-1', filename: 's01e01.mkv', status: 'step2_pending' },
+    { source_id: 'src-1', filename: 's01e01.mkv', status: 'diarisation_pending' },
   ]
   return {
     id: 'proj-1',

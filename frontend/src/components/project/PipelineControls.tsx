@@ -14,7 +14,7 @@ export function PipelineControls({ project, onAction }: PipelineControlsProps) {
   const hasActiveJobs = project.active_jobs.length > 0
 
   const hasStep1Pending = project.stats.source_coverage.some(
-    (s) => s.status === 'step1_pending',
+    (s) => s.status === 'separation_pending',
   )
 
   const canStartPipeline = hasStep1Pending && !hasActiveJobs

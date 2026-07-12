@@ -56,13 +56,13 @@ export function SourcesTable({ sources, onReprocess }: SourcesTableProps) {
                   <td className="py-2">
                     <div className="flex gap-2">
                       <button
-                        onClick={() => onReprocess(src.source_id, ['step1', 'step2'])}
+                        onClick={() => onReprocess(src.source_id, ['separation', 'diarisation'])}
                         className="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
                       >
                         Step 1+2
                       </button>
                       <button
-                        onClick={() => onReprocess(src.source_id, ['step2'])}
+                        onClick={() => onReprocess(src.source_id, ['diarisation'])}
                         className="px-2 py-1 text-xs bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 rounded transition-colors"
                       >
                         Step 2

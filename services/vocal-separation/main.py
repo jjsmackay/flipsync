@@ -158,7 +158,7 @@ def _mark_oom_failed(job_id: str) -> None:
     ``retry_with_chunk_secs`` is set to null: the audio has already been
     processed in chunks and failed, so asking the orchestrator to resubmit with
     the same chunk size would be guaranteed to fail again. Null tells the
-    orchestrator to stop retrying and mark the source step1_failed.
+    orchestrator to stop retrying and mark the source separation_failed.
     """
     _jobs[job_id].update(
         {

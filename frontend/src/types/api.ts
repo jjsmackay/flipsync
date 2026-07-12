@@ -23,12 +23,12 @@ export type SourceStatus =
   | 'uploaded'
   | 'extracting'
   | 'extraction_failed'
-  | 'step1_pending'
-  | 'step1_running'
-  | 'step1_failed'
-  | 'step2_pending'
-  | 'step2_running'
-  | 'step2_failed'
+  | 'separation_pending'
+  | 'separation_running'
+  | 'separation_failed'
+  | 'diarisation_pending'
+  | 'diarisation_running'
+  | 'diarisation_failed'
   | 'complete'
 
 // ---- Projects ----

@@ -19,7 +19,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _insert_source(conn, project_id, status="step1_pending", audio_path=None, vocals_path=None):
+def _insert_source(conn, project_id, status="separation_pending", audio_path=None, vocals_path=None):
     source_id = str(uuid.uuid4())
     now = _now()
     conn.execute(
@@ -125,7 +125,7 @@ class TestFullPipelineFlow:
 
         conn = db.get_conn(project)
         pdir = db.project_dir(project)
-        source_id = _insert_source(conn, project, "step1_pending",
+        source_id = _insert_source(conn, project, "separation_pending",
                                     audio_path=f"audio/raw/test.wav")
         _set_reference(conn, project_id=project, pdir=pdir)
 
@@ -210,7 +210,7 @@ class TestFullPipelineFlow:
         import jobs
 
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step2_pending",
+        source_id = _insert_source(conn, project, "diarisation_pending",
                                     vocals_path=f"audio/vocals/test.wav")
 
         job_id = _enqueue_and_run(project, "diarisation", source_id=source_id)
@@ -220,9 +220,9 @@ class TestFullPipelineFlow:
         assert job["status"] == "failed"
         assert "no_reference_clip" in job["error"]
 
-        # Source should be step2_failed
+        # Source should be diarisation_failed
         source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
-        assert source["status"] == "step2_failed"
+        assert source["status"] == "diarisation_failed"
 
 
 # ========================================================================
@@ -237,7 +237,7 @@ class TestOOMRetry:
 
         conn = db.get_conn(project)
         pdir = db.project_dir(project)
-        source_id = _insert_source(conn, project, "step1_pending",
+        source_id = _insert_source(conn, project, "separation_pending",
                                     audio_path="audio/raw/test.wav")
         _set_reference(conn, project_id=project, pdir=pdir)
 
@@ -265,19 +265,19 @@ class TestOOMRetry:
 
             job_id = _enqueue_and_run(project, "vocal_separation", source_id=source_id)
 
-        # Source should have succeeded (step2_pending after vocal sep, or complete after auto-diarisation)
+        # Source should have succeeded (diarisation_pending after vocal sep, or complete after auto-diarisation)
         source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
-        assert source["status"] in ("step2_pending", "complete")
+        assert source["status"] in ("diarisation_pending", "complete")
         assert attempt["count"] == 2
 
     def test_oom_retry_fails_on_second_attempt(self, client, project, isolated_data_dir):
-        """Vocal separation OOMs twice — source goes to step1_failed."""
+        """Vocal separation OOMs twice — source goes to separation_failed."""
         import db
         import jobs
 
         conn = db.get_conn(project)
         pdir = db.project_dir(project)
-        source_id = _insert_source(conn, project, "step1_pending")
+        source_id = _insert_source(conn, project, "separation_pending")
         _set_reference(conn, project_id=project, pdir=pdir)
 
         async def mock_submit(service, payload):
@@ -293,8 +293,8 @@ class TestOOMRetry:
             job_id = _enqueue_and_run(project, "vocal_separation", source_id=source_id)
 
         source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
-        assert source["status"] == "step1_failed"
-        assert source["step1_error"] is not None
+        assert source["status"] == "separation_failed"
+        assert source["separation_error"] is not None
 
 
 # ========================================================================
@@ -302,12 +302,12 @@ class TestOOMRetry:
 # ========================================================================
 
 class TestReprocessFlow:
-    def test_step1_reprocess_clears_vocals_path(self, client, project, monkeypatch):
+    def test_separation_reprocess_clears_vocals_path(self, client, project, monkeypatch):
         import db
         import jobs
         # The reprocess endpoint enqueues a job, which starts a background
         # runner on the TestClient's event loop; that runner can flip the
-        # source to step1_running before this test reads it back. Keep the
+        # source to separation_running before this test reads it back. Keep the
         # job queued (don't start the runner) so the status assertion below
         # is deterministic — same idiom as TestRecovery in test_review_fixes.py.
         monkeypatch.setattr(jobs, "_ensure_runner", lambda pid: None)
@@ -319,23 +319,23 @@ class TestReprocessFlow:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step1"]},
+            json={"steps": ["separation"]},
         )
         assert resp.status_code == 202
 
         source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
         assert source["vocals_path"] is None
-        assert source["status"] == "step1_pending"
+        assert source["status"] == "separation_pending"
 
         count = conn.execute(
             "SELECT COUNT(*) FROM segments WHERE source_id=?", (source_id,)
         ).fetchone()[0]
         assert count == 0
 
-    def test_step2_reprocess_deletes_segments_preserves_vocals(self, client, project, monkeypatch):
+    def test_diarisation_reprocess_deletes_segments_preserves_vocals(self, client, project, monkeypatch):
         import db
         import jobs
-        # See test_step1_reprocess_clears_vocals_path: prevent the runner from
+        # See test_separation_reprocess_clears_vocals_path: prevent the runner from
         # racing the status assertion below.
         monkeypatch.setattr(jobs, "_ensure_runner", lambda pid: None)
 
@@ -346,13 +346,13 @@ class TestReprocessFlow:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step2"]},
+            json={"steps": ["diarisation"]},
         )
         assert resp.status_code == 202
 
         source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
         assert source["vocals_path"] == "audio/vocals/test.wav"
-        assert source["status"] == "step2_pending"
+        assert source["status"] == "diarisation_pending"
 
         count = conn.execute(
             "SELECT COUNT(*) FROM segments WHERE source_id=?", (source_id,)
@@ -368,7 +368,7 @@ class TestReprocessFlow:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step2"]},
+            json={"steps": ["diarisation"]},
         )
         assert resp.status_code == 409
         assert resp.json()["detail"]["approved_count"] == 2
@@ -381,7 +381,7 @@ class TestReprocessFlow:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step2"], "confirm": True},
+            json={"steps": ["diarisation"], "confirm": True},
         )
         assert resp.status_code == 202
 
@@ -678,7 +678,7 @@ class TestProjectStatusRecomputation:
     def test_project_with_sources_is_ready(self, client, project):
         import db
         conn = db.get_conn(project)
-        _insert_source(conn, project, "step1_pending")
+        _insert_source(conn, project, "separation_pending")
 
         from status import recompute_project_status
         recompute_project_status(project)
@@ -689,7 +689,7 @@ class TestProjectStatusRecomputation:
     def test_project_with_active_jobs_is_processing(self, client, project):
         import db
         conn = db.get_conn(project)
-        _insert_source(conn, project, "step1_running")
+        _insert_source(conn, project, "separation_running")
         now = _now()
         conn.execute(
             "INSERT INTO jobs (id, project_id, type, status, created_at) VALUES (?,?,?,?,?)",
@@ -752,7 +752,7 @@ class TestProjectStatusRecomputation:
         import db
         conn = db.get_conn(project)
         pdir = db.project_dir(project)
-        _insert_source(conn, project, "step1_running")
+        _insert_source(conn, project, "separation_running")
 
         (pdir / "export.tar.gz").write_bytes(b"\x00" * 100)
 

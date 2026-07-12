@@ -225,7 +225,7 @@ Upload a source video file. Multipart form data. The file is streamed to disk at
 }
 ```
 
-The orchestrator enqueues an `extract_audio` job immediately after writing the file to disk. Extraction runs FFmpeg as a subprocess within the orchestrator process (not a separate service). The client polls `GET /projects/{project_id}` for status updates. On success the source moves to `step1_pending`; on failure it moves to `extraction_failed`.
+The orchestrator enqueues an `extract_audio` job immediately after writing the file to disk. Extraction runs FFmpeg as a subprocess within the orchestrator process (not a separate service). The client polls `GET /projects/{project_id}` for status updates. On success the source moves to `separation_pending`; on failure it moves to `extraction_failed`.
 
 ---
 
@@ -372,10 +372,10 @@ Adopt a candidate speaker as the reference. Copies the candidate's `montage_path
 
 #### `POST /projects/{project_id}/pipeline/start`
 
-Start the pipeline for all sources in `step1_pending` status.
+Start the pipeline for all sources in `separation_pending` status.
 
 - **If `reference_path` is set:** unchanged from before — step 1 → step 2 is chained per source, exactly as today.
-- **If `reference_path` is null:** enqueues step 1 (`vocal_separation`) only, for all `step1_pending` sources. Step 2 is not chained. The project reaches `awaiting_reference` once those jobs drain. The user sets a reference (upload or diarise + pick) and calls `pipeline/continue` to proceed.
+- **If `reference_path` is null:** enqueues step 1 (`vocal_separation`) only, for all `separation_pending` sources. Step 2 is not chained. The project reaches `awaiting_reference` once those jobs drain. The user sets a reference (upload or diarise + pick) and calls `pipeline/continue` to proceed.
 
 **Response 202:** (shape unchanged regardless of branch)
 ```json
@@ -391,7 +391,7 @@ Start the pipeline for all sources in `step1_pending` status.
 
 #### `POST /projects/{project_id}/pipeline/continue`
 
-Enqueue step 2 (`diarisation`, match mode) for every source at `step2_pending`. This is how a project leaves `awaiting_reference` once a reference has been set.
+Enqueue step 2 (`diarisation`, match mode) for every source at `diarisation_pending`. This is how a project leaves `awaiting_reference` once a reference has been set.
 
 **Response 202:**
 ```json
@@ -404,7 +404,7 @@ Enqueue step 2 (`diarisation`, match mode) for every source at `step2_pending`. 
 
 **Response 409 `no_reference`** if `reference_path` is still null — the gate has not been satisfied.
 
-**Response 409 `no_pending_sources`** if no source is at `step2_pending`.
+**Response 409 `no_pending_sources`** if no source is at `diarisation_pending`.
 
 ---
 
@@ -415,14 +415,14 @@ Re-run one or more pipeline steps for a single source.
 **Request:**
 ```json
 {
-  "steps": ["step1"],
+  "steps": ["separation"],
   "params": {
     "demucs_model": "mdx_extra"
   }
 }
 ```
 
-`steps` must be `["step1"]`, `["step2"]`, or `["step1", "step2"]`. Cannot re-run step 3 (transcription) via this endpoint — use the transcription endpoints below.
+`steps` must be `["separation"]`, `["diarisation"]`, or `["separation", "diarisation"]`. Cannot re-run step 3 (transcription) via this endpoint — use the transcription endpoints below.
 
 **Response 409** if the source has approved segments that would be invalidated:
 ```json
@@ -732,7 +732,7 @@ On OOM:
 }
 ```
 
-The orchestrator checks `retry_with_chunk_secs` on failure: if set, it automatically resubmits the job with `"chunk_secs": 60` added to the request body. If a chunked retry also fails, the orchestrator marks the source `step1_failed` and surfaces the error to the user.
+The orchestrator checks `retry_with_chunk_secs` on failure: if set, it automatically resubmits the job with `"chunk_secs": 60` added to the request body. If a chunked retry also fails, the orchestrator marks the source `separation_failed` and surfaces the error to the user.
 
 ---
 

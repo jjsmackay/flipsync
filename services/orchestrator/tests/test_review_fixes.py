@@ -360,7 +360,7 @@ class TestSubmitRetry:
         import db
         import jobs
         conn = db.get_conn(project)
-        src = _insert_source(conn, project, "step1_pending")
+        src = _insert_source(conn, project, "separation_pending")
 
         monkeypatch.setattr(jobs, "_SUBMIT_RETRY_BASE_SECS", 0.01)
         monkeypatch.setattr(jobs, "_SUBMIT_RETRY_MAX_SECS", 0.02)
@@ -385,13 +385,13 @@ class TestSubmitRetry:
         job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert job["status"] == "complete"
         # Source must NOT have been marked failed.
-        assert conn.execute("SELECT status FROM sources WHERE id=?", (src,)).fetchone()["status"] != "step1_failed"
+        assert conn.execute("SELECT status FROM sources WHERE id=?", (src,)).fetchone()["status"] != "separation_failed"
 
     def test_http_status_error_is_not_retried(self, client, project, isolated_data_dir, monkeypatch):
         import db
         import jobs
         conn = db.get_conn(project)
-        src = _insert_source(conn, project, "step1_pending")
+        src = _insert_source(conn, project, "separation_pending")
         monkeypatch.setattr(jobs, "_SUBMIT_RETRY_BASE_SECS", 0.01)
 
         attempts = {"n": 0}
@@ -408,7 +408,7 @@ class TestSubmitRetry:
             _enqueue_and_run(project, "vocal_separation", source_id=src)
 
         assert attempts["n"] == 1  # reachable service error → no retry
-        assert conn.execute("SELECT status FROM sources WHERE id=?", (src,)).fetchone()["status"] == "step1_failed"
+        assert conn.execute("SELECT status FROM sources WHERE id=?", (src,)).fetchone()["status"] == "separation_failed"
 
 
 # ========================================================================
@@ -454,7 +454,7 @@ class TestRecovery:
         )
         source_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO sources (id, project_id, filename, file_path, status, created_at, updated_at) VALUES (?,?,?,?,'step2_running',?,?)",
+            "INSERT INTO sources (id, project_id, filename, file_path, status, created_at, updated_at) VALUES (?,?,?,?,'diarisation_running',?,?)",
             (source_id, project_id, "ep.wav", "source/ep.wav", now, now),
         )
         old_job = str(uuid.uuid4())
@@ -529,22 +529,22 @@ class TestReprocessCleanup:
         conn.execute("UPDATE segments SET export_path=? WHERE id=?", (f"export/{seg}.wav", seg))
         conn.commit()
 
-        resp = client.post(f"/projects/{project}/sources/{src}/reprocess", json={"steps": ["step2"]})
+        resp = client.post(f"/projects/{project}/sources/{src}/reprocess", json={"steps": ["diarisation"]})
         assert resp.status_code == 202
 
         assert not raw.exists()
         assert not export.exists()
         assert conn.execute("SELECT COUNT(*) FROM segments WHERE source_id=?", (src,)).fetchone()[0] == 0
 
-    def test_confirmation_copy_names_step1(self, client, project):
+    def test_confirmation_copy_names_separation(self, client, project):
         import db
         conn = db.get_conn(project)
         src = _insert_source(conn, project, "complete")
         _insert_segment(conn, project, src, status="approved")
 
-        resp = client.post(f"/projects/{project}/sources/{src}/reprocess", json={"steps": ["step1"]})
+        resp = client.post(f"/projects/{project}/sources/{src}/reprocess", json={"steps": ["separation"]})
         assert resp.status_code == 409
-        assert "step 1" in resp.json()["message"]
+        assert "vocal separation" in resp.json()["message"]
 
     def test_confirmation_copy_names_both_steps(self, client, project):
         import db
@@ -552,9 +552,9 @@ class TestReprocessCleanup:
         src = _insert_source(conn, project, "complete")
         _insert_segment(conn, project, src, status="approved")
 
-        resp = client.post(f"/projects/{project}/sources/{src}/reprocess", json={"steps": ["step1", "step2"]})
+        resp = client.post(f"/projects/{project}/sources/{src}/reprocess", json={"steps": ["separation", "diarisation"]})
         assert resp.status_code == 409
-        assert "steps 1 and 2" in resp.json()["message"]
+        assert "vocal separation and speaker matching" in resp.json()["message"]
 
 
 # ========================================================================

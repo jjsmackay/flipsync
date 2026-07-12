@@ -78,7 +78,7 @@ export function ProjectDashboardPage() {
         await triggerExport(projectId)
       } else if (job.source_id) {
         // vocal_separation / extract_audio re-run step 1; diarisation re-runs step 2.
-        const steps = job.type === 'diarisation' ? ['step2'] : ['step1']
+        const steps = job.type === 'diarisation' ? ['diarisation'] : ['separation']
         await reprocessSource(projectId, job.source_id, steps, undefined, true)
       }
       void refetch()
@@ -147,12 +147,12 @@ export function ProjectDashboardPage() {
       </Section>
 
       {/* Set reference — the pipeline gate. Shown when step 1 has produced a
-          stem (a source is at step2_pending) and nothing is running. Keyed on
+          stem (a source is at diarisation_pending) and nothing is running. Keyed on
           the source state, not status === 'awaiting_reference', because picking
           a reference recomputes the project to 'ready' before the user clicks
           Continue and the panel must stay up. */}
       {project.active_jobs.length === 0 &&
-        project.stats.source_coverage.some((s) => s.status === 'step2_pending') && (
+        project.stats.source_coverage.some((s) => s.status === 'diarisation_pending') && (
           <Section title="Set reference">
             <SetReferencePanel project={project} onAction={() => void refetch()} />
           </Section>
