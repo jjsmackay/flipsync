@@ -5,4 +5,8 @@ demucs==4.0.1
 # which defaults to weights_only=True from 2.6 and breaks pickled model objects.
 torch<2.6
 torchaudio<2.6
+# torchaudio 2.5 registers no I/O backend on its own (no bundled ffmpeg
+# integration, apt's ffmpeg CLI doesn't count) — torchaudio.load/save raise
+# "Couldn't find appropriate backend" without this.
+soundfile
 numpy
