@@ -12,6 +12,10 @@ SEGMENT_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"approved", "rejected", "maybe", "below_threshold"},
     "maybe": {"approved", "rejected", "pending"},
     "approved": {"rejected", "maybe", "clipping_warning"},
+    # NOTE: nothing transitions INTO auto_approved via this table — only the
+    # system assigns it (directly, when transcription results land or on
+    # auto-approve re-evaluation). PATCH /segments 409s any request to set it.
+    "auto_approved": {"approved", "rejected", "maybe", "pending", "clipping_warning"},
     "below_threshold": {"pending"},
     "clipping_warning": {"approved", "rejected"},
     # Terminal states — no outgoing transitions
@@ -22,10 +26,10 @@ SEGMENT_TRANSITIONS: dict[str, set[str]] = {
 # Transitions valid from bulk actions (subset of all transitions)
 # Maps action name -> allowed source statuses
 BULK_ACTION_SOURCES: dict[str, set[str]] = {
-    "approve": {"pending", "maybe", "clipping_warning"},
-    "reject": {"pending", "maybe", "clipping_warning", "approved"},
-    "maybe": {"pending", "approved"},
-    "pending": {"maybe"},
+    "approve": {"pending", "maybe", "clipping_warning", "auto_approved"},
+    "reject": {"pending", "maybe", "clipping_warning", "approved", "auto_approved"},
+    "maybe": {"pending", "approved", "auto_approved"},
+    "pending": {"maybe", "auto_approved"},
 }
 
 

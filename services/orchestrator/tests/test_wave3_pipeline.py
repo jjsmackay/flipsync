@@ -33,17 +33,21 @@ def _insert_source(conn, project_id, status="step1_pending", audio_path=None, vo
 
 
 def _insert_segment(conn, project_id, source_id, status="pending", confidence=0.9,
-                     transcript=None, transcript_edited=None, raw_path=None):
+                     transcript=None, transcript_edited=None, raw_path=None,
+                     transcript_confidence=None, clipping=0, flags=None,
+                     start=10.0, end=15.0):
     seg_id = str(uuid.uuid4())
     now = _now()
     rp = raw_path or f"segments/raw/{seg_id}.wav"
     conn.execute(
         """INSERT INTO segments
            (id, project_id, source_id, raw_path, start_secs, end_secs, speaker_label,
-            match_confidence, status, transcript, transcript_edited, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (seg_id, project_id, source_id, rp, 10.0, 15.0, "SPEAKER_00",
-         confidence, status, transcript, transcript_edited, now, now),
+            match_confidence, status, transcript, transcript_edited,
+            transcript_confidence, clipping_warning, flags, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (seg_id, project_id, source_id, rp, start, end, "SPEAKER_00",
+         confidence, status, transcript, transcript_edited,
+         transcript_confidence, clipping, flags, now, now),
     )
     conn.commit()
     return seg_id
@@ -172,9 +176,10 @@ class TestFullPipelineFlow:
         ).fetchall()
         assert len(segs) >= 2
 
-        # High confidence segment should be pending
+        # High confidence segment: transcription landed with 0.95 confidence
+        # on a 0.92 match — clears both auto-approve bars → auto_approved.
         high_conf = [s for s in segs if s["match_confidence"] >= 0.75]
-        assert all(s["status"] == "pending" for s in high_conf)
+        assert all(s["status"] == "auto_approved" for s in high_conf)
 
         # Low confidence segment should be below_threshold
         low_conf = [s for s in segs if s["match_confidence"] < 0.75]
@@ -816,3 +821,530 @@ class TestTranscriptionHandlers:
         assert seg["transcript"] == "New text"
         assert seg["transcript_edited"] == "User edit"
         assert seg["transcript_confidence"] == 0.99
+
+
+# ========================================================================
+# Auto-approve re-evaluation on PATCH /projects
+# ========================================================================
+
+class TestAutoApproveReEvaluation:
+    """PATCH /projects 3-step re-eval: demote, promote, threshold swap."""
+
+    def _eligible_segment(self, conn, project, source_id, **overrides):
+        kwargs = dict(status="pending", confidence=0.9,
+                      transcript="Hello there", transcript_confidence=0.95)
+        kwargs.update(overrides)
+        return _insert_segment(conn, project, source_id, **kwargs)
+
+    def test_patch_promotes_eligible_pending(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id)
+
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_transcript_threshold": 0.5})
+        assert resp.status_code == 200
+
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "auto_approved"
+
+    def test_patch_demotes_when_thresholds_raised(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id, status="auto_approved")
+
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_transcript_threshold": 0.99})
+        assert resp.status_code == 200
+
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "pending"
+
+    def test_disabling_auto_approve_demotes_all(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id, status="auto_approved")
+
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_enabled": False})
+        assert resp.status_code == 200
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "pending"
+
+        # Re-enabling promotes it back
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_enabled": True})
+        assert resp.status_code == 200
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "auto_approved"
+
+    def test_three_step_order_demoted_segment_falls_below_threshold(self, client, project):
+        """Raising match_threshold above a segment demotes auto_approved →
+        pending (step 1), then pending → below_threshold (step 3)."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id, status="auto_approved", confidence=0.9)
+
+        resp = client.patch(f"/projects/{project}", json={"match_threshold": 0.95})
+        assert resp.status_code == 200
+
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "below_threshold"
+
+    def test_promotion_uses_max_of_match_and_auto_match_threshold(self, client, project):
+        """match_confidence must clear max(match_threshold, auto_approve_match_threshold)."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        # 0.9 clears auto (0.85) but the display threshold is being raised to 0.92
+        seg = self._eligible_segment(conn, project, source_id, confidence=0.9)
+
+        resp = client.patch(f"/projects/{project}", json={
+            "match_threshold": 0.92, "auto_approve_match_threshold": 0.85,
+        })
+        assert resp.status_code == 200
+        # Not promoted; swept to below_threshold by step 3.
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "below_threshold"
+
+    def test_reeval_preserves_user_statuses(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        kept = {}
+        for status in ("approved", "rejected", "maybe", "clipping_warning"):
+            kept[status] = self._eligible_segment(conn, project, source_id, status=status)
+
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_match_threshold": 0.5})
+        assert resp.status_code == 200
+
+        for status, seg in kept.items():
+            assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == status
+
+    @pytest.mark.parametrize("overrides", [
+        {"transcript": None},                                   # no transcript at all
+        {"transcript": ""},                                     # empty effective transcript
+        {"transcript": "Hi", "transcript_edited": ""},          # edited-to-empty wins COALESCE
+        {"confidence": 0.80},                                   # below auto match threshold (0.85)
+        {"transcript_confidence": 0.80},                        # below transcript threshold (0.90)
+        {"transcript_confidence": None},                        # never transcribed confidence
+        {"flags": '["short_transcript"]'},                      # flagged
+        {"clipping": 1},                                        # clipping column set
+        {"status": "maybe"},                                    # not pending
+    ])
+    def test_each_failing_condition_blocks_promotion(self, client, project, overrides):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id, **overrides)
+        original_status = conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"]
+
+        # Touch an auto field to trigger re-eval without moving the bars.
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_transcript_threshold": 0.90001})
+        assert resp.status_code == 200
+
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == original_status
+
+    def test_fully_eligible_segment_is_promoted_by_reeval(self, client, project):
+        """Sanity check for the parametrised blockers above: with no blocker
+        the same PATCH does promote."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id)
+
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_transcript_threshold": 0.90001})
+        assert resp.status_code == 200
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "auto_approved"
+
+    def test_patch_without_reeval_fields_does_not_touch_segments(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = self._eligible_segment(conn, project, source_id)
+
+        resp = client.patch(f"/projects/{project}", json={"name": "Renamed"})
+        assert resp.status_code == 200
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "pending"
+
+
+# ========================================================================
+# Sentence-aligned re-segmentation (children replacement)
+# ========================================================================
+
+class TestResegmentation:
+    def _run_bulk(self, project, seg_ids, poll_results, submit_capture=None):
+        """Run a transcription_bulk job whose poll returns poll_results in
+        sequence (last one is the final result)."""
+        calls = {"n": 0}
+
+        async def mock_submit(service, payload):
+            if submit_capture is not None:
+                submit_capture.append(payload)
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            # Feed every non-final result through on_progress, return the last.
+            for r in poll_results[:-1]:
+                if on_progress:
+                    on_progress({"job_id": job_id, "status": "running", **r})
+            final = {"job_id": job_id, "status": "complete", "progress": 100, **poll_results[-1]}
+            return final
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            params = {"segment_ids": seg_ids, "model": "large-v2", "language": None}
+            return _enqueue_and_run(project, "transcription_bulk", params=params)
+
+    def test_bulk_payload_carries_start_secs_and_resegment(self, client, project, isolated_data_dir):
+        """Untranscribed pending segments get resegment=true; maybe and
+        already-transcribed segments do not."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg_pending = _insert_segment(conn, project, source_id, status="pending", start=42.5, end=50.0)
+        seg_below = _insert_segment(conn, project, source_id, status="below_threshold", confidence=0.5)
+        seg_maybe = _insert_segment(conn, project, source_id, status="maybe")
+        seg_done = _insert_segment(conn, project, source_id, status="pending", transcript="Already done")
+
+        captured = []
+        self._run_bulk(project, [seg_pending, seg_below, seg_maybe, seg_done],
+                       [{"completed_segments": []}], submit_capture=captured)
+
+        assert len(captured) == 1
+        by_id = {s["id"]: s for s in captured[0]["segments"]}
+        assert by_id[seg_pending]["resegment"] is True
+        assert by_id[seg_pending]["start_secs"] == 42.5
+        assert by_id[seg_below]["resegment"] is True
+        assert by_id[seg_maybe]["resegment"] is False
+        assert by_id[seg_done]["resegment"] is False
+
+    def test_segment_rerun_payload_never_sets_resegment(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg_id = _insert_segment(conn, project, source_id, status="pending")
+
+        captured = []
+
+        async def mock_submit(service, payload):
+            captured.append(payload)
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "progress": 100,
+                    "completed_segments": [{"id": seg_id, "transcript": "Hi there friend",
+                                            "transcript_confidence": 0.9}]}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "transcription_segment", params={"segment_ids": [seg_id]})
+
+        assert not captured[0]["segments"][0].get("resegment")
+
+    def _children_payload(self, parent_id, project):
+        c1, c2 = str(uuid.uuid4()), str(uuid.uuid4())
+        return {
+            "id": parent_id,
+            "children": [
+                {"id": c1,
+                 "wav_path": f"/data/projects/{project}/segments/raw/{c1}.wav",
+                 "start_secs": 10.0, "end_secs": 13.5,
+                 "transcript": "I told you not to come back here.",
+                 "transcript_confidence": 0.93},
+                {"id": c2,
+                 "wav_path": f"/data/projects/{project}/segments/raw/{c2}.wav",
+                 "start_secs": 13.5, "end_secs": 15.0,
+                 "transcript": "And yet.",
+                 "transcript_confidence": 0.91},
+            ],
+        }
+
+    def test_children_replace_parent(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project, "complete")
+        parent = _insert_segment(conn, project, source_id, status="pending", confidence=0.7)
+        _create_segment_wav(pdir, parent)
+
+        entry = self._children_payload(parent, project)
+        self._run_bulk(project, [parent], [{"completed_segments": [entry]}])
+
+        # Parent row gone
+        assert conn.execute("SELECT COUNT(*) FROM segments WHERE id=?", (parent,)).fetchone()[0] == 0
+        # Parent WAV deleted best-effort
+        assert not (pdir / "segments" / "raw" / f"{parent}.wav").exists()
+
+        rows = {r["id"]: r for r in conn.execute(
+            "SELECT * FROM segments WHERE source_id=?", (source_id,)).fetchall()}
+        assert len(rows) == 2
+        c1 = entry["children"][0]
+        r1 = rows[c1["id"]]
+        # Child inherits attribution + status from parent
+        assert r1["source_id"] == source_id
+        assert r1["speaker_label"] == "SPEAKER_00"
+        assert r1["match_confidence"] == 0.7
+        assert r1["status"] == "pending"
+        # Child takes payload timestamps/transcript; raw_path stored relative
+        assert r1["start_secs"] == 10.0 and r1["end_secs"] == 13.5
+        assert r1["duration_secs"] == pytest.approx(3.5)
+        assert r1["transcript"] == c1["transcript"]
+        assert r1["transcript_confidence"] == 0.93
+        assert r1["raw_path"] == f"segments/raw/{c1['id']}.wav"
+        assert not r1["flags"]
+
+        # Second child is 1.5s -> short_transcript flag
+        r2 = rows[entry["children"][1]["id"]]
+        assert "short_transcript" in json.loads(r2["flags"])
+
+    def test_children_dedup_across_cumulative_polls(self, client, project, isolated_data_dir):
+        """The same children entry arriving in every cumulative poll (and the
+        final result) is applied exactly once, keyed on the parent id."""
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project, "complete")
+        parent = _insert_segment(conn, project, source_id, status="pending")
+        _create_segment_wav(pdir, parent)
+
+        entry = self._children_payload(parent, project)
+        # Two progress polls + final, all repeating the same cumulative entry
+        self._run_bulk(project, [parent], [
+            {"progress": 30, "completed_segments": [entry]},
+            {"progress": 60, "completed_segments": [entry]},
+            {"completed_segments": [entry]},
+        ])
+
+        count = conn.execute("SELECT COUNT(*) FROM segments WHERE source_id=?", (source_id,)).fetchone()[0]
+        assert count == 2
+        assert conn.execute("SELECT COUNT(*) FROM segments WHERE id=?", (parent,)).fetchone()[0] == 0
+
+    def test_unsplit_dedup_across_cumulative_polls(self, client, project, isolated_data_dir):
+        """Repeated unsplit entries only write once (updated_at unchanged after first write)."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg = _insert_segment(conn, project, source_id, status="pending")
+
+        entry = {"id": seg, "transcript": "Same words every poll", "transcript_confidence": 0.5}
+        self._run_bulk(project, [seg], [
+            {"progress": 50, "completed_segments": [entry]},
+            {"completed_segments": [entry]},
+        ])
+
+        row = conn.execute("SELECT transcript FROM segments WHERE id=?", (seg,)).fetchone()
+        assert row["transcript"] == "Same words every poll"
+
+    def test_missing_parent_wav_does_not_fail_job(self, client, project, isolated_data_dir):
+        """Parent WAV already gone on disk — replacement still succeeds."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        parent = _insert_segment(conn, project, source_id, status="pending")
+        # No _create_segment_wav — file does not exist
+
+        entry = self._children_payload(parent, project)
+        job_id = self._run_bulk(project, [parent], [{"completed_segments": [entry]}])
+
+        job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "complete"
+        assert conn.execute("SELECT COUNT(*) FROM segments WHERE source_id=?", (source_id,)).fetchone()[0] == 2
+
+    def test_children_of_below_threshold_parent_inherit_status(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project, "complete")
+        parent = _insert_segment(conn, project, source_id, status="below_threshold", confidence=0.5)
+        _create_segment_wav(pdir, parent)
+
+        entry = self._children_payload(parent, project)
+        self._run_bulk(project, [parent], [{"completed_segments": [entry]}])
+
+        statuses = [r["status"] for r in conn.execute(
+            "SELECT status FROM segments WHERE source_id=?", (source_id,)).fetchall()]
+        # Inherited below_threshold; never auto_approved (eligibility needs pending)
+        assert statuses == ["below_threshold", "below_threshold"]
+
+
+# ========================================================================
+# Auto-approval when transcription results land
+# ========================================================================
+
+class TestAutoApproveOnTranscription:
+    def test_bulk_unsplit_result_auto_approves_eligible(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg_good = _insert_segment(conn, project, source_id, status="pending", confidence=0.9)
+        seg_low_match = _insert_segment(conn, project, source_id, status="pending", confidence=0.8)
+        seg_low_conf = _insert_segment(conn, project, source_id, status="pending", confidence=0.9)
+
+        completed = [
+            {"id": seg_good, "transcript": "A fine long sentence.", "transcript_confidence": 0.95},
+            {"id": seg_low_match, "transcript": "A fine long sentence.", "transcript_confidence": 0.95},
+            {"id": seg_low_conf, "transcript": "A fine long sentence.", "transcript_confidence": 0.85},
+        ]
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "progress": 100,
+                    "completed_segments": completed}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            params = {"segment_ids": [seg_good, seg_low_match, seg_low_conf]}
+            _enqueue_and_run(project, "transcription_bulk", params=params)
+
+        get = lambda s: conn.execute("SELECT status FROM segments WHERE id=?", (s,)).fetchone()["status"]
+        assert get(seg_good) == "auto_approved"
+        assert get(seg_low_match) == "pending"   # 0.8 < auto match threshold 0.85
+        assert get(seg_low_conf) == "pending"    # 0.85 < transcript threshold 0.90
+
+    def test_children_auto_approve_individually(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project, "complete")
+        parent = _insert_segment(conn, project, source_id, status="pending", confidence=0.9)
+        _create_segment_wav(pdir, parent)
+
+        c1, c2 = str(uuid.uuid4()), str(uuid.uuid4())
+        entry = {"id": parent, "children": [
+            # 4s child, high confidence -> auto_approved
+            {"id": c1, "wav_path": f"/data/projects/{project}/segments/raw/{c1}.wav",
+             "start_secs": 10.0, "end_secs": 14.0,
+             "transcript": "Plenty long enough to keep.", "transcript_confidence": 0.95},
+            # 1s child -> short_transcript flag blocks auto-approval
+            {"id": c2, "wav_path": f"/data/projects/{project}/segments/raw/{c2}.wav",
+             "start_secs": 14.0, "end_secs": 15.0,
+             "transcript": "Short.", "transcript_confidence": 0.95},
+        ]}
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "progress": 100,
+                    "completed_segments": [entry]}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "transcription_bulk", params={"segment_ids": [parent]})
+
+        get = lambda s: conn.execute("SELECT status FROM segments WHERE id=?", (s,)).fetchone()["status"]
+        assert get(c1) == "auto_approved"
+        assert get(c2) == "pending"
+
+    def test_single_segment_rerun_auto_approves(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg_id = _insert_segment(conn, project, source_id, status="pending", confidence=0.9,
+                                  transcript="Old low-confidence text", transcript_confidence=0.5)
+        _create_segment_wav(pdir, seg_id)
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "progress": 100,
+                    "completed_segments": [{"id": seg_id, "transcript": "Much better this time.",
+                                            "transcript_confidence": 0.97}]}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "transcription_segment", params={"segment_ids": [seg_id]})
+
+        seg = conn.execute("SELECT * FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert seg["status"] == "auto_approved"
+        assert seg["transcript"] == "Much better this time."
+
+    def test_disabled_project_never_auto_approves(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        conn.execute("UPDATE projects SET auto_approve_enabled=0 WHERE id=?", (project,))
+        conn.commit()
+        source_id = _insert_source(conn, project, "complete")
+        seg_id = _insert_segment(conn, project, source_id, status="pending", confidence=0.95)
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "progress": 100,
+                    "completed_segments": [{"id": seg_id, "transcript": "Great stuff indeed.",
+                                            "transcript_confidence": 0.99}]}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "transcription_bulk", params={"segment_ids": [seg_id]})
+
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg_id,)).fetchone()["status"] == "pending"
+
+
+# ========================================================================
+# Export includes auto_approved
+# ========================================================================
+
+class TestExportIncludesAutoApproved:
+    def test_export_trigger_accepts_only_auto_approved(self, client, project):
+        """Pre-flight count includes auto_approved (not just approved)."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        _insert_segment(conn, project, source_id, status="auto_approved",
+                        transcript="Hello", transcript_confidence=0.95)
+        conn.execute("UPDATE projects SET status='review' WHERE id=?", (project,))
+        conn.commit()
+
+        resp = client.post(f"/projects/{project}/export")
+        assert resp.status_code == 202
+        assert resp.json()["enqueued_job"]["segment_count"] == 1
+
+    def test_export_job_cleans_and_manifests_auto_approved(self, client, project, isolated_data_dir):
+        """Cleanup submission and the manifest both include auto_approved segments."""
+        import db
+
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project, "complete")
+        seg_approved = _insert_segment(conn, project, source_id, status="approved",
+                                       transcript="Manually approved", confidence=0.95)
+        seg_auto = _insert_segment(conn, project, source_id, status="auto_approved",
+                                   transcript="Automatically approved", confidence=0.9)
+        _create_segment_wav(pdir, seg_approved)
+        _create_segment_wav(pdir, seg_auto)
+
+        cleanup_results = [
+            {"id": s, "output_path": f"/data/projects/{project}/export/{s}.wav",
+             "clipping_warning": False, "auto_rejected": False, "error": None}
+            for s in (seg_approved, seg_auto)
+        ]
+
+        submitted = {}
+
+        async def mock_submit(service, payload):
+            submitted["segments"] = payload["segments"]
+            for s in (seg_approved, seg_auto):
+                wav = pdir / "export" / f"{s}.wav"
+                wav.parent.mkdir(parents=True, exist_ok=True)
+                wav.write_bytes(b"\x00" * 50)
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "results": cleanup_results}
+
+        conn.execute("UPDATE projects SET status='exporting' WHERE id=?", (project,))
+        conn.commit()
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "export", params={"segment_count": 2})
+
+        # Both segments went to cleanup
+        assert {s["id"] for s in submitted["segments"]} == {seg_approved, seg_auto}
+
+        # Both appear in the manifest
+        manifest = json.loads((pdir / "export" / "manifest.json").read_text())
+        assert {s["id"] for s in manifest["segments"]} == {seg_approved, seg_auto}
+        texts = {s["id"]: s["text"] for s in manifest["segments"]}
+        assert texts[seg_auto] == "Automatically approved"
