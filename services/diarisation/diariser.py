@@ -70,14 +70,14 @@ def load_pipeline():
     try:
         pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=token,
+            token=token,
         )
     except Exception as exc:  # noqa: BLE001 — network/auth/licence all surface here
         raise ModelDownloadFailed(
             f"Failed to download or load the pyannote diarisation pipeline: {exc}"
         ) from exc
 
-    # pyannote 3.x loads on CPU by default — move the pipeline to GPU explicitly.
+    # pyannote loads on CPU by default — move the pipeline to GPU explicitly.
     pipeline.to(_select_device())
     return pipeline
 
@@ -94,7 +94,7 @@ def load_embedding_model():
         )
 
     try:
-        model = Model.from_pretrained("pyannote/embedding", use_auth_token=token)
+        model = Model.from_pretrained("pyannote/embedding", token=token)
     except Exception as exc:  # noqa: BLE001 — network/auth/licence all surface here
         raise ModelDownloadFailed(
             f"Failed to download or load the pyannote embedding model: {exc}"
