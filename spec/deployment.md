@@ -57,7 +57,7 @@ services:
     build: ./services/vocal-separation
     volumes:
       - ./data:/data
-      - demucs-models:/root/.cache/torch
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
     environment:
       - DEMUCS_MODEL=htdemucs
     deploy:
@@ -74,7 +74,7 @@ services:
     build: ./services/diarisation
     volumes:
       - ./data:/data
-      - pyannote-models:/root/.cache/torch
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
     deploy:
@@ -91,7 +91,7 @@ services:
     build: ./services/transcription
     volumes:
       - ./data:/data
-      - whisper-models:/root/.cache/huggingface
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
     environment:
       - WHISPER_MODEL=large-v2
     deploy:
@@ -120,11 +120,6 @@ services:
     networks:
       - flipsync
 
-volumes:
-  demucs-models:
-  pyannote-models:
-  whisper-models:
-
 networks:
   flipsync:
     driver: bridge
@@ -134,7 +129,7 @@ networks:
 
 **Shared `/data` volume.** All services mount the same `./data` directory on the host. This is how services read each other's output — the vocal separation service writes to `/data/projects/{id}/audio/vocals/`, and the diarisation service reads from the same path. No inter-service file transfer. No shared memory. Files on disk are the interface.
 
-**Model caches are named Docker volumes**, not bind mounts. This keeps model files inside Docker's managed storage, survives `docker compose down`, and is unaffected by changes to the host `./data` directory. Models are downloaded once on first run and cached permanently.
+**Model caches are bind mounts under `${MODELS_ROOT:-/mnt/models/flipsync}/`**, not named Docker volumes. This host reserves a dedicated disk at `/mnt/models` for model caches across services (Ollama, whisperx-asr, etc.) — using the same mount keeps FlipSync's ~5 GB of model downloads off the (often much smaller) disk backing Docker's default volume storage, and keeps them visible/manageable directly from the host filesystem. `MODELS_ROOT` is an optional `.env` override for hosts without that mount (e.g. local dev — point it at a plain directory under `./data`). Models are downloaded once on first run and cached permanently; `docker compose down` doesn't touch them.
 
 **The cleanup service has no GPU reservation.** FFmpeg runs on CPU. This is intentional and correct.
 
@@ -149,13 +144,16 @@ Create a `.env` file at the repo root before first run. This file is gitignored.
 ```bash
 # Required
 HF_TOKEN=hf_...          # HuggingFace token for pyannote model download
+
+# Optional
+MODELS_ROOT=/mnt/models/flipsync   # host dir for model caches; default shown
 ```
 
 Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.
 
 **Orchestrator CORS.** The orchestrator reads `CORS_ORIGINS` — a comma-separated list of allowed browser origins. It defaults to `http://localhost:3000,http://127.0.0.1:3000` (the frontend dev and container origins), so it only needs setting when the frontend is served from a different host or port. Override it via the orchestrator's `environment:` block in `docker-compose.yml` rather than `.env`.
 
-The HuggingFace token is only needed on first run to download pyannote's speaker diarisation and embedding models. After the models are cached in the `pyannote-models` volume, the token is no longer used. It must still be present in the environment or pyannote's library will fail to initialise — this is a pyannote limitation, not a FlipSync one.
+The HuggingFace token is only needed on first run to download pyannote's speaker diarisation and embedding models. After the models are cached in `/mnt/models/flipsync/pyannote`, the token is no longer used. It must still be present in the environment or pyannote's library will fail to initialise — this is a pyannote limitation, not a FlipSync one.
 
 **To obtain a HuggingFace token:**
 1. Create an account at huggingface.co
@@ -187,9 +185,9 @@ docker compose up --build
 
 On first run:
 - Docker builds all service images (5–10 minutes depending on hardware and network)
-- pyannote downloads its models on first job run (~2 GB, cached to `pyannote-models` volume)
-- Demucs downloads its model on first job run (~80 MB, cached to `demucs-models` volume)
-- Whisper downloads its model on first job run (large-v2 is ~3 GB, cached to `whisper-models` volume)
+- pyannote downloads its models on first job run (~2 GB, cached to `/mnt/models/flipsync/pyannote`)
+- Demucs downloads its model on first job run (~80 MB, cached to `/mnt/models/flipsync/demucs`)
+- Whisper downloads its model on first job run (large-v2 is ~3 GB, cached to `/mnt/models/flipsync/whisper`)
 
 Total first-run model download: ~5 GB. Subsequent starts are fast.
 
@@ -201,7 +199,10 @@ Total first-run model download: ~5 GB. Subsequent starts are fast.
 # Stop all services (preserves volumes and data)
 docker compose down
 
-# Stop and remove volumes (destructive — deletes model caches and project data)
+# Stop and remove volumes
+# Model caches (/mnt/models/flipsync/*) and project data (./data) are bind
+# mounts, not named volumes, so this does NOT delete them — only stops
+# containers. To actually wipe caches, rm -rf the mount paths directly.
 docker compose down -v
 
 # Restart a single service
