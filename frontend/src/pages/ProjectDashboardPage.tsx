@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { useProjectPolling } from '../hooks/useProjectPolling'
 import { reprocessSource, runTranscription, triggerExport, startScout, ApiError } from '../api/client'
 import type { FailedJob } from '../types/api'
@@ -136,9 +136,17 @@ export function ProjectDashboardPage() {
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 truncate min-w-0">
-          {project.name}
-        </h1>
+        <div className="min-w-0">
+          <Link
+            to="/"
+            className="inline-block mb-1 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 text-sm"
+          >
+            ← Projects
+          </Link>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 truncate">
+            {project.name}
+          </h1>
+        </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           <ThemeToggle />
           <button
