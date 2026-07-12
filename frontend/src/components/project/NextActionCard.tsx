@@ -56,15 +56,10 @@ function UploadStage({ project, onAction }: NextActionCardProps) {
 }
 
 function SpeakerStage({ project, onAction }: NextActionCardProps) {
-  return (
-    <div>
-      <StageHeading
-        title="Whose voice are we after?"
-        blurb="Scan a video to hear the speakers in it, or upload a short clean clip of the target voice."
-      />
-      <SetReferencePanel project={project} onAction={onAction} />
-    </div>
-  )
+  // The panel is a small state machine over the pre-reference phase: the
+  // whose-voice prompt, separation-for-scanning, the scan, and picking a voice.
+  // It renders its own contextual heading per phase.
+  return <SetReferencePanel project={project} onAction={onAction} />
 }
 
 function ProcessStage({ project, onAction }: NextActionCardProps) {
@@ -125,7 +120,7 @@ function ProcessStage({ project, onAction }: NextActionCardProps) {
             ? 'A processing step failed — retry it from the alert below.'
             : gatedWithReference
             ? 'Reference is set. Continue to match your speaker through the uploaded videos.'
-            : 'Separate the vocals and find your speaker in the uploaded videos.'
+            : 'Your reference clip is set. Start processing to separate the vocals and match your speaker.'
         }
       />
       <div className="flex flex-wrap gap-3">

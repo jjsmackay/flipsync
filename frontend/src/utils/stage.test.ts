@@ -68,12 +68,19 @@ describe('deriveStage', () => {
     expect(deriveStage(makeProject({}))).toBe('upload')
   })
 
-  it('returns process while a pipeline job is active', () => {
+  // --- Speaker stage: everything before a reference is committed ---
+
+  it('stays on speaker while separation runs for the scan (no reference yet)', () => {
     const p = makeProject({
       sourceStatuses: ['separation_running'],
       activeJobs: [{ type: 'vocal_separation' }],
     })
-    expect(deriveStage(p)).toBe('process')
+    expect(deriveStage(p)).toBe('speaker')
+  })
+
+  it('returns speaker for a freshly-uploaded source (the whose-voice prompt)', () => {
+    const p = makeProject({ sourceStatuses: ['separation_pending'] })
+    expect(deriveStage(p)).toBe('speaker')
   })
 
   it('returns speaker at the reference gate with no reference', () => {
@@ -89,6 +96,27 @@ describe('deriveStage', () => {
     expect(deriveStage(p)).toBe('speaker')
   })
 
+  it('stays on speaker when separation fails before a reference is set', () => {
+    const p = makeProject({ sourceStatuses: ['separation_failed'] })
+    expect(deriveStage(p)).toBe('speaker')
+  })
+
+  // --- Process stage: reference committed, pipeline proper ---
+
+  it('returns process while a pipeline job runs with a reference set', () => {
+    const p = makeProject({
+      sourceStatuses: ['separation_running'],
+      activeJobs: [{ type: 'vocal_separation' }],
+      referencePath: '/data/ref.wav',
+    })
+    expect(deriveStage(p)).toBe('process')
+  })
+
+  it('returns process for an uploaded-clip source queued to start', () => {
+    const p = makeProject({ sourceStatuses: ['separation_pending'], referencePath: '/data/ref.wav' })
+    expect(deriveStage(p)).toBe('process')
+  })
+
   it('returns process at the gate once a reference is set', () => {
     const p = makeProject({
       sourceStatuses: ['diarisation_pending'],
@@ -97,29 +125,30 @@ describe('deriveStage', () => {
     expect(deriveStage(p)).toBe('process')
   })
 
-  it('returns process for a queued source with no jobs running', () => {
-    const p = makeProject({ sourceStatuses: ['separation_pending'] })
-    expect(deriveStage(p)).toBe('process')
-  })
-
-  it('returns process when a source failed', () => {
-    const p = makeProject({ sourceStatuses: ['separation_failed'] })
+  it('returns process when a source failed after a reference is set', () => {
+    const p = makeProject({ sourceStatuses: ['separation_failed'], referencePath: '/data/ref.wav' })
     expect(deriveStage(p)).toBe('process')
   })
 
   it('returns review when sources are complete and segments await review', () => {
-    const p = makeProject({ sourceStatuses: ['complete'], pendingCount: 5, maybeCount: 1 })
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      pendingCount: 5,
+      maybeCount: 1,
+    })
     expect(deriveStage(p)).toBe('review')
   })
 
   it('returns export when everything is reviewed', () => {
-    const p = makeProject({ sourceStatuses: ['complete'] })
+    const p = makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav' })
     expect(deriveStage(p)).toBe('export')
   })
 
   it('returns export while an export job runs', () => {
     const p = makeProject({
       sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
       activeJobs: [{ type: 'export' }],
       status: 'exporting',
     })
@@ -127,7 +156,11 @@ describe('deriveStage', () => {
   })
 
   it('prefers process over review when a new source is added mid-review', () => {
-    const p = makeProject({ sourceStatuses: ['complete', 'uploaded'], pendingCount: 5 })
+    const p = makeProject({
+      sourceStatuses: ['complete', 'uploaded'],
+      referencePath: '/data/ref.wav',
+      pendingCount: 5,
+    })
     expect(deriveStage(p)).toBe('process')
   })
 })
@@ -147,7 +180,16 @@ describe('stageStates', () => {
     const p = makeProject({
       sourceStatuses: ['separation_running'],
       activeJobs: [{ type: 'vocal_separation' }],
+      referencePath: '/data/ref.wav',
     })
     expect(stageStates(p).process).toBe('active')
+  })
+
+  it('marks speaker active while separation runs for the scan', () => {
+    const p = makeProject({
+      sourceStatuses: ['separation_running'],
+      activeJobs: [{ type: 'vocal_separation' }],
+    })
+    expect(stageStates(p).speaker).toBe('active')
   })
 })

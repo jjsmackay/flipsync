@@ -12,6 +12,9 @@ vi.mock('../../api/client', async () => {
     continuePipeline: vi.fn(),
     runTranscription: vi.fn(),
     getScoutStatus: vi.fn(() => new Promise(() => {})),
+    startScout: vi.fn(),
+    selectScoutSpeaker: vi.fn(),
+    uploadReference: vi.fn(),
     triggerExport: vi.fn(),
     getSegments: vi.fn(),
   }
@@ -92,24 +95,32 @@ describe('NextActionCard', () => {
     expect(screen.getByText(/upload a video to get started/i)).toBeInTheDocument()
   })
 
-  it('shows the speaker panel at the reference gate', () => {
-    renderCard(makeProject({ sourceStatuses: ['diarisation_pending'] }))
+  it('prompts whose voice on a freshly-uploaded source', () => {
+    renderCard(makeProject({ sourceStatuses: ['separation_pending'] }))
     expect(screen.getByText(/whose voice are we after/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /scan for speakers/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /find speakers/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /upload a clip/i })).toBeInTheDocument()
   })
 
-  it('shows job progress with a human label while processing', () => {
+  it('shows the scan at the reference gate with no reference', () => {
+    renderCard(makeProject({ sourceStatuses: ['diarisation_pending'] }))
+    expect(screen.getByText(/whose voice are we after/i)).toBeInTheDocument()
+    expect(screen.getByText(/scanning for speakers/i)).toBeInTheDocument()
+  })
+
+  it('keeps the Speaker stage while separation runs for the scan', () => {
     renderCard(
       makeProject({
         sourceStatuses: ['separation_running'],
         activeJobs: [{ type: 'vocal_separation', progress: 40 }],
       }),
     )
+    expect(screen.getByText(/finding the speakers/i)).toBeInTheDocument()
     expect(screen.getByText('Separating vocals')).toBeInTheDocument()
   })
 
-  it('offers Start processing for a queued source', () => {
-    renderCard(makeProject({ sourceStatuses: ['separation_pending'] }))
+  it('offers Start processing for an uploaded-clip source queued to start', () => {
+    renderCard(makeProject({ sourceStatuses: ['separation_pending'], referencePath: '/data/ref.wav' }))
     expect(screen.getByRole('button', { name: /start processing/i })).toBeInTheDocument()
   })
 
@@ -121,14 +132,14 @@ describe('NextActionCard', () => {
   })
 
   it('links to the review queue when segments await review', () => {
-    renderCard(makeProject({ sourceStatuses: ['complete'], pendingCount: 12 }))
+    renderCard(makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav', pendingCount: 12 }))
     expect(screen.getByText(/12 segments ready to review/i)).toBeInTheDocument()
     const link = screen.getByRole('link', { name: /start reviewing/i })
     expect(link).toHaveAttribute('href', '/projects/p1/review')
   })
 
   it('shows the export action once review is done', () => {
-    renderCard(makeProject({ sourceStatuses: ['complete'], approvedCount: 8 }))
+    renderCard(makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav', approvedCount: 8 }))
     expect(screen.getByText(/ready to export/i)).toBeInTheDocument()
   })
 })
