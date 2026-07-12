@@ -172,7 +172,9 @@ Each service is independent. They can be built in parallel after Wave 1 establis
 - **Streaming uploads.** Video files are 1–4 GB. Write chunks to disk as they arrive. Do not buffer in memory.
 - **CORS.** Frontend is on :3000, orchestrator on :8000. Add middleware.
 - **Threshold changes are bidirectional.** Lowering threshold: `below_threshold` → `pending`. Raising threshold: `pending` → `below_threshold`. Other statuses are untouched.
-- **Transcription results are cumulative.** Each poll returns ALL completed segments so far. Track which IDs you've already written to avoid duplicate writes.
+- **Transcription results are cumulative.** Each poll returns ALL completed segments so far. Track which IDs you've already written to avoid duplicate writes. Dedup is keyed on the *parent* segment id — split results arrive as `children` under the parent id.
+- **Bulk transcription can replace segment rows.** A `resegment: true` segment may come back as `children` — insert child rows and delete the parent in one transaction, then delete the parent WAV best-effort. Only untranscribed `pending`/`below_threshold` segments are eligible; never reviewed ones, never `transcription_segment` reruns.
+- **`auto_approved` is system-assigned only.** Users can leave it (approve/reject/maybe/pending) but `PATCH /segments` must 409 any request to enter it. Applied when transcription results land; re-evaluated synchronously on `PATCH /projects` in order: demote ineligible `auto_approved` → `pending`, promote eligible `pending` → `auto_approved`, then the `pending` ↔ `below_threshold` swap. Export and `approved_duration_secs` include it; `approved_count` counts only `approved`.
 - **`clipping_warning` is both a column and a status.** The column is a persistent fact. The status is a workflow state. Set both when cleanup flags clipping. When user re-approves, status → `approved` but column stays `1`.
 - **`flags` is a JSON array.** Use `json.dumps`/`json.loads`. Current flags: `cleanup_error: <msg>`, `short_transcript`.
 

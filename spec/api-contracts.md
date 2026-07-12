@@ -103,13 +103,17 @@ Full project state, including per-source status and summary stats.
     "whisper_model": "large-v2",
     "language": null,
     "match_threshold": 0.75,
-    "target_duration_secs": 1800
+    "target_duration_secs": 1800,
+    "auto_approve_enabled": true,
+    "auto_approve_match_threshold": 0.85,
+    "auto_approve_transcript_threshold": 0.90
   },
   "stats": {
     "total_segments": 1842,
     "approved_count": 743,
+    "auto_approved_count": 402,
     "approved_duration_secs": 4821.3,
-    "pending_count": 891,
+    "pending_count": 489,
     "maybe_count": 47,
     "rejected_count": 161,
     "below_threshold_count": 312,
@@ -148,16 +152,21 @@ Full project state, including per-source status and summary stats.
 
 #### `PATCH /projects/{project_id}`
 
-Update project config. Only `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, and `language` are patchable. Changing `match_threshold` triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job):
+Update project config. Only `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, and `auto_approve_transcript_threshold` are patchable. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
 
-- Segments with `match_confidence >= new_threshold` and status `below_threshold` are moved to `pending`.
-- Segments with `match_confidence < new_threshold` and status `pending` are moved to `below_threshold`.
-- Segments in any other status (`approved`, `rejected`, `maybe`, `clipping_warning`, `auto_rejected`) are not affected by threshold changes — user decisions are preserved.
+1. **Auto-approve demotion:** segments with status `auto_approved` that no longer meet the auto-approve eligibility rule (see [Pipeline](pipeline.md) §Auto-approval) are moved to `pending`.
+2. **Auto-approve promotion:** segments with status `pending` that meet the eligibility rule are moved to `auto_approved`.
+3. **Display threshold swap:**
+   - Segments with `match_confidence >= new_threshold` and status `below_threshold` are moved to `pending`.
+   - Segments with `match_confidence < new_threshold` and status `pending` are moved to `below_threshold`.
+
+Segments in any other status (`approved`, `rejected`, `maybe`, `clipping_warning`, `auto_rejected`) are not affected by re-evaluation — user decisions are preserved. Auto-approve eligibility requires `match_confidence >= max(match_threshold, auto_approve_match_threshold)`, so step 1 also catches raises of the display threshold.
 
 **Request:**
 ```json
 {
-  "match_threshold": 0.70
+  "match_threshold": 0.70,
+  "auto_approve_transcript_threshold": 0.92
 }
 ```
 
@@ -317,7 +326,7 @@ Client must re-send with `"confirm": true` to proceed.
 
 #### `POST /projects/{project_id}/transcription/run`
 
-Transcribe all pending/maybe segments that have not yet been transcribed.
+Transcribe all pending/maybe segments that have not yet been transcribed. Untranscribed `pending` segments are submitted with `resegment: true` and may be replaced by sentence-aligned children (see [Pipeline](pipeline.md) §Sentence-aligned re-segmentation); `maybe` segments are transcribed without re-segmentation.
 
 **Response 202:**
 ```json
@@ -357,11 +366,13 @@ Paginated segment list with filtering and sorting.
 | `max_confidence` | float | — | Filter by match confidence |
 | `min_duration` | float | — | Filter by duration in seconds |
 | `max_duration` | float | — | Filter by duration in seconds |
-| `sort` | string | `match_confidence` | `match_confidence`, `duration`, `start_secs`, `transcript_confidence` |
-| `order` | string | `desc` | `asc` or `desc` |
+| `sort` | string | `match_confidence` | `match_confidence`, `duration`, `start_secs`, `transcript_confidence`, `uncertainty` |
+| `order` | string | `desc` (`asc` for `uncertainty`) | `asc` or `desc` |
 | `page` | int | 1 | 1-based |
 | `per_page` | int | 50 | Max 200 |
 | `count_only` | bool | false | Return total count only, no segment data; used by bulk action preview |
+
+`status` accepts any segment status, including `auto_approved`. `sort=uncertainty` orders by `ABS(match_confidence - match_threshold)` — with the default `asc` order, the most borderline segments come first, which is the recommended review order once auto-approval has skimmed the confident top band.
 
 When `count_only=true`, returns immediately without fetching segment data:
 
@@ -415,6 +426,8 @@ Update a segment's review state or transcript.
 
 Patchable fields: `status`, `transcript_edited`.
 
+`status` may be set to any value the transition rules allow from the segment's current status — except `auto_approved`, which only the system assigns. A request to set `auto_approved` returns **409** `invalid_transition` regardless of current status.
+
 **Request:**
 ```json
 {
@@ -451,7 +464,7 @@ Apply an action to multiple segments at once.
 }
 ```
 
-`action` must be `approve`, `reject`, `maybe`, or `pending`. Each action respects the segment status transition rules — it only affects segments whose current status allows that transition. For example, `approve` only affects segments in `pending`, `maybe`, or `clipping_warning` status; `pending` only affects segments in `maybe` status (the `below_threshold` → `pending` transition is handled by the threshold re-evaluation in `PATCH /projects`, not by bulk actions). Segments in ineligible statuses are silently skipped. The filter uses the same parameters as `GET /segments`.
+`action` must be `approve`, `reject`, `maybe`, or `pending`. Each action respects the segment status transition rules — it only affects segments whose current status allows that transition. For example, `approve` only affects segments in `pending`, `maybe`, `auto_approved`, or `clipping_warning` status; `pending` only affects segments in `maybe` or `auto_approved` status (the `below_threshold` → `pending` transition is handled by the threshold re-evaluation in `PATCH /projects`, not by bulk actions). Segments in ineligible statuses are silently skipped. The filter uses the same parameters as `GET /segments`. A bulk `approve` with `filter: {"status": "auto_approved"}` is the "confirm all auto-approved" operation.
 
 **Response 200:**
 ```json
@@ -679,7 +692,9 @@ The orchestrator writes all segments to the database from this response. It copi
   "segments": [
     {
       "id": "7f3c2a1b-...",
-      "wav_path": "/data/projects/{project_id}/segments/raw/7f3c2a1b.wav"
+      "wav_path": "/data/projects/{project_id}/segments/raw/7f3c2a1b.wav",
+      "start_secs": 142.31,
+      "resegment": true
     }
   ],
   "model": "large-v2",
@@ -692,9 +707,13 @@ The orchestrator writes all segments to the database from this response. It copi
 |-------|------|----------|-------------|
 | `job_id` | string | yes | UUID assigned by orchestrator |
 | `segments` | array | yes | List of segment IDs and WAV paths to transcribe |
+| `segments[].start_secs` | float | when `resegment` is true | Absolute start of the segment within its source, used to compute absolute child timestamps |
+| `segments[].resegment` | bool | no (default false) | Whether the service may split this segment into sentence-aligned children. See [Pipeline](pipeline.md) §Sentence-aligned re-segmentation. |
 | `model` | string | yes | faster-whisper model size: `tiny`, `base`, `small`, `medium`, `large-v2` (default), `large-v3` |
 | `language` | string or null | no | ISO 639-1 language code (e.g. `en`, `fr`, `ja`). If null, faster-whisper auto-detects per segment. |
 | `batch_size` | int | no | Number of segments to transcribe concurrently on GPU. Default 16. Reduce if GPU OOMs during transcription. |
+
+Transcription always runs with word-level timestamps enabled; they are consumed internally for re-segmentation and not returned per word.
 
 **Response 202:** `{ "job_id": "...", "segment_count": 1089 }`
 
@@ -716,13 +735,39 @@ Progress updates return partial results as they complete:
       "id": "7f3c2a1b-...",
       "transcript": "Well, I'm sure I don't know what you mean.",
       "transcript_confidence": 0.88
+    },
+    {
+      "id": "9a1d4c2e-...",
+      "children": [
+        {
+          "id": "3e8f1b6a-...",
+          "wav_path": "/data/projects/{project_id}/segments/raw/3e8f1b6a-....wav",
+          "start_secs": 201.40,
+          "end_secs": 205.92,
+          "transcript": "I told you not to come back here.",
+          "transcript_confidence": 0.93
+        },
+        {
+          "id": "c47a9d05-...",
+          "wav_path": "/data/projects/{project_id}/segments/raw/c47a9d05-....wav",
+          "start_secs": 205.92,
+          "end_secs": 209.31,
+          "transcript": "And yet here you are.",
+          "transcript_confidence": 0.91
+        }
+      ]
     }
   ],
   "error": null
 }
 ```
 
-`completed_segments` is **cumulative** — each poll returns all segments completed so far, not just new ones since the last poll. The orchestrator must track which segment IDs it has already written to the database and skip duplicates. This design is simpler for the service (no cursor state) and idempotent for the orchestrator.
+Each entry in `completed_segments` takes one of two shapes:
+
+- **Unsplit** (the common case, and the only case when `resegment` was false): `{id, transcript, transcript_confidence}`.
+- **Split** (`resegment` was true and the segment produced 2+ utterances): `{id, children: [...]}` where `id` is the parent segment and each child carries a service-generated UUID, the child WAV path, **absolute** `start_secs`/`end_secs`, and its own transcript and confidence. The parent has no top-level transcript.
+
+`completed_segments` is **cumulative** — each poll returns all segments completed so far, not just new ones since the last poll. Entries are keyed by the parent segment `id`; the orchestrator must track which parent IDs it has already written to the database and skip duplicates. This design is simpler for the service (no cursor state) and idempotent for the orchestrator.
 
 The orchestrator writes completed segments to the database as they arrive, rather than waiting for the full job to finish. This lets the review UI show transcriptions incrementally.
 
