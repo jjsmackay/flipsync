@@ -199,12 +199,12 @@ export function SegmentDetail({
             <ConfidenceBadge value={segment.transcript_confidence} label="transcript" title={TRANSCRIPT_TOOLTIP} />
           )}
           {segment.clipping_warning && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300">
               ⚡ Clipping
             </span>
           )}
         </div>
-        <p className="text-xs text-gray-500 truncate">
+        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
           {segment.source_filename} &nbsp;·&nbsp; {formatTimestamp(segment.start_secs)} – {formatTimestamp(segment.end_secs)}
           &nbsp;({segment.duration_secs.toFixed(1)}s)
         </p>
@@ -217,8 +217,8 @@ export function SegmentDetail({
                   key={flag}
                   className={`inline-flex items-center px-2 py-0.5 rounded text-xs ${
                     isCleanupError
-                      ? 'bg-red-50 text-red-700'
-                      : 'bg-amber-50 text-amber-700'
+                      ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400'
+                      : 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400'
                   }`}
                   title={
                     flag === 'short_transcript'
@@ -259,7 +259,7 @@ export function SegmentDetail({
         <button
           type="button"
           onClick={onSpectrogramToggle}
-          className="self-start text-xs text-indigo-600 hover:text-indigo-800 focus:outline-none"
+          className="self-start text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 focus:outline-none"
         >
           {showSpectrogram ? 'Hide spectrogram' : 'Show spectrogram'}
         </button>
@@ -268,7 +268,7 @@ export function SegmentDetail({
       {/* Transcript */}
       <div className="flex flex-col gap-1">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-gray-600 uppercase tracking-wide">Transcript</span>
+          <span className="text-xs font-medium text-gray-600 dark:text-gray-400 uppercase tracking-wide">Transcript</span>
           {!isEditing && (
             <div className="flex items-center gap-2">
               {segment.transcript_edited !== null && (
@@ -284,7 +284,7 @@ export function SegmentDetail({
                       setError(e instanceof Error ? e.message : 'Undo failed')
                     }
                   }}
-                  className="text-xs text-gray-400 hover:text-red-600 focus:outline-none"
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 focus:outline-none"
                 >
                   Undo edit
                 </button>
@@ -292,7 +292,7 @@ export function SegmentDetail({
               <button
                 type="button"
                 onClick={startEditing}
-                className="text-xs text-indigo-600 hover:text-indigo-800 focus:outline-none"
+                className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 focus:outline-none"
               >
                 Edit (E)
               </button>
@@ -308,7 +308,7 @@ export function SegmentDetail({
               onChange={e => setEditedTranscript(e.target.value)}
               onKeyDown={handleTextareaKeyDown}
               rows={4}
-              className="w-full border border-indigo-400 rounded px-2 py-1.5 text-sm text-gray-800 resize-vertical focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="w-full border border-indigo-400 dark:border-indigo-500 rounded px-2 py-1.5 text-sm text-gray-800 dark:text-gray-100 dark:bg-gray-900 resize-vertical focus:outline-none focus:ring-2 focus:ring-indigo-400"
             />
             <div className="flex items-center gap-2">
               <button
@@ -322,7 +322,7 @@ export function SegmentDetail({
               <button
                 type="button"
                 onClick={cancelEditing}
-                className="px-3 py-1 rounded text-xs bg-gray-100 text-gray-700 hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                className="px-3 py-1 rounded text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-400"
               >
                 Cancel (Esc)
               </button>
@@ -331,11 +331,11 @@ export function SegmentDetail({
         ) : (
           <p
             onClick={startEditing}
-            className="text-sm text-gray-700 cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5 min-h-[2.5rem]"
+            className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 rounded px-1 py-0.5 min-h-[2.5rem]"
           >
             {displayTranscript !== null
-              ? displayTranscript || <span className="italic text-gray-400">No transcript — click to add</span>
-              : <span className="italic text-gray-400">Transcript pending</span>
+              ? displayTranscript || <span className="italic text-gray-400 dark:text-gray-500">No transcript — click to add</span>
+              : <span className="italic text-gray-400 dark:text-gray-500">Transcript pending</span>
             }
           </p>
         )}
@@ -343,13 +343,13 @@ export function SegmentDetail({
 
       {/* Error */}
       {error && (
-        <p className="text-xs text-red-600 bg-red-50 rounded px-2 py-1">{error}</p>
+        <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded px-2 py-1">{error}</p>
       )}
 
       {/* Auto-approved chip */}
       {segment.status === 'auto_approved' && (
         <div
-          className="mt-auto inline-flex w-fit items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-teal-100 text-teal-800 cursor-help"
+          className="mt-auto inline-flex w-fit items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-teal-100 dark:bg-teal-900/40 text-teal-800 dark:text-teal-300 cursor-help"
           title="Approved automatically — speaker match and transcript confidence both cleared the project's auto-approve thresholds. Approve to confirm, or override."
         >
           Auto-approved
@@ -357,26 +357,26 @@ export function SegmentDetail({
       )}
 
       {/* Action buttons */}
-      <div className={`flex gap-2 ${segment.status === 'auto_approved' ? '' : 'mt-auto'} pt-2 border-t border-gray-100`}>
+      <div className={`flex gap-2 ${segment.status === 'auto_approved' ? '' : 'mt-auto'} pt-2 border-t border-gray-100 dark:border-gray-800`}>
         <button
           type="button"
           onClick={() => void handleStatusAction('approved')}
           title={segment.clipping_warning ? 'Segment has clipping warning' : undefined}
-          className="flex-1 py-2 rounded text-sm font-medium bg-green-100 text-green-800 hover:bg-green-200 focus:outline-none focus:ring-2 focus:ring-green-400"
+          className="flex-1 py-2 rounded text-sm font-medium bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-900/60 focus:outline-none focus:ring-2 focus:ring-green-400"
         >
           {segment.clipping_warning && '⚡ '}Approve (A)
         </button>
         <button
           type="button"
           onClick={() => void handleStatusAction('maybe')}
-          className="flex-1 py-2 rounded text-sm font-medium bg-yellow-100 text-yellow-800 hover:bg-yellow-200 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+          className="flex-1 py-2 rounded text-sm font-medium bg-yellow-100 dark:bg-yellow-900/40 text-yellow-800 dark:text-yellow-300 hover:bg-yellow-200 dark:hover:bg-yellow-900/60 focus:outline-none focus:ring-2 focus:ring-yellow-400"
         >
           Maybe (M)
         </button>
         <button
           type="button"
           onClick={() => void handleStatusAction('rejected')}
-          className="flex-1 py-2 rounded text-sm font-medium bg-red-100 text-red-800 hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-400"
+          className="flex-1 py-2 rounded text-sm font-medium bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/60 focus:outline-none focus:ring-2 focus:ring-red-400"
         >
           Reject (X)
         </button>
