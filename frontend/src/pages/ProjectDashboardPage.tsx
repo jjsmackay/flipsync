@@ -10,11 +10,12 @@ import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel
 import { PipelineControls } from '../components/project/PipelineControls'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { UploadArea } from '../components/project/UploadArea'
+import { ThemeToggle } from '../components/ui/ThemeToggle'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">{title}</h2>
+      <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">{title}</h2>
       {children}
     </section>
   )
@@ -89,13 +90,13 @@ export function ProjectDashboardPage() {
 
   if (isLoading && !project) {
     return (
-      <div className="p-8 text-gray-500 text-sm">Loading project...</div>
+      <div className="p-8 text-gray-500 dark:text-gray-400 text-sm">Loading project...</div>
     )
   }
 
   if (error) {
     return (
-      <div className="p-8 text-red-600 text-sm">
+      <div className="p-8 text-red-600 dark:text-red-400 text-sm">
         Failed to load project: {error.message}
       </div>
     )
@@ -103,7 +104,7 @@ export function ProjectDashboardPage() {
 
   if (!project) {
     return (
-      <div className="p-8 text-gray-500 text-sm">Project not found.</div>
+      <div className="p-8 text-gray-500 dark:text-gray-400 text-sm">Project not found.</div>
     )
   }
 
@@ -112,16 +113,19 @@ export function ProjectDashboardPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-2xl font-bold text-gray-900 truncate">{project.name}</h1>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 truncate">{project.name}</h1>
           <StatusBadge status={project.status} />
         </div>
-        <Link
-          to={`/projects/${project.id}/review`}
-          className="flex-shrink-0 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg
-            hover:bg-blue-700 transition-colors"
-        >
-          Review queue →
-        </Link>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <ThemeToggle />
+          <Link
+            to={`/projects/${project.id}/review`}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg
+              hover:bg-blue-700 transition-colors"
+          >
+            Review queue →
+          </Link>
+        </div>
       </div>
 
       {/* Active & Failed Jobs */}
@@ -162,7 +166,7 @@ export function ProjectDashboardPage() {
           onReprocess={handleReprocess}
         />
         {reprocessError && (
-          <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+          <p className="mt-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
             {reprocessError}
           </p>
         )}
@@ -180,16 +184,16 @@ export function ProjectDashboardPage() {
           onClick={() => setReprocessConfirm(null)}
         >
           <div
-            className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6"
+            className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md mx-4 p-6"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-semibold text-gray-900 mb-2">Confirm reprocess</h2>
-            <p className="text-sm text-gray-600 mb-5">{reprocessConfirm.message}</p>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Confirm reprocess</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-5">{reprocessConfirm.message}</p>
             <div className="flex justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setReprocessConfirm(null)}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50"
               >
                 Cancel
               </button>
