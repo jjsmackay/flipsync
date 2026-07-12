@@ -196,7 +196,7 @@ def _make_mock_diarization():
         (mock_turn_1a, None, "SPEAKER_01"),
         (mock_turn_0b, None, "SPEAKER_00"),
     ]
-    return diarization
+    return MagicMock(speaker_diarization=diarization)
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +419,7 @@ def test_all_segments_returned_regardless_of_confidence(sample_wav_path, referen
         (turn_b, None, "SPEAKER_01"),
     ]
 
-    mock_pipeline = MagicMock(return_value=mock_diarization)
+    mock_pipeline = MagicMock(return_value=MagicMock(speaker_diarization=mock_diarization))
 
     ref_emb = np.array([1.0, 0.0])
     emb_high = np.array([0.99, 0.1])

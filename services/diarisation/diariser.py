@@ -241,7 +241,7 @@ def run_scout(
         input_path,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
-    )
+    ).speaker_diarization
 
     raw_turns = []
     for turn, _, speaker_label in diarization.itertracks(yield_label=True):
@@ -332,7 +332,7 @@ def run_diarisation(
         input_path,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
-    )
+    ).speaker_diarization
 
     raw_turns = []
     for turn, _, speaker_label in diarization.itertracks(yield_label=True):

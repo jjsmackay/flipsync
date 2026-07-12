@@ -91,7 +91,7 @@ def test_match_confidence_clamped_in_pipeline(sample_wav_path, reference_wav_pat
     mock_diarization = MagicMock()
     mock_diarization.itertracks.return_value = [(mock_turn, None, "SPEAKER_00")]
 
-    mock_pipeline = MagicMock(return_value=mock_diarization)
+    mock_pipeline = MagicMock(return_value=MagicMock(speaker_diarization=mock_diarization))
 
     # Reference and speaker embeddings point in opposite directions → cosine = -1.
     ref_emb = np.array([1.0, 0.0])
@@ -133,7 +133,7 @@ def _mock_pipeline_for(tracks):
 
     diarization = MagicMock()
     diarization.itertracks.return_value = tracks
-    return MagicMock(return_value=diarization)
+    return MagicMock(return_value=MagicMock(speaker_diarization=diarization))
 
 
 def test_per_segment_score_differs_from_cluster(sample_wav_path, reference_wav_path, output_dir):
@@ -382,7 +382,7 @@ def test_uuid_filename_full_length(sample_wav_path, reference_wav_path, output_d
     mock_diarization = MagicMock()
     mock_diarization.itertracks.return_value = [(mock_turn, None, "SPEAKER_00")]
 
-    mock_pipeline = MagicMock(return_value=mock_diarization)
+    mock_pipeline = MagicMock(return_value=MagicMock(speaker_diarization=mock_diarization))
 
     ref_emb = np.array([1.0, 0.0, 0.0])
     seg_emb = np.array([0.9, 0.1, 0.0])
@@ -435,7 +435,7 @@ def test_output_dir_created(tmp_path, sample_wav_path, reference_wav_path):
     mock_diarization = MagicMock()
     mock_diarization.itertracks.return_value = [(mock_turn, None, "SPEAKER_00")]
 
-    mock_pipeline = MagicMock(return_value=mock_diarization)
+    mock_pipeline = MagicMock(return_value=MagicMock(speaker_diarization=mock_diarization))
 
     ref_emb = np.array([1.0, 0.0, 0.0])
     seg_emb = np.array([0.8, 0.2, 0.0])
@@ -480,7 +480,7 @@ def test_short_segment_filtered(sample_wav_path, reference_wav_path, output_dir)
         (long_turn, None, "SPEAKER_00"),
     ]
 
-    mock_pipeline = MagicMock(return_value=mock_diarization)
+    mock_pipeline = MagicMock(return_value=MagicMock(speaker_diarization=mock_diarization))
 
     ref_emb = np.array([1.0, 0.0])
     seg_emb = np.array([0.9, 0.1])
@@ -519,7 +519,7 @@ def test_progress_callback_milestones(sample_wav_path, reference_wav_path, outpu
     mock_diarization = MagicMock()
     mock_diarization.itertracks.return_value = [(mock_turn, None, "SPEAKER_00")]
 
-    mock_pipeline = MagicMock(return_value=mock_diarization)
+    mock_pipeline = MagicMock(return_value=MagicMock(speaker_diarization=mock_diarization))
 
     ref_emb = np.array([1.0, 0.0])
     seg_emb = np.array([0.9, 0.1])
@@ -623,7 +623,7 @@ def _mock_scout_pipeline(tracks):
 
     diarization = MagicMock()
     diarization.itertracks.return_value = itertracks
-    return MagicMock(return_value=diarization)
+    return MagicMock(return_value=MagicMock(speaker_diarization=diarization))
 
 
 def test_run_scout_writes_montages_and_stats(sample_wav_path, output_dir):
