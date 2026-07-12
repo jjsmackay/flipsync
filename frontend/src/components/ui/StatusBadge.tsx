@@ -17,6 +17,7 @@ const STATUS_STYLES: Record<string, string> = {
   below_threshold: 'bg-gray-200 text-gray-500',
   clipping_warning: 'bg-orange-100 text-orange-700',
   auto_rejected: 'bg-red-200 text-red-600',
+  auto_approved: 'bg-teal-100 text-teal-700',
   uploaded: 'bg-gray-100 text-gray-600',
   extracting: 'bg-blue-100 text-blue-600',
   step1_pending: 'bg-gray-100 text-gray-600',
@@ -36,6 +37,7 @@ const STATUS_DOT: Record<string, string> = {
   below_threshold: 'bg-gray-300',
   clipping_warning: 'bg-orange-400',
   auto_rejected: 'bg-red-400',
+  auto_approved: 'bg-teal-500',
 }
 
 interface StatusBadgeProps {

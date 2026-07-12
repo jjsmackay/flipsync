@@ -16,6 +16,7 @@ const STATUS_OPTIONS = [
   { value: 'pending', label: 'Pending' },
   { value: 'maybe', label: 'Maybe' },
   { value: 'approved', label: 'Approved' },
+  { value: 'auto_approved', label: 'Auto-approved' },
   { value: 'rejected', label: 'Rejected' },
   { value: 'clipping_warning', label: 'Clipping warning' },
   { value: 'below_threshold', label: 'Below threshold' },
@@ -27,7 +28,15 @@ const SORT_OPTIONS = [
   { value: 'duration', label: 'Duration' },
   { value: 'start_secs', label: 'Source order' },
   { value: 'transcript_confidence', label: 'Transcript confidence' },
+  { value: 'uncertainty', label: 'Uncertainty (most borderline first)' },
 ]
+
+// The API defaults order=asc for uncertainty (most-borderline-first) and desc for
+// everything else. Switching the sort field resets order to that sort's sensible
+// default; the order toggle button still lets the user flip it afterwards.
+const DEFAULT_ORDER_FOR_SORT: Record<string, 'asc' | 'desc'> = {
+  uncertainty: 'asc',
+}
 
 export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
   return (
@@ -105,7 +114,10 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
         <select
           className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
           value={filter.sort}
-          onChange={e => onChange({ sort: e.target.value })}
+          onChange={e => {
+            const sort = e.target.value
+            onChange({ sort, order: DEFAULT_ORDER_FOR_SORT[sort] ?? 'desc' })
+          }}
         >
           {SORT_OPTIONS.map(o => (
             <option key={o.value} value={o.value}>

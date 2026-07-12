@@ -10,6 +10,7 @@ export type SegmentStatus =
   | 'below_threshold'
   | 'clipping_warning'
   | 'auto_rejected'
+  | 'auto_approved'
 
 export type SourceStatus =
   | 'uploaded'
@@ -46,6 +47,9 @@ export interface ProjectConfig {
   language: string | null
   match_threshold: number
   target_duration_secs: number
+  auto_approve_enabled: boolean
+  auto_approve_match_threshold: number
+  auto_approve_transcript_threshold: number
 }
 
 export interface SourceCoverage {
@@ -59,6 +63,7 @@ export interface SourceCoverage {
 
 export interface ProjectDetailStats extends ProjectStats {
   total_segments: number
+  auto_approved_count: number
   maybe_count: number
   rejected_count: number
   below_threshold_count: number
@@ -148,6 +153,9 @@ export interface PatchProjectRequest {
   target_duration_secs?: number
   whisper_model?: string
   language?: string | null
+  auto_approve_enabled?: boolean
+  auto_approve_match_threshold?: number
+  auto_approve_transcript_threshold?: number
 }
 
 export interface PatchSegmentRequest {

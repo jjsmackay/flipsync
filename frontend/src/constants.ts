@@ -11,6 +11,7 @@ export const ALL_SEGMENT_STATUSES: SegmentStatus[] = [
   'below_threshold',
   'clipping_warning',
   'auto_rejected',
+  'auto_approved',
 ]
 
 export const ALL_SEGMENT_STATUSES_CSV = ALL_SEGMENT_STATUSES.join(',')

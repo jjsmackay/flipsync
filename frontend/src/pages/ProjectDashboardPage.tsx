@@ -6,6 +6,7 @@ import type { FailedJob } from '../types/api'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { JobsPanel } from '../components/project/JobsPanel'
 import { StatsPanel } from '../components/project/StatsPanel'
+import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel'
 import { PipelineControls } from '../components/project/PipelineControls'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { UploadArea } from '../components/project/UploadArea'
@@ -138,6 +139,15 @@ export function ProjectDashboardPage() {
       {/* Stats */}
       <Section title="Stats">
         <StatsPanel stats={project.stats} config={project.config} />
+      </Section>
+
+      {/* Settings */}
+      <Section title="Settings">
+        <ProjectSettingsPanel
+          projectId={project.id}
+          config={project.config}
+          onSaved={() => void refetch()}
+        />
       </Section>
 
       {/* Pipeline Controls */}
