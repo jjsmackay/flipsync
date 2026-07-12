@@ -164,6 +164,40 @@ async def _run_project_queue(project_id: str) -> None:
             await _execute_job(project_id, job_id)
 
 
+async def shutdown_runners() -> None:
+    """Cancel and await every per-project runner task on the current loop.
+
+    Called from the app's lifespan shutdown so no runner is left pending when
+    its event loop closes. An idle runner spends most of its life awaiting
+    ``asyncio.wait_for(queue.get(), ...)``; if the loop closes while that's
+    still pending, the Task is destroyed without ever being cancelled, and a
+    later GC of it raises "RuntimeError: Event loop is closed" (surfaced by
+    pytest as a PytestUnraisableExceptionWarning/ResourceWarning) whenever that
+    happens to run — which can be during a completely unrelated later test.
+
+    Only tasks bound to *this* running loop are touched: ``_runners`` is
+    process-global, and calling ``.cancel()``/awaiting a task that belongs to
+    a different (already-closed) loop raises "Event loop is closed" itself.
+    In the real app there is only ever one loop, so this is only a guard —
+    it matters for tests, which drive jobs on ad hoc throwaway loops.
+    """
+    current_loop = asyncio.get_running_loop()
+    own = [
+        (pid, t) for pid, t in _runners.items()
+        if not t.done() and t.get_loop() is current_loop
+    ]
+    for _, t in own:
+        t.cancel()
+    for pid, t in own:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Runner task raised during shutdown")
+        _runners.pop(pid, None)
+
+
 async def _execute_job(project_id: str, job_id: str) -> None:
     conn = get_conn(project_id)
     row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()

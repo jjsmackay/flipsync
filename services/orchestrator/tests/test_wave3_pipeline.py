@@ -72,11 +72,30 @@ def _create_segment_wav(pdir, seg_id):
 
 
 def _run_job(project_id, job_id):
-    """Execute a single job synchronously by creating a temporary event loop."""
+    """Execute a single job synchronously by creating a temporary event loop.
+
+    A handler's success path can auto-enqueue a follow-up job (vocal
+    separation -> diarisation, diarisation -> transcription), and
+    jobs.enqueue() starts a background runner task via _ensure_runner()
+    whenever it's called from a running loop — which this is. These tests
+    drive jobs one at a time themselves (see _enqueue_and_run, which drains
+    the queue immediately after enqueuing), so that runner is never wanted
+    here; left alone, it would still be pending when this throwaway loop
+    closes below, and later touching that task (e.g. jobs.shutdown_runners()
+    on a *different*, still-open loop, or Python garbage-collecting it)
+    raises "RuntimeError: Event loop is closed". Suppress runner creation for
+    the duration of this call, matching the TestRecovery idiom in
+    test_review_fixes.py.
+    """
     import jobs
     loop = asyncio.new_event_loop()
-    loop.run_until_complete(jobs._execute_job(project_id, job_id))
-    loop.close()
+    orig_ensure_runner = jobs._ensure_runner
+    jobs._ensure_runner = lambda pid: None
+    try:
+        loop.run_until_complete(jobs._execute_job(project_id, job_id))
+    finally:
+        jobs._ensure_runner = orig_ensure_runner
+        loop.close()
 
 
 def _enqueue_and_run(project_id, job_type, source_id=None, params=None):
@@ -283,8 +302,16 @@ class TestOOMRetry:
 # ========================================================================
 
 class TestReprocessFlow:
-    def test_step1_reprocess_clears_vocals_path(self, client, project):
+    def test_step1_reprocess_clears_vocals_path(self, client, project, monkeypatch):
         import db
+        import jobs
+        # The reprocess endpoint enqueues a job, which starts a background
+        # runner on the TestClient's event loop; that runner can flip the
+        # source to step1_running before this test reads it back. Keep the
+        # job queued (don't start the runner) so the status assertion below
+        # is deterministic — same idiom as TestRecovery in test_review_fixes.py.
+        monkeypatch.setattr(jobs, "_ensure_runner", lambda pid: None)
+
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "complete",
                                     vocals_path="audio/vocals/test.wav")
@@ -305,8 +332,13 @@ class TestReprocessFlow:
         ).fetchone()[0]
         assert count == 0
 
-    def test_step2_reprocess_deletes_segments_preserves_vocals(self, client, project):
+    def test_step2_reprocess_deletes_segments_preserves_vocals(self, client, project, monkeypatch):
         import db
+        import jobs
+        # See test_step1_reprocess_clears_vocals_path: prevent the runner from
+        # racing the status assertion below.
+        monkeypatch.setattr(jobs, "_ensure_runner", lambda pid: None)
+
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "complete",
                                     vocals_path="audio/vocals/test.wav")
