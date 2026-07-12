@@ -212,6 +212,20 @@ export function getScoutSampleUrl(projectId: string, speakerLabel: string, index
   return `${BASE_URL}/projects/${projectId}/reference/scout/samples/${speakerLabel}/${index}`
 }
 
+// The assembled-reference montage for a candidate — what selecting this speaker
+// would produce (included turns, longest-first, capped at 30s). `excludedIndices`
+// mirrors the card's exclusion ticks so the preview stays in sync with curation.
+export function getScoutPreviewUrl(
+  projectId: string,
+  speakerLabel: string,
+  excludedIndices: number[] = [],
+): string {
+  const qs = excludedIndices.length
+    ? '?' + excludedIndices.map((i) => `exclude=${encodeURIComponent(i)}`).join('&')
+    : ''
+  return `${BASE_URL}/projects/${projectId}/reference/scout/preview/${speakerLabel}${qs}`
+}
+
 export function selectScoutSpeaker(
   projectId: string,
   speakerLabel: string,

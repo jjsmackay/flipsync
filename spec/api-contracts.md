@@ -359,6 +359,18 @@ Stream one pool turn WAV for a candidate speaker so the browser can play it. Res
 
 ---
 
+#### `GET /projects/{project_id}/reference/scout/preview/{speaker_label}`
+
+Stream the assembled-reference montage a candidate speaker would produce, so the browser can audition it with one control — no expanding to individual pool turns. The orchestrator assembles it in memory from the candidate's pool turns minus any in the repeatable `exclude` query parameter (e.g. `?exclude=0&exclude=3`) — longest-first up to the 30 s cap, concatenated via the stdlib `wave` module — using the **same** assembly as `scout/select`, so the preview matches the eventual reference exactly. Nothing is written to disk and the reference is not touched. Full file, no `Range` support.
+
+**Response 200:** `audio/wav`, `Content-Length` header set.
+
+**Response 404 `unknown_speaker`** if the label is not in the current candidate set.
+
+**Response 422 `reference_too_short`** if every pool turn is excluded (nothing left to assemble).
+
+---
+
 #### `POST /projects/{project_id}/reference/scout/select`
 
 Adopt a candidate speaker as the reference. The orchestrator assembles `reference.wav` from the candidate's pool turns minus any in `excluded_indices` — longest-first up to a 30 s cap, concatenated via the stdlib `wave` module — sets `reference_path`, and sets `reference_origin` to `{"type": "diarise_pick", "source_id": "…", "speaker_label": "…", "excluded_indices": […], "included_indices": […]}`. Does **not** auto-run step 2 — mirrors the upload endpoint's "does not automatically re-run diarisation" behaviour.

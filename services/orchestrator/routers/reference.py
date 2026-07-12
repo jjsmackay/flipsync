@@ -1,6 +1,7 @@
 """Reference clip endpoints: upload, and diarise + pick (scout)."""
 
 import asyncio
+import io
 import json
 import os
 import uuid
@@ -9,8 +10,8 @@ from pathlib import Path
 from typing import Optional
 
 import aiofiles
-from fastapi import APIRouter, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, UploadFile, File, Query
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from db import get_conn, project_dir, require_project, utc_now
@@ -230,8 +231,11 @@ def _select_reference_turns(pool: list[dict], excluded: set[int], cap_secs: floa
 
 def _assemble_reference_wav(pool_dir: Path, chosen: list[tuple[int, float]], dest) -> None:
     """Concatenate the chosen pool slices into dest, truncating each to take_secs.
-    Uses the stdlib wave module so the orchestrator needs no audio deps."""
-    with wave.open(str(dest), "wb") as out:
+    Uses the stdlib wave module so the orchestrator needs no audio deps. `dest`
+    may be a path (select's staged temp file) or a writable binary file object
+    (preview's in-memory buffer) — wave.open accepts both."""
+    target = dest if hasattr(dest, "write") else str(dest)
+    with wave.open(target, "wb") as out:
         params_set = False
         for index, take in chosen:
             src = pool_dir / f"{index}.wav"
@@ -243,6 +247,14 @@ def _assemble_reference_wav(pool_dir: Path, chosen: list[tuple[int, float]], des
                     params_set = True
                 nframes = min(w.getnframes(), int(take * w.getframerate()))
                 out.writeframes(w.readframes(nframes))
+
+
+def _assemble_reference_bytes(pool_dir: Path, chosen: list[tuple[int, float]]) -> bytes:
+    """Assemble the chosen slices into an in-memory WAV and return its bytes.
+    Used by the preview endpoint, which never touches disk or the reference."""
+    buf = io.BytesIO()
+    _assemble_reference_wav(pool_dir, chosen, buf)
+    return buf.getvalue()
 
 
 @router.get("/scout")
@@ -302,6 +314,43 @@ async def get_scout_sample(project_id: str, speaker_label: str, index: int):
         raise AppError(404, "audio_not_found", "Pool slice WAV not found.")
 
     return FileResponse(str(wav), media_type="audio/wav")
+
+
+@router.get("/scout/preview/{speaker_label}")
+async def get_scout_preview(
+    project_id: str,
+    speaker_label: str,
+    exclude: list[int] = Query(default=[]),
+):
+    """Stream the reference montage this speaker would produce — the included
+    pool turns, longest-first, capped at REFERENCE_MAX_SECS — assembled in
+    memory so the user can audition a candidate (and the effect of their
+    exclusions) before committing to select. Identical assembly to select, so
+    the preview matches the eventual reference exactly."""
+    conn = require_project(project_id)
+
+    cand = conn.execute(
+        "SELECT scout_job_id, pool_json FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
+        (project_id, speaker_label),
+    ).fetchone()
+    if cand is None:
+        raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
+
+    pool = json.loads(cand["pool_json"])
+    chosen = _select_reference_turns(pool, set(exclude), REFERENCE_MAX_SECS)
+    if not chosen:
+        raise AppError(
+            422, "reference_too_short",
+            "No turns left after exclusions — keep at least one segment.",
+            {"excluded_indices": sorted(set(exclude))},
+        )
+
+    pool_dir = (
+        project_dir(project_id) / "reference_candidates"
+        / cand["scout_job_id"] / speaker_label
+    )
+    data = await asyncio.to_thread(_assemble_reference_bytes, pool_dir, chosen)
+    return Response(content=data, media_type="audio/wav")
 
 
 @router.post("/scout/select")

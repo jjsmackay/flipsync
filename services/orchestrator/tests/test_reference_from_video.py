@@ -459,6 +459,50 @@ class TestScoutEndpoints:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "audio/wav"
 
+    def test_preview_unknown_speaker_returns_404(self, client, project):
+        resp = client.get(f"/projects/{project}/reference/scout/preview/SPEAKER_99")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "unknown_speaker"
+
+    def test_preview_streams_montage_wav(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+        pdir = db.project_dir(project)
+        scout_job_id = _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(10.0, 8.0), total_secs=120.0)
+        _write_pool_slices(pdir, scout_job_id, "SPEAKER_00", [0, 1])
+
+        resp = client.get(f"/projects/{project}/reference/scout/preview/SPEAKER_00")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+        # A real, playable WAV was returned, not an empty body.
+        assert len(resp.content) > 44  # WAV header is 44 bytes
+
+    def test_preview_reflects_exclusions(self, client, project, isolated_data_dir):
+        # Excluding turns must shorten the montage — the preview mirrors select.
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+        pdir = db.project_dir(project)
+        scout_job_id = _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(10.0, 8.0), total_secs=120.0)
+        _write_pool_slices(pdir, scout_job_id, "SPEAKER_00", [0, 1])
+
+        full = client.get(f"/projects/{project}/reference/scout/preview/SPEAKER_00")
+        partial = client.get(f"/projects/{project}/reference/scout/preview/SPEAKER_00?exclude=0")
+        assert full.status_code == 200 and partial.status_code == 200
+        # Dropping the longest turn leaves a shorter montage.
+        assert len(partial.content) < len(full.content)
+
+    def test_preview_all_excluded_returns_422(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+        _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(10.0, 8.0), total_secs=120.0)
+
+        resp = client.get(f"/projects/{project}/reference/scout/preview/SPEAKER_00?exclude=0&exclude=1")
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "reference_too_short"
+
     def test_select_unknown_speaker_returns_404(self, client, project):
         resp = client.post(f"/projects/{project}/reference/scout/select",
                            json={"speaker_label": "SPEAKER_99"})
