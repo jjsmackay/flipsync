@@ -66,7 +66,7 @@ export function ReviewQueuePage() {
       controller.abort()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, filter.status, filter.source_id, filter.min_confidence, filter.min_duration, filter.sort, filter.order, filter.page, refreshKey])
+  }, [projectId, filter.status, filter.source_id, filter.min_duration, filter.sort, filter.order, filter.page, refreshKey])
 
   // Fetch ALL segments for the current source (every status), for the timeline — so the
   // axis and bars reflect the whole source rather than just the current review page.

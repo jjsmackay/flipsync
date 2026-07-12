@@ -76,23 +76,6 @@ export function FilterBar({ filter, sources, onChange }: FilterBarProps) {
         </label>
       )}
 
-      {/* Min confidence */}
-      <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
-        Min confidence
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.05}
-          value={filter.min_confidence}
-          onChange={e => onChange({ min_confidence: parseFloat(e.target.value) })}
-          className="w-24 accent-indigo-600"
-        />
-        <span className="font-mono text-xs text-gray-700 dark:text-gray-300 w-8 text-right">
-          {(filter.min_confidence * 100).toFixed(0)}%
-        </span>
-      </label>
-
       {/* Min duration */}
       <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400">
         Min duration
