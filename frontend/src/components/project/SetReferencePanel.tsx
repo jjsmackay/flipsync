@@ -6,6 +6,7 @@ import {
   startScout,
   getScoutStatus,
   getScoutSampleUrl,
+  getScoutPreviewUrl,
   selectScoutSpeaker,
   uploadReference,
 } from '../../api/client'
@@ -498,6 +499,22 @@ function CandidateCard({
           </button>
         </div>
       </div>
+
+      {/* Audition what selecting this speaker produces: the assembled-reference
+          montage, capped at 30s. Always available without expanding, and its
+          src carries the current exclusions so it tracks curation. Hidden only
+          when nothing is left to play (every turn excluded). */}
+      {inReference.size > 0 && (
+        <div className="mt-3 flex items-center gap-2">
+          <span className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400">Preview</span>
+          <audio
+            controls
+            preload="none"
+            src={getScoutPreviewUrl(projectId, candidate.speaker_label, Array.from(excludedSet))}
+            className="h-8 flex-1 min-w-0 max-w-sm"
+          />
+        </div>
+      )}
 
       {expanded && (
         <ul className="mt-4 space-y-2 border-t border-gray-100 dark:border-gray-800 pt-3">
