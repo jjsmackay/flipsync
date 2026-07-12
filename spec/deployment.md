@@ -116,7 +116,6 @@ services:
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
-      - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-}
       - ORCHESTRATOR_PROXY_TARGET=http://orchestrator:8000
     depends_on:
       - orchestrator
@@ -137,7 +136,9 @@ networks:
 
 **The cleanup service has no GPU reservation.** FFmpeg runs on CPU. This is intentional and correct.
 
-**The frontend is a separate container** serving the built React app via a Vite preview server. That server also proxies `/api/*` to the orchestrator (`ORCHESTRATOR_PROXY_TARGET`), so the browser only ever talks to the frontend origin — the orchestrator's published port and CORS are not needed for normal UI use. `VITE_ALLOWED_HOSTS` adds hostnames the preview server will accept when the UI is reached through a reverse proxy or custom domain.
+**The frontend is a separate container** serving the built React app with Caddy. Caddy serves the static assets and proxies `/api/*` to the orchestrator (`ORCHESTRATOR_PROXY_TARGET`), so the browser only ever talks to the frontend origin — the orchestrator's published port and CORS are not needed for normal UI use. Caddy streams request bodies with no size cap by default, so large source uploads (multi-GB video) pass straight through to the orchestrator rather than being buffered or capped at this hop.
+
+**Uploads through an external reverse proxy.** Source files are large (1–4 GB). Any reverse proxy you put in front of the frontend (on a separate host, ingress, etc.) must allow large request bodies and long-running uploads — otherwise it will reset the connection mid-upload regardless of what FlipSync does. For nginx that means `client_max_body_size` raised to your largest expected source (e.g. `5G`), generous `proxy_*_timeout` values, and `proxy_request_buffering off` so the body streams instead of spooling to a temp file. Equivalent settings apply to Caddy, Traefik, or any other edge proxy. This is deployment-specific and lives in your proxy config, not in the repo.
 
 ---
 
@@ -151,7 +152,6 @@ Create a `.env` file at the repo root before first run: `cp .env.example .env`. 
 | `MODELS_ROOT` | no | `/mnt/models/flipsync` | Host dir for the demucs/pyannote/whisper caches |
 | `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
 | `FRONTEND_PORT` | no | `3000` | Host port for the UI |
-| `VITE_ALLOWED_HOSTS` | no | — | Extra hostnames the frontend accepts (reverse proxy / custom domain) |
 | `CORS_ORIGINS` | no | `http://localhost:3000,http://127.0.0.1:3000` | Browser origins allowed to call the orchestrator directly |
 
 Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.

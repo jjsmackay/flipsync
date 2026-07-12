@@ -9,6 +9,8 @@ interface UploadAreaProps {
 export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
   const [uploading, setUploading] = useState(false)
   const [uploadingName, setUploadingName] = useState<string | null>(null)
+  // null = upload in flight but browser can't compute progress (indeterminate)
+  const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
 
@@ -19,14 +21,16 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
     setError(null)
     setUploading(true)
     setUploadingName(file.name)
+    setProgress(0)
     try {
-      await uploadSource(projectId, file)
+      await uploadSource(projectId, file, (f) => setProgress(f))
       onUploaded()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setUploading(false)
       setUploadingName(null)
+      setProgress(null)
     }
   }
 
@@ -34,14 +38,16 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
     setError(null)
     setUploading(true)
     setUploadingName(file.name)
+    setProgress(0)
     try {
-      await uploadReference(projectId, file)
+      await uploadReference(projectId, file, (f) => setProgress(f))
       onUploaded()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setUploading(false)
       setUploadingName(null)
+      setProgress(null)
     }
   }
 
@@ -85,11 +91,25 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
           ${uploading ? 'opacity-60 cursor-not-allowed' : ''}`}
       >
         {uploading ? (
-          <div className="space-y-1">
-            <p className="text-sm text-gray-600">Uploading...</p>
+          <div className="space-y-2">
+            <p className="text-sm text-gray-600">
+              {progress != null && progress >= 1 ? 'Finalising…' : 'Uploading…'}
+              {progress != null && progress < 1 && (
+                <span className="ml-1 font-mono text-gray-500">
+                  {Math.round(progress * 100)}%
+                </span>
+              )}
+            </p>
             {uploadingName && (
-              <p className="text-xs text-gray-500 font-medium">{uploadingName}</p>
+              <p className="text-xs text-gray-500 font-medium truncate">{uploadingName}</p>
             )}
+            <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+              <div
+                className={`h-full bg-blue-600 transition-[width] duration-150 ease-out
+                  ${progress == null || progress >= 1 ? 'animate-pulse' : ''}`}
+                style={{ width: `${Math.round((progress ?? 1) * 100)}%` }}
+              />
+            </div>
           </div>
         ) : (
           <div className="space-y-1">
