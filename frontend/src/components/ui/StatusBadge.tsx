@@ -1,4 +1,5 @@
 import type { ProjectStatus, SegmentStatus, SourceStatus } from '../../types/api'
+import { statusLabel } from '../../utils/labels'
 
 type AnyStatus = ProjectStatus | SegmentStatus | SourceStatus
 
@@ -54,14 +55,14 @@ export function StatusBadge({ status, dot = false }: StatusBadgeProps) {
     return (
       <span
         className={`inline-block w-2.5 h-2.5 rounded-full ${dotStyle}`}
-        title={status.replace(/_/g, ' ')}
+        title={statusLabel(status)}
       />
     )
   }
 
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${style}`}>
-      {status.replace(/_/g, ' ')}
+      {statusLabel(status)}
     </span>
   )
 }

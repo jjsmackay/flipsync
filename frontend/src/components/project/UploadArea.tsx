@@ -1,12 +1,14 @@
 import { useRef, useState, DragEvent, ChangeEvent } from 'react'
-import { uploadSource, uploadReference } from '../../api/client'
+import { uploadSource } from '../../api/client'
 
 interface UploadAreaProps {
   projectId: string
   onUploaded: () => void
+  /** Render as a small "+ Add video" button instead of the full dropzone. */
+  compact?: boolean
 }
 
-export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
+export function UploadArea({ projectId, onUploaded, compact = false }: UploadAreaProps) {
   const [uploading, setUploading] = useState(false)
   const [uploadingName, setUploadingName] = useState<string | null>(null)
   // null = upload in flight but browser can't compute progress (indeterminate)
@@ -15,7 +17,6 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
   const [dragOver, setDragOver] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const refInputRef = useRef<HTMLInputElement>(null)
 
   async function handleSourceFile(file: File) {
     setError(null)
@@ -24,23 +25,6 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
     setProgress(0)
     try {
       await uploadSource(projectId, file, (f) => setProgress(f))
-      onUploaded()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
-      setUploading(false)
-      setUploadingName(null)
-      setProgress(null)
-    }
-  }
-
-  async function handleReferenceFile(file: File) {
-    setError(null)
-    setUploading(true)
-    setUploadingName(file.name)
-    setProgress(0)
-    try {
-      await uploadReference(projectId, file, (f) => setProgress(f))
       onUploaded()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed')
@@ -73,10 +57,37 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
     e.target.value = ''
   }
 
-  function onRefChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) handleReferenceFile(file)
-    e.target.value = ''
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      accept="video/*,audio/*"
+      className="hidden"
+      onChange={onFileChange}
+      disabled={uploading}
+    />
+  )
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          disabled={uploading}
+          className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg
+            hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {uploading
+            ? `Uploading${progress != null && progress < 1 ? ` ${Math.round(progress * 100)}%` : '…'}`
+            : '+ Add video'}
+        </button>
+        {uploading && uploadingName && (
+          <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[16rem]">{uploadingName}</span>
+        )}
+        {error && <span className="text-sm text-red-600 dark:text-red-400">{error}</span>}
+        {fileInput}
+      </div>
+    )
   }
 
   return (
@@ -122,32 +133,7 @@ export function UploadArea({ projectId, onUploaded }: UploadAreaProps) {
         )}
       </div>
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="video/*,audio/*"
-        className="hidden"
-        onChange={onFileChange}
-        disabled={uploading}
-      />
-
-      <button
-        onClick={() => !uploading && refInputRef.current?.click()}
-        disabled={uploading}
-        className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg
-          hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        Upload reference clip
-      </button>
-
-      <input
-        ref={refInputRef}
-        type="file"
-        accept="audio/*"
-        className="hidden"
-        onChange={onRefChange}
-        disabled={uploading}
-      />
+      {fileInput}
 
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400">{error}</p>

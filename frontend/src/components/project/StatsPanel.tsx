@@ -16,9 +16,9 @@ interface StatBoxProps {
 
 function StatBox({ label, value, colorClass }: StatBoxProps) {
   return (
-    <div className={`rounded-lg p-4 ${colorClass}`}>
-      <p className="text-2xl font-bold">{value}</p>
-      <p className="text-sm mt-1 opacity-75">{label}</p>
+    <div className={`rounded-lg px-3 py-2 ${colorClass}`}>
+      <p className="text-lg font-bold leading-tight">{value}</p>
+      <p className="text-xs mt-0.5 opacity-75">{label}</p>
     </div>
   )
 }
@@ -32,7 +32,7 @@ export function StatsPanel({ stats, config }: StatsPanelProps) {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
         <StatBox
           label="Approved"
           value={stats.approved_count}
