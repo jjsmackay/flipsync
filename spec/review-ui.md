@@ -30,15 +30,13 @@ The entry point for a project, organised as a **guided stage flow**. Internal id
 Five user-facing stages: **Upload → Speaker → Process → Review → Export**. A pure function `deriveStage(project)` maps the polled project response to the single current stage, by precedence:
 
 1. No sources → **Upload**
-2. Active jobs other than `export` and `scout_speakers` → **Process**
-3. Any source in `uploaded`, `extracting`, `separation_pending`, `separation_running`, `diarisation_running`, or a failed state (`extraction_failed`, `separation_failed`, `diarisation_failed`) → **Process** (checked after the reference gate below when only `diarisation_pending` sources remain)
-4. A source at `diarisation_pending` (the reference gate): no reference set → **Speaker**; reference set → **Process** (Continue)
+2. **No reference set → Speaker.** `reference_path` is the Speaker/Process divider. The "whose voice?" prompt is the only trigger for separation, and the upload-a-clip path sets a reference *before* separation runs — so a project with sources but no reference is always still choosing a voice: the prompt, the separation run that feeds the scan, the scout scan, or picking a candidate all live in Speaker. This keeps the strip monotonic (separation no longer flips to Process ahead of the Speaker step).
+3. Reference set, active jobs other than `export` and `scout_speakers` → **Process**
+4. Reference set, any source in `uploaded`, `extracting`, `separation_pending`, `separation_running`, `diarisation_pending`, `diarisation_running`, or a failed state (`extraction_failed`, `separation_failed`, `diarisation_failed`) → **Process**
 5. `pending_count + maybe_count > 0` → **Review**
 6. Otherwise → **Export**
 
-(Exact evaluation order in code: sources-empty, active-jobs, gate-without-reference, remaining processing statuses, review, export.)
-
-Scout jobs belong to the Speaker stage and export jobs to the Export stage, so neither flips the strip to Process. Stages are not strictly linear — adding a source mid-review returns the project to Process; that is expected.
+Scout jobs belong to the Speaker stage and export jobs to the Export stage, so neither flips the strip to Process. Stages are not strictly linear — adding a source mid-review (a reference already exists) returns the project to Process; that is expected.
 
 #### Page layout (top to bottom)
 
@@ -46,8 +44,8 @@ Scout jobs belong to the Speaker stage and export jobs to the Export stage, so n
 2. **Stage strip** — the five stages, each rendered as done (✓) / active (pulsing, jobs running) / needs-you (amber) / upcoming (dimmed). The Review chip links to the review queue once segments exist.
 3. **Next-action card** — one card, fixed slot, reserved min-height (no layout shift on the 3 s poll); content cross-fades on stage change:
    - *Upload*: full drag-and-drop upload area.
-   - *Speaker*: the Set reference panel (below).
-   - *Process*: active job progress with human labels; or a **Start processing** button (queued sources, nothing running); or **Continue processing** (reference set at the gate); or a "processing stopped" notice pointing at the failed-job alerts.
+   - *Speaker*: the Set reference panel (below) — a small state machine over the pre-reference phase.
+   - *Process*: active job progress with human labels; or a **Start processing** button (uploaded-clip source queued, nothing running); or **Continue processing** (reference set at the gate); or a "processing stopped" notice pointing at the failed-job alerts.
    - *Review*: "N segments ready to review" with a **Start reviewing →** link and a secondary **Transcribe segments** button.
    - *Export*: export confirmation/summary and download (export flow below).
 4. **Failed-job alerts** — only when present, own slot, error messages with retry/dismiss (sourced from `recent_failed_jobs`). Shown until dismissed or retried. Retry is job-type-aware:
@@ -75,17 +73,18 @@ The dashboard is the place for pipeline operations and error recovery. The revie
 
 #### Set reference panel
 
-Rendered inside the next-action card at the **Speaker** stage — vocal separation has finished for at least one source and no reference is set. This is what unblocks speaker matching. Two tabs:
+Rendered inside the next-action card for the whole **Speaker** stage (no reference set). It is a state machine over the pre-reference phase, deriving its phase from source status and jobs — no client-side "which path did the user pick" flag, since the backend status alone determines the phase:
 
-**Find speakers** (default tab):
-1. A source dropdown listing sources with a vocals stem ready (`vocals_path` set); defaults to the first such source.
-2. A **Scan for speakers** button → `POST /projects/{id}/reference/scout`, then polls `GET /projects/{id}/reference/scout` showing progress.
-3. On completion, a list of speaker cards sorted by talk time (`total_secs`) descending, each with a play control (streams `sample_url`) and stats (talk time, segment count).
-4. **Use this voice** on a card → `POST /projects/{id}/reference/scout/select`. Disabled on cards whose `total_secs` is under 5 seconds (a candidate that short can't pass the same floor the upload tab enforces). On success, the panel shows the chosen reference and **Continue** becomes enabled.
+1. **Preparing** — sources still `uploaded` / `extracting`. "Getting your video ready" holding message.
+2. **Prompt** — a source is `separation_pending` (audio extracted, nothing running). Heads **"Whose voice are we after?"** with two choices:
+   - **Find speakers** → `POST /projects/{id}/pipeline/start`. Separation runs *under the Speaker stage* (no reference yet), so the strip stays on Speaker.
+   - **Upload a clip** → file picker → `POST /projects/{id}/reference`. Sets a reference, so the strip advances to **Process** (where **Start processing** runs separation straight through — diarisation is not gated when a reference exists).
+3. **Separating** — a `vocal_separation` job is running (or a source is `separation_running`) with no reference. "Finding the speakers" progress. This is the find-speakers path mid-separation.
+4. **Failed** — an `extraction_failed` / `separation_failed` source with no reference. Points at the failed-job alerts for retry.
+5. **Scan and pick** — a source has a ready vocals stem (`diarisation_pending`). The panel **auto-scans** the first ready source: on mount it fetches `GET /projects/{id}/reference/scout`; if none has run (`no_scout`), it fires `POST /projects/{id}/reference/scout` once and polls for progress. On completion, a list of speaker cards sorted by talk time (`total_secs`) descending, each with a play control (streams `sample_url`) and stats (talk time, segment count). A **Scan again** link re-runs the scout after a complete or failed scan.
+   - **Use this voice** on a card → `POST /projects/{id}/reference/scout/select`. Disabled on cards whose `total_secs` is under 5 seconds (a candidate that short can't pass the reference floor). On success the reference is set, so the strip advances to **Process** (where **Continue processing** runs speaker matching).
 
-**Upload** — the existing reference upload control (`POST /projects/{id}/reference`). On success, **Continue** becomes enabled.
-
-**Continue** → `POST /projects/{id}/pipeline/continue`, then resumes normal 3s polling. The panel displays the current `reference_origin` when one is already set (e.g. re-picking a different speaker after a prior scout).
+There is no separate reference-upload tab or in-panel Continue button: the prompt is the only entry point, and continuing the pipeline lives in the Process stage. Selecting a voice or uploading a clip advances the strip to Process rather than auto-continuing, so the user commits the pipeline run explicitly.
 
 The canvas timeline component (see [Timeline component](#timeline-component)) is deliberately **not** reused here — it's built for segment-review density. The speaker picker is a simple list of cards with audio players.
 

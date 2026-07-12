@@ -97,7 +97,6 @@ describe('SetReferencePanel poll resilience', () => {
     await waitFor(() => expect(screen.getByText(/Connection lost — retrying/)).toBeInTheDocument())
     // Still presented as scanning — not failed, not idle.
     expect(screen.getByText(/Scanning for speakers…/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Scanning…' })).toBeDisabled()
   })
 
   it('shows the failure banner AND prior still-pickable candidates when the latest scan failed', async () => {
