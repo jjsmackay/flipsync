@@ -286,8 +286,10 @@ async def list_jobs(project_id: str, status: Optional[str] = None, limit: int = 
 async def trigger_export(project_id: str):
     conn = require_project(project_id)
 
+    # Match the export handler's payload set: clipping_warning segments are
+    # exported with the flag recorded (keep-unless-rejected).
     approved_count = conn.execute(
-        "SELECT COUNT(*) FROM segments WHERE project_id=? AND status IN ('approved','auto_approved')",
+        "SELECT COUNT(*) FROM segments WHERE project_id=? AND status IN ('approved','auto_approved','clipping_warning')",
         (project_id,),
     ).fetchone()[0]
 
