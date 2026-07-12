@@ -158,8 +158,11 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     now = utc_now()
     current_status = source["status"]
 
+    # A source already sitting at the target pending status (e.g. its job
+    # failed before the handler ran, such as a service-readiness timeout) is
+    # a re-enqueue, not a state transition — skip transition validation.
     if "separation" in body.steps:
-        if not validate_source_transition(current_status, "separation_pending"):
+        if current_status != "separation_pending" and not validate_source_transition(current_status, "separation_pending"):
             raise AppError(
                 409, "invalid_source_status",
                 f"Cannot re-run vocal separation from source status '{current_status}'.",
@@ -178,7 +181,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         enqueued.append({"id": job_id, "type": "vocal_separation", "source_id": source_id})
 
     elif "diarisation" in body.steps:
-        if not validate_source_transition(current_status, "diarisation_pending"):
+        if current_status != "diarisation_pending" and not validate_source_transition(current_status, "diarisation_pending"):
             raise AppError(
                 409, "invalid_source_status",
                 f"Cannot re-run speaker matching from source status '{current_status}'.",

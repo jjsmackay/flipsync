@@ -269,6 +269,8 @@ diarisation_failed      -> diarisation_pending     (user retries step 2)
 
 `extraction_failed` has no forward transition. The user must delete the source and re-upload. This is intentional — a corrupt file won't become less corrupt on retry.
 
+Reprocessing a source that already sits at the target pending status (`separation_pending` → re-run separation, `diarisation_pending` → re-run diarisation) is a re-enqueue, not a state transition, and is accepted without transition validation. This covers jobs that failed before their handler ran (e.g. a service-readiness timeout), which leave the source at its pending status.
+
 ---
 
 ### Segment status
