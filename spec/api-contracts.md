@@ -1206,7 +1206,8 @@ The orchestrator updates segment statuses from this response: `auto_rejected` se
 #### `GET /health`
 
 **Response 200:** `{ "status": "ok" }`
-The service exits at startup if `XTTS_ACCEPT_CPML` is not set; the orchestrator's health check then fails and the Models/Previews endpoints return 503 `xtts_unavailable`.
+
+**Response 503** `cpml_not_accepted` if `XTTS_ACCEPT_CPML` is not set. The service still starts and serves this from `/health` (and from `POST /jobs`) until the licence is accepted and the container restarted — a live, diagnosable 503 rather than a crash loop. The orchestrator treats the failing health check as an unhealthy service, will not submit jobs, and the Models/Previews endpoints return 503 `xtts_unavailable`.
 
 #### `POST /jobs`
 

@@ -184,6 +184,10 @@ def _run_finetune(job: dict, req: FinetuneJob) -> None:
     """Blocking fine-tune call — runs in the thread pool executor."""
     job_id = job["job_id"]
 
+    # Free any cached synthesis model first — training needs the VRAM, and a
+    # lingering preview model would also skew the pre-flight reading below.
+    engine.release_cached_model()
+
     # VRAM pre-flight: fail fast with a clear message rather than OOM-ing deep
     # into training on an under-provisioned GPU.
     avail = engine.vram_available_gb()
@@ -375,7 +379,7 @@ async def submit_job(req: JobRequest):
         return JSONResponse(
             status_code=409,
             content={
-                "error": "duplicate_job",
+                "error": "job_exists",
                 "message": f"Job {req.job_id} already exists.",
                 "detail": {},
             },

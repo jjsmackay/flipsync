@@ -95,7 +95,7 @@ services:
     image: ghcr.io/jjsmackay/flipsync/xtts:latest
     profiles: ["xtts"]
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/xtts:/root/.local/share/tts
     environment:
       # XTTS-v2 is under the Coqui Public Model License; the service refuses to

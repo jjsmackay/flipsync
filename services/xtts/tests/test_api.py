@@ -184,7 +184,7 @@ class TestFinetune:
             second = client.post("/jobs", json=body)
 
         assert second.status_code == 409
-        assert second.json()["error"] == "duplicate_job"
+        assert second.json()["error"] == "job_exists"
 
     def test_vram_preflight_failure(self, client):
         with patch("engine.vram_available_gb", return_value=8.0), patch(

@@ -275,7 +275,7 @@ XTTS_ACCEPT_CPML=1   # accepts the Coqui Public Model Licence (non-commercial)
 docker compose --profile xtts up -d
 ```
 
-The service exits at startup if `XTTS_ACCEPT_CPML` is unset. FlipSync distributes no XTTS weights; they download on first use into `${MODELS_ROOT:-/mnt/models/flipsync}/xtts`.
+If `XTTS_ACCEPT_CPML` is unset the service still starts but reports unhealthy: `/health` returns 503 with error `cpml_not_accepted`, and the orchestrator will not submit jobs to it. Set the variable and restart the container to accept the licence. FlipSync distributes no XTTS weights; they download on first use into `${MODELS_ROOT:-/mnt/models/flipsync}/xtts`.
 
 | Concern | Value |
 |---------|-------|

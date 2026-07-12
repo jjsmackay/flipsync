@@ -31,6 +31,37 @@ _SAMPLE_RATE = 22050
 # Base model identifier for the TTS ModelManager download.
 _BASE_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 
+# One-slot synthesis-model cache: ``(key, model)`` where key is the
+# checkpoint_dir, or ``_BASE_MODEL_KEY`` for the base model. Safe without locks
+# because the job layer runs everything on a single-worker executor. Repeated
+# previews against the same model (the common case) skip the multi-second
+# checkpoint reload on every call.
+_BASE_MODEL_KEY = "__base__"
+_model_cache: Optional[tuple] = None
+
+
+def release_cached_model() -> None:
+    """Drop the cached synthesis model and free its VRAM.
+
+    Called by the job layer before a fine-tune so a lingering preview model
+    doesn't eat into the VRAM preflight budget. A no-op (and import-safe
+    without torch) when nothing is cached.
+    """
+    global _model_cache
+    if _model_cache is None:
+        return
+    _model_cache = None
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested without torch)
@@ -99,6 +130,7 @@ def finetune(
     invoked with the progress dict (``phase``/``epoch``/``total_epochs``/
     ``step``/``total_steps``/``train_loss``/``eval_loss``/``eta_secs``).
     """
+    import gc
     import shutil
     import time
 
@@ -232,6 +264,11 @@ def finetune(
     )
     trainer.fit()
 
+    # Capture the eval loss NOW — the trainer is released below, before the
+    # latent-extraction reload, so the trained model and its reloaded copy
+    # never occupy VRAM at the same time.
+    final_eval_loss = _last_eval_loss(trainer)
+
     # 4. Package the checkpoint bundle into output_dir.
     progress_cb({"phase": "packaging", "total_epochs": total_epochs})
     best_ckpt = _find_best_checkpoint(trainer, output_dir)
@@ -242,18 +279,22 @@ def finetune(
     shutil.copyfile(base_config, config_path)
     shutil.copyfile(base_vocab, vocab_path)
 
+    # Release the trainer (and the model it holds) before reloading the
+    # checkpoint for latent extraction.
+    del trainer
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # 5. Speaker conditioning latents from the longest training clips.
     latents_path = os.path.join(output_dir, "speaker_latents.pt")
     _save_speaker_latents(
-        model_path=model_path,
         config_path=config_path,
         vocab_path=vocab_path,
         checkpoint_dir=output_dir,
         train_csv=train_csv,
         out_path=latents_path,
     )
-
-    final_eval_loss = _last_eval_loss(trainer)
 
     return {
         "checkpoint_dir": output_dir,
@@ -277,39 +318,15 @@ def synthesise(
 
     With ``checkpoint_dir`` the fine-tuned bundle is loaded and, when a
     ``speaker_latents.pt`` is present, reused for conditioning; otherwise the
-    base XTTS-v2 model runs zero-shot from ``reference_wavs``.
+    base XTTS-v2 model runs zero-shot from ``reference_wavs``. The loaded
+    model is cached (one slot, keyed on ``checkpoint_dir``) across calls.
     """
     import torch
     import torchaudio
-    from TTS.tts.configs.xtts_config import XttsConfig
-    from TTS.tts.models.xtts import Xtts
-    from TTS.utils.manage import ModelManager
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    if checkpoint_dir:
-        config = XttsConfig()
-        config.load_json(os.path.join(checkpoint_dir, "config.json"))
-        model = Xtts.init_from_config(config)
-        model.load_checkpoint(
-            config,
-            checkpoint_dir=checkpoint_dir,
-            vocab_path=os.path.join(checkpoint_dir, "vocab.json"),
-            use_deepspeed=False,
-        )
-    else:
-        manager = ModelManager()
-        manager.download_model(_BASE_MODEL)
-        base_dir = os.path.join(
-            manager.output_prefix, _BASE_MODEL.replace("/", "--")
-        )
-        config = XttsConfig()
-        config.load_json(os.path.join(base_dir, "config.json"))
-        model = Xtts.init_from_config(config)
-        model.load_checkpoint(config, checkpoint_dir=base_dir, use_deepspeed=False)
-
-    if torch.cuda.is_available():
-        model.cuda()
+    model = _get_model(checkpoint_dir)
 
     latents_file = (
         os.path.join(checkpoint_dir, "speaker_latents.pt") if checkpoint_dir else None
@@ -340,6 +357,53 @@ def synthesise(
 # ---------------------------------------------------------------------------
 # Internal helpers touching torch/trainer (invoked only from the GPU path)
 # ---------------------------------------------------------------------------
+
+
+def _get_model(checkpoint_dir: Optional[str]):
+    """Return a loaded ``Xtts`` model for ``checkpoint_dir`` (None = base model).
+
+    One-slot cache: a hit returns the cached model; a miss drops the old model
+    (freeing its VRAM) before loading the new one, so at most one synthesis
+    model is resident. Single-worker executor upstream — no locking needed.
+    """
+    global _model_cache
+    key = checkpoint_dir if checkpoint_dir else _BASE_MODEL_KEY
+    if _model_cache is not None and _model_cache[0] == key:
+        return _model_cache[1]
+
+    release_cached_model()
+
+    import torch
+    from TTS.tts.configs.xtts_config import XttsConfig
+    from TTS.tts.models.xtts import Xtts
+    from TTS.utils.manage import ModelManager
+
+    if checkpoint_dir:
+        config = XttsConfig()
+        config.load_json(os.path.join(checkpoint_dir, "config.json"))
+        model = Xtts.init_from_config(config)
+        model.load_checkpoint(
+            config,
+            checkpoint_dir=checkpoint_dir,
+            vocab_path=os.path.join(checkpoint_dir, "vocab.json"),
+            use_deepspeed=False,
+        )
+    else:
+        manager = ModelManager()
+        manager.download_model(_BASE_MODEL)
+        base_dir = os.path.join(
+            manager.output_prefix, _BASE_MODEL.replace("/", "--")
+        )
+        config = XttsConfig()
+        config.load_json(os.path.join(base_dir, "config.json"))
+        model = Xtts.init_from_config(config)
+        model.load_checkpoint(config, checkpoint_dir=base_dir, use_deepspeed=False)
+
+    if torch.cuda.is_available():
+        model.cuda()
+
+    _model_cache = (key, model)
+    return model
 
 
 def _avg_loss(keep_avg) -> Optional[float]:
@@ -380,7 +444,6 @@ def _find_best_checkpoint(trainer_obj, output_dir: str) -> str:
 
 
 def _save_speaker_latents(
-    model_path: str,
     config_path: str,
     vocab_path: str,
     checkpoint_dir: str,
