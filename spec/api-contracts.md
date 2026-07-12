@@ -464,7 +464,7 @@ Apply an action to multiple segments at once.
 }
 ```
 
-`action` must be `approve`, `reject`, `maybe`, or `pending`. Each action respects the segment status transition rules — it only affects segments whose current status allows that transition. For example, `approve` only affects segments in `pending`, `maybe`, `auto_approved`, or `clipping_warning` status; `pending` only affects segments in `maybe` or `auto_approved` status (the `below_threshold` → `pending` transition is handled by the threshold re-evaluation in `PATCH /projects`, not by bulk actions). Segments in ineligible statuses are silently skipped. The filter uses the same parameters as `GET /segments`. A bulk `approve` with `filter: {"status": "auto_approved"}` is the "confirm all auto-approved" operation.
+`action` must be `approve`, `reject`, `maybe`, or `pending`. Each action respects the segment status transition rules — it only affects segments whose current status allows that transition. For example, `approve` only affects segments in `pending`, `maybe`, `auto_approved`, or `clipping_warning` status; `pending` only affects segments in `maybe`, `auto_approved`, or `rejected` status (the `below_threshold` → `pending` transition is handled by the threshold re-evaluation in `PATCH /projects`, not by bulk actions). Segments in ineligible statuses are silently skipped. The filter uses the same parameters as `GET /segments`. A bulk `approve` with `filter: {"status": "auto_approved"}` is the "confirm all auto-approved" operation.
 
 **Response 200:**
 ```json
