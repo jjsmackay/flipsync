@@ -281,9 +281,20 @@ The `CLAUDE.md` file at the repo root configures agent context: which service th
 
 ## v1.5 addition: XTTS-v2 service
 
-When XTTS-v2 synthesis is added in v1.5, it runs as a fifth Docker service using the official Coqui streaming server image. It attaches to the same Docker network. The orchestrator gains two new endpoints: one to trigger zero-shot inference from a set of approved segments, one to trigger a full fine-tuning job. No other services change.
+XTTS-v2 support runs as a fifth processing service (`services/xtts`, internal port 8005), built on the community-maintained `coqui-tts` fork (Idiap). The original Coqui streaming server image is unmaintained — Coqui shut down in early 2024 — and is no longer the deployment vehicle.
 
-CPML licence implications for the project's open source positioning are an open question to be resolved before v1.5 planning. See `overview.md` — open questions.
+The service follows the standard processing-service contract (`GET /health`, `POST /jobs`, `GET /jobs/{job_id}`) and handles two job types:
+
+- `synthesise` — zero-shot (base model) or fine-tuned (checkpoint dir) inference. Speaker conditioning latents are computed from reference WAVs supplied by the orchestrator, which resolves them from a user-selected pipeline stage: the uploaded reference clip, raw diarised segments, or cleaned segments.
+- `finetune` — the XTTS-v2 `GPTTrainer` recipe over a dataset manifest produced by the orchestrator's dataset build step.
+
+The service is single-worker: its jobs serialise on the GPU at the service level.
+
+The orchestrator gains two endpoint groups: `POST/GET/DELETE /projects/{id}/models` (fine-tuning) and `POST/GET /projects/{id}/previews` (synthesis). Fine-tuning consumes a **dataset build** — a shared internal step (cleanup of segments lacking cleaned audio, then a manifest write) that export also reuses. Datasets are selected from approved segments (default) or auto-selected by match confidence without review. All architecture invariants hold: the service never touches the database, never calls other services, and communicates via absolute paths on `/data`.
+
+Licensing: the service is an opt-in Compose profile (`xtts`), ships no model weights, and requires `XTTS_ACCEPT_CPML=1` at startup — the operator's acceptance of the Coqui Public Model Licence (non-commercial). See `overview.md` §Licensing.
+
+Contracts: `api-contracts.md` §Models, §Previews, §XTTS Service. Data model: `data-models.md` §models. Design rationale: `docs/superpowers/specs/2026-07-12-xtts-v2-integration-design.md`.
 
 ---
 

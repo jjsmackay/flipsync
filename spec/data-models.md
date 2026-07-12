@@ -170,6 +170,37 @@ CREATE TABLE jobs (
 );
 ```
 
+**v1.5 addition:** a `progress_detail TEXT` column (JSON, nullable) is added by migration — rich progress for long-running jobs (fine-tune epoch/loss/ETA). `progress` remains the 0–100 integer.
+
+---
+
+### `models` (v1.5)
+
+One row per XTTS-v2 fine-tuned model.
+
+```sql
+CREATE TABLE models (
+    id                    TEXT PRIMARY KEY,   -- UUID
+    project_id            TEXT NOT NULL REFERENCES projects(id),
+    status                TEXT NOT NULL,      -- see Model status
+    dataset_mode          TEXT NOT NULL,      -- approved | auto
+    min_confidence        REAL,               -- auto mode only; NULL for approved
+    segment_count         INTEGER,            -- set after dataset build
+    dataset_duration_secs REAL,               -- set after dataset build
+    dataset_manifest_path TEXT,               -- models/{id}/dataset.json
+    checkpoint_dir        TEXT,               -- models/{id}/, set when ready
+    params                TEXT,               -- JSON hyperparameters
+    eval_loss             REAL,               -- final eval loss, set when ready
+    error                 TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+```
+
+**Dataset manifest** (`models/{id}/dataset.json`): same schema as the export manifest, with two differences — `audio_file` values are absolute paths (the inter-service interface), and a `selection` block records `{ mode, min_confidence, dropped: { too_short, too_long, flagged } }` so every model documents exactly what it was trained on.
+
+**Dataset build** is a shared internal step: select segments (by review status or confidence floor), run cleanup on any lacking cleaned audio, write the manifest. Export reuses it (mode `approved`) and then archives; the archive contains exactly the files listed in its manifest.
+
 ---
 
 ### `speaker_candidates`
@@ -323,6 +354,20 @@ The orchestrator rejects any transition not in this list.
 
 ---
 
+### Model status (v1.5)
+
+| Value | Meaning |
+|-------|---------|
+| `pending` | Row created; dataset build queued or running |
+| `training` | `finetune` job running on the XTTS service |
+| `ready` | Checkpoint written; usable for previews |
+| `failed` | Dataset build or training failed; `error` holds the message |
+| `cancelled` | User cancelled the job |
+
+Transitions: `pending → training | failed | cancelled`; `training → ready | failed | cancelled`. Deleting a model removes the row and its checkpoint directory; deletion is rejected (409) while `pending` or `training`.
+
+---
+
 ### Job types
 
 | Value | Triggered by | Execution |
@@ -334,6 +379,9 @@ The orchestrator rejects any transition not in this list.
 | `transcription_bulk` | Step 2 complete or user triggers | External service (port 8003) |
 | `transcription_segment` | User re-transcribes a single segment | External service (port 8003) |
 | `export` | User triggers export | External service (port 8004) for cleanup, then in-process for manifest + archive |
+| `dataset_build` (v1.5) | Fine-tune trigger | External service (port 8004) for segments lacking cleaned audio, then in-process manifest write |
+| `finetune` (v1.5) | User triggers fine-tune | External service (port 8005) |
+| `preview` (v1.5) | User requests preview synthesis | External service (port 8005) |
 
 `extract_audio` and the manifest/archive phase of `export` run as FFmpeg subprocesses inside the orchestrator. They follow the same job lifecycle (create row, update progress, mark complete/failed) but do not involve polling an external service — the orchestrator runs the subprocess in a background `asyncio` task and updates the job row directly on completion.
 
@@ -441,3 +489,5 @@ Migration log:
 | 005 | `005_semantic_source_statuses.sql` | Renames positional step1/step2 column names and source statuses to `separation`/`diarisation` |
 | 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
 | 007 | `007_scout_pool.sql` | Rebuilds `speaker_candidates`: replaces `montage_path` with `pool_json` (curatable per-turn scout pool). Candidate rows are transient, so the table is dropped and recreated |
+
+v1.5 additionally adds the `models` table and the `jobs.progress_detail` column via migration. Both are additive.

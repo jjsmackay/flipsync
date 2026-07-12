@@ -263,6 +263,31 @@ Transcription is deliberately excluded: it's the last GPU stage, so nothing wait
 
 ---
 
+## XTTS service (v1.5, opt-in)
+
+The XTTS-v2 service is not started by default. It is gated behind a Compose profile and a licence-acceptance environment variable:
+
+```bash
+# .env
+XTTS_ACCEPT_CPML=1   # accepts the Coqui Public Model Licence (non-commercial)
+
+docker compose --profile xtts up -d
+```
+
+The service exits at startup if `XTTS_ACCEPT_CPML` is unset. FlipSync distributes no XTTS weights; they download on first use into `${MODELS_ROOT:-/mnt/models/flipsync}/xtts`.
+
+| Concern | Value |
+|---------|-------|
+| Internal port | 8005 (not exposed to host) |
+| GPU | Same reservation pattern as vocal separation / diarisation |
+| VRAM — preview (`synthesise`) | ~6 GB |
+| VRAM — fine-tune | 16 GB recommended; 12 GB minimum (batch 1 + gradient accumulation, slower) |
+| Model cache | `${MODELS_ROOT}/xtts:/root/.local/share/tts` |
+
+The service runs a VRAM preflight before fine-tuning and fails fast with `insufficient_vram` rather than hitting a CUDA OOM mid-training. A fine-tune occupies the GPU for hours; the GPU-sharing caveats above apply with more force while one is running.
+
+---
+
 ## Development setup
 
 For local development without rebuilding containers on every change:
