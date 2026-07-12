@@ -1,0 +1,25 @@
+# FlipSync frontend — serves the built SPA and proxies /api to the orchestrator.
+# Caddy streams request bodies with no size cap by default, so large source
+# uploads (multi-GB video) pass straight through to the orchestrator instead of
+# being buffered or size-capped at this hop.
+{
+	admin off
+	auto_https off
+}
+
+:3000 {
+	encode gzip
+
+	# API traffic → orchestrator. handle_path strips the /api prefix, matching
+	# the same-origin contract the app expects (/api/projects → /projects).
+	handle_path /api/* {
+		reverse_proxy {$ORCHESTRATOR_PROXY_TARGET:http://orchestrator:8000}
+	}
+
+	# SPA: serve static assets, fall back to index.html for client-side routes.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

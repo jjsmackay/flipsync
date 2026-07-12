@@ -84,9 +84,9 @@ services:
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
-      - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-}
-      # The UI calls the orchestrator via a same-origin /api path that vite
-      # proxies here — no public orchestrator port or CORS needed for the UI.
+      # Caddy serves the built UI and proxies the same-origin /api path here —
+      # no public orchestrator port or CORS needed for the UI. Caddy streams
+      # request bodies uncapped, so large source uploads pass straight through.
       - ORCHESTRATOR_PROXY_TARGET=http://orchestrator:8000
     depends_on:
       - orchestrator

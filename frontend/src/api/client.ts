@@ -100,18 +100,68 @@ export function deleteProject(projectId: string, confirm: boolean): Promise<{ de
   })
 }
 
+// ---- Uploads (XHR for progress) ----
+
+// fetch() can't report upload progress, so file uploads go through XMLHttpRequest,
+// which exposes upload.onprogress. Error handling mirrors request(): parse the
+// flat {error, message, detail} body and throw ApiError.
+function uploadWithProgress<T>(
+  path: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE_URL}${path}`)
+
+    xhr.upload.onprogress = (e) => {
+      if (onProgress && e.lengthComputable) {
+        onProgress(e.total > 0 ? e.loaded / e.total : 0)
+      }
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve((xhr.responseText ? JSON.parse(xhr.responseText) : undefined) as T)
+        } catch {
+          reject(new ApiError('parse_error', 'Malformed response from server.', null))
+        }
+        return
+      }
+      let body: { error?: string; message?: string; detail?: unknown } = {}
+      try {
+        body = JSON.parse(xhr.responseText) as typeof body
+      } catch {
+        // fall through to generic message
+      }
+      reject(new ApiError(
+        body.error ?? 'unknown_error',
+        body.message ?? `HTTP ${xhr.status}`,
+        body.detail ?? null,
+      ))
+    }
+
+    xhr.onerror = () =>
+      reject(new ApiError('network_error', 'Upload failed — the connection was interrupted.', null))
+    xhr.onabort = () =>
+      reject(new ApiError('aborted', 'Upload cancelled.', null))
+
+    xhr.send(formData)
+  })
+}
+
 // ---- Sources ----
 
 export function uploadSource(
   projectId: string,
   file: File,
+  onProgress?: (fraction: number) => void,
 ): Promise<{ id: string; filename: string; status: string }> {
-  const formData = new FormData()
-  formData.append('file', file)
-  return request(`/projects/${projectId}/sources`, {
-    method: 'POST',
-    body: formData,
-  })
+  return uploadWithProgress(`/projects/${projectId}/sources`, file, onProgress)
 }
 
 export function deleteSource(
@@ -131,13 +181,9 @@ export function deleteSource(
 export function uploadReference(
   projectId: string,
   file: File,
+  onProgress?: (fraction: number) => void,
 ): Promise<{ reference_path: string; duration_secs: number }> {
-  const formData = new FormData()
-  formData.append('file', file)
-  return request(`/projects/${projectId}/reference`, {
-    method: 'POST',
-    body: formData,
-  })
+  return uploadWithProgress(`/projects/${projectId}/reference`, file, onProgress)
 }
 
 // ---- Pipeline ----

@@ -23,7 +23,7 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
   const [whisperModel, setWhisperModel] = useState<string>('large-v3')
   const [language, setLanguage] = useState<string>('en')
   const [matchThreshold, setMatchThreshold] = useState(0.75)
-  const [targetHours, setTargetHours] = useState(1.0)
+  const [targetMinutes, setTargetMinutes] = useState(30)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -40,7 +40,7 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
         // "auto" is a UI-only sentinel; the API expects null for auto-detect.
         language: language === 'auto' ? null : language,
         match_threshold: matchThreshold,
-        target_duration_secs: Math.round(targetHours * 3600),
+        target_duration_secs: Math.round(targetMinutes * 60),
       }
       const result = await createProject(req)
       onCreated(result.id)
@@ -79,6 +79,9 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
               required
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              One speaker per project. Name it after the voice you're capturing.
+            </p>
           </div>
 
           {/* Whisper model */}
@@ -95,6 +98,11 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
                 <option key={m} value={m}>{m}</option>
               ))}
             </select>
+            <p className="text-xs text-gray-500 mt-1">
+              Transcription accuracy vs. speed. Larger is more accurate but slower and needs more VRAM.
+              <code className="mx-0.5">large-v3</code> is recommended; drop to <code className="mx-0.5">medium</code> or
+              <code className="mx-0.5">small</code> if you're VRAM-limited.
+            </p>
           </div>
 
           {/* Language */}
@@ -111,6 +119,10 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
                 <option key={l.value} value={l.value}>{l.label}</option>
               ))}
             </select>
+            <p className="text-xs text-gray-500 mt-1">
+              The spoken language of your source audio. Set it explicitly when you know it —
+              auto-detect can misfire on short or noisy clips.
+            </p>
           </div>
 
           {/* Match threshold */}
@@ -132,21 +144,30 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
               <span>0.00</span>
               <span>1.00</span>
             </div>
+            <p className="text-xs text-gray-500 mt-1">
+              How closely a segment must match your reference clip to be kept. Higher = stricter
+              (fewer, cleaner matches); lower surfaces more borderline segments to review.
+              You can adjust this later. Default <span className="font-mono">0.75</span>.
+            </p>
           </div>
 
           {/* Target duration */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Target duration (hours)
+              Target duration (minutes)
             </label>
             <input
               type="number"
-              min={0.1}
-              step={0.5}
-              value={targetHours}
-              onChange={(e) => setTargetHours(parseFloat(e.target.value) || 1)}
+              min={1}
+              step={1}
+              value={targetMinutes}
+              onChange={(e) => setTargetMinutes(parseInt(e.target.value, 10) || 30)}
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+            <p className="text-xs text-gray-500 mt-1">
+              How much approved audio you're aiming to collect — just a progress target, not a limit.
+              Most voice-cloning datasets want 30+ minutes of clean speech.
+            </p>
           </div>
 
           {/* Error */}
