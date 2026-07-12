@@ -93,8 +93,9 @@ pyannote parameters exposed to the orchestrator:
 | `min_segment_duration` | 1.0s | Discard segments shorter than this |
 | `min_speakers` | 1 | Minimum speaker count hint |
 | `max_speakers` | 10 | Maximum speaker count hint |
+| `num_speakers` | *(none)* | Scout only. When set, forces pyannote to this exact speaker count; `min`/`max` are ignored |
 
-The orchestrator uses project defaults for v1. Parameter tuning is a future UI feature.
+The orchestrator uses project defaults for match mode. Scout mode exposes `num_speakers` to the user via the Set-reference panel's advanced drawer (see [Scout mode](#scout-mode-reference-acquisition)); broader parameter tuning for match mode is a future UI feature.
 
 ### Phase 2 — Speaker matching
 
@@ -124,9 +125,11 @@ A full season with low per-episode coverage may still produce enough material in
 
 A reference-less diarisation pass over one source, used to derive a reference from the source material itself instead of an uploaded clip. Triggered by `POST /projects/{project_id}/reference/scout` (see [API Contracts](api-contracts.md)) and available once that source has a vocals stem (step 1 complete).
 
-The service runs the same pyannote diarisation as Phase 1 above, producing anonymous speaker clusters (`SPEAKER_00`, `SPEAKER_01`, …), but skips Phase 2 entirely — there is no reference embedding yet to match against. For each speaker, it writes a **montage WAV** to `output_dir` at `{speaker_label}.wav`: that speaker's segments concatenated longest-first, up to `montage_max_secs` (default 30.0), so the sample is representative and usable as a reference in its own right. No per-segment WAVs are written and no `match_confidence` is computed.
+The service runs the same pyannote diarisation as Phase 1 above, producing anonymous speaker clusters (`SPEAKER_00`, `SPEAKER_01`, …), but skips Phase 2 entirely — there is no reference embedding yet to match against. If the request carries `num_speakers`, pyannote is forced to that exact count (this is how the user resolves a cluster that has merged two people); otherwise the default `min`/`max` range applies. No `match_confidence` is computed.
 
-This single montage file serves two purposes: it's what the picker plays back so the user can identify their target speaker by ear, and — if that speaker is selected — it becomes `reference.wav` directly (copied, not reprocessed). One artifact, two uses.
+For each speaker, it writes a **bounded pool of individual turn WAVs** to `output_dir/{speaker_label}/{index}.wav` — the speaker's turns taken whole, longest-first, until the pool reaches `pool_max_secs` (default 90.0) or `pool_max_turns` (default 20). The pool is bounded because only the longest turns can ever enter a 30 s reference, so a 1-hour source yields no larger a pool than a short one. The service returns, per speaker, the pool as a list of `{index, start, end, duration}`.
+
+The pool serves two purposes: each turn is individually playable so the user can hear the cluster and exclude any wrong-voice turn, and the reference is assembled from the kept turns. The **reference is not built by the service** — the orchestrator assembles it at pick time from the pool minus the excluded turns (longest-first up to a 30 s cap; see [`POST /reference/scout/select`](api-contracts.md)). Excluding a turn lets the next-longest kept turn take its place — the reference stays full-length.
 
 ### Error states
 

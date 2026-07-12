@@ -181,29 +181,28 @@ def slice_wav(audio_data: np.ndarray, sample_rate: int, start_secs: float, end_s
     return audio_data[start_sample:end_sample]
 
 
-def select_montage_turns(
-    turns: list[dict], montage_max_secs: float
-) -> list[tuple[dict, float]]:
-    """Choose which turns go into a speaker montage, longest-first.
+def select_pool_turns(
+    turns: list[dict], pool_max_secs: float, pool_max_turns: int
+) -> list[dict]:
+    """Choose a speaker's curation pool — whole turns, longest-first, bounded.
 
-    Returns (turn, take_secs) pairs ordered by turn duration descending. The
-    sum of take_secs never exceeds montage_max_secs; the final selected turn is
-    truncated so the montage lands exactly on the cap. Leading with the longest
-    turns keeps the sample representative and usable as a reference clip.
+    Returns whole turns (not truncated) ordered by duration descending, stopping
+    once the pool reaches ``pool_max_turns`` turns or its cumulative duration
+    reaches ``pool_max_secs``. Only the longest turns can ever enter a 30 s
+    reference, so a bounded pool keeps a 1-hour source no more overwhelming than
+    a short one. The reference itself is assembled downstream from this pool
+    (minus any excluded turns), longest-first up to the reference cap.
     """
     ordered = sorted(turns, key=lambda t: t["end"] - t["start"], reverse=True)
 
-    selected: list[tuple[dict, float]] = []
+    pool: list[dict] = []
     total = 0.0
     for turn in ordered:
-        remaining = montage_max_secs - total
-        if remaining <= 0:
+        if len(pool) >= pool_max_turns or total >= pool_max_secs:
             break
-        duration = turn["end"] - turn["start"]
-        take = min(duration, remaining)
-        selected.append((turn, take))
-        total += take
-    return selected
+        pool.append(turn)
+        total += turn["end"] - turn["start"]
+    return pool
 
 
 def run_scout(
@@ -213,21 +212,25 @@ def run_scout(
     min_segment_duration: float = 1.0,
     min_speakers: int = 1,
     max_speakers: int = 10,
-    montage_max_secs: float = 30.0,
+    num_speakers: Optional[int] = None,
+    pool_max_secs: float = 90.0,
+    pool_max_turns: int = 20,
     progress_callback=None,
 ) -> list[dict]:
-    """Reference-less scout pass: diarise into anonymous clusters and write one
-    montage WAV per speaker.
+    """Reference-less scout pass: diarise into anonymous clusters and write a
+    bounded pool of individual turn WAVs per speaker for user curation.
 
     Runs pyannote diarisation exactly as match mode's phase 1 (same
     ``min_segment_duration`` filter) but computes no reference embedding, no
-    cosine similarity, and no per-segment WAVs. For each speaker it writes a
-    single montage to ``{output_dir}/{speaker_label}.wav`` — that speaker's
-    turns concatenated longest-first up to ``montage_max_secs`` total.
+    cosine similarity. When ``num_speakers`` is set the pipeline is forced to
+    that exact count; otherwise the ``min_speakers``/``max_speakers`` range
+    applies. For each speaker it writes its pool turns (longest-first, bounded
+    by ``pool_max_secs``/``pool_max_turns``) to ``{output_dir}/{label}/{i}.wav``.
 
-    Returns a list of ``{speaker_label, montage_path, total_secs,
-    segment_count}`` dicts sorted by total talk time descending. ``total_secs``
-    is the speaker's total talk time in the source, not the montage length.
+    Returns a list of ``{speaker_label, total_secs, segment_count, pool}`` dicts
+    sorted by total talk time descending, where ``pool`` is a list of
+    ``{index, start, end, duration}``. ``total_secs`` and ``segment_count`` cover
+    the speaker's full talk time in the source, not just the pool.
     """
     import soundfile as sf
 
@@ -237,11 +240,14 @@ def run_scout(
 
     # ---- Phase 1: Diarisation (identical to match mode) ----
     logger.info("Running pyannote diarisation (scout) on %s", input_path)
-    diarization = pipeline(
-        input_path,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
-    ).speaker_diarization
+    if num_speakers is not None:
+        diarization = pipeline(input_path, num_speakers=num_speakers).speaker_diarization
+    else:
+        diarization = pipeline(
+            input_path,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        ).speaker_diarization
 
     raw_turns = []
     for turn, _, speaker_label in diarization.itertracks(yield_label=True):
@@ -267,8 +273,8 @@ def run_scout(
 
     _progress(50)
 
-    # ---- Montage writing ----
-    logger.info("Writing speaker montages into %s", output_dir)
+    # ---- Pool slice writing ----
+    logger.info("Writing speaker pool slices into %s", output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Load source audio once. Same whole-file v1 memory note as run_diarisation:
@@ -278,30 +284,32 @@ def run_scout(
 
     results = []
     for label, turns in speakers.items():
-        montage_path = str(Path(output_dir) / f"{label}.wav")
+        label_dir = Path(output_dir) / label
+        label_dir.mkdir(parents=True, exist_ok=True)
 
-        chunks = []
-        for turn, take_secs in select_montage_turns(turns, montage_max_secs):
-            chunk = slice_wav(
-                audio_data, sample_rate, turn["start"], turn["start"] + take_secs
-            )
-            chunks.append(chunk)
-
-        montage = np.concatenate(chunks, axis=0) if chunks else np.zeros(0, dtype="float32")
-        sf.write(montage_path, montage, sample_rate)
+        pool = []
+        for i, turn in enumerate(select_pool_turns(turns, pool_max_secs, pool_max_turns)):
+            chunk = slice_wav(audio_data, sample_rate, turn["start"], turn["end"])
+            sf.write(str(label_dir / f"{i}.wav"), chunk, sample_rate)
+            pool.append({
+                "index": i,
+                "start": turn["start"],
+                "end": turn["end"],
+                "duration": turn["end"] - turn["start"],
+            })
 
         total_secs = sum(t["end"] - t["start"] for t in turns)
         results.append({
             "speaker_label": label,
-            "montage_path": montage_path,
             "total_secs": total_secs,
             "segment_count": len(turns),
+            "pool": pool,
         })
 
     # Most talkative speaker first — usually the target.
     results.sort(key=lambda s: s["total_secs"], reverse=True)
     _progress(100)
-    logger.info("Scout wrote %d speaker montages", len(results))
+    logger.info("Scout wrote pools for %d speakers", len(results))
     return results
 
 

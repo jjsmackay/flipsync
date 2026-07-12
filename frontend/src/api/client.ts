@@ -192,11 +192,15 @@ export function uploadReference(
 export function startScout(
   projectId: string,
   sourceId: string,
+  expectedSpeakerCount?: number,
 ): Promise<{ job_id: string; type: string }> {
   return request(`/projects/${projectId}/reference/scout`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_id: sourceId }),
+    body: JSON.stringify({
+      source_id: sourceId,
+      ...(expectedSpeakerCount != null ? { expected_speaker_count: expectedSpeakerCount } : {}),
+    }),
   })
 }
 
@@ -204,18 +208,19 @@ export function getScoutStatus(projectId: string): Promise<ScoutStatus> {
   return request(`/projects/${projectId}/reference/scout`)
 }
 
-export function getScoutSampleUrl(projectId: string, speakerLabel: string): string {
-  return `${BASE_URL}/projects/${projectId}/reference/scout/samples/${speakerLabel}`
+export function getScoutSampleUrl(projectId: string, speakerLabel: string, index: number): string {
+  return `${BASE_URL}/projects/${projectId}/reference/scout/samples/${speakerLabel}/${index}`
 }
 
 export function selectScoutSpeaker(
   projectId: string,
   speakerLabel: string,
+  excludedIndices: number[] = [],
 ): Promise<{ reference_path: string; duration_secs: number }> {
   return request(`/projects/${projectId}/reference/scout/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ speaker_label: speakerLabel }),
+    body: JSON.stringify({ speaker_label: speakerLabel, excluded_indices: excludedIndices }),
   })
 }
 

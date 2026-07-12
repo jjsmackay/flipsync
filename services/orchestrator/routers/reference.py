@@ -3,8 +3,10 @@
 import asyncio
 import json
 import os
-import shutil
 import uuid
+import wave
+from pathlib import Path
+from typing import Optional
 
 import aiofiles
 from fastapi import APIRouter, UploadFile, File
@@ -20,6 +22,9 @@ router = APIRouter(prefix="/projects/{project_id}/reference", tags=["reference"]
 
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 MIN_DURATION_SECS = 5.0
+# Maximum assembled reference length. Turns are taken longest-first up to this
+# cap; the final turn is truncated to land exactly on it.
+REFERENCE_MAX_SECS = 30.0
 _FFPROBE_TIMEOUT_SECS = 10.0
 
 
@@ -67,13 +72,14 @@ async def _get_duration(path: str) -> float:
     return await asyncio.to_thread(_wave_duration, path)
 
 
-async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav, *, keep_source: bool = False) -> float:
+async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav) -> float:
     """Duration-gate `staged_wav`, install it as reference.wav, record its
     provenance, and recompute project status (a project resting in
     awaiting_reference moves on once a reference exists).
 
     Shared by the upload and diarise+pick paths so the finalisation steps
-    cannot drift. The gate runs before installation, so a too-short candidate
+    cannot drift. Both stage a disposable temp file, so installation is an
+    atomic rename. The gate runs before installation, so a too-short candidate
     never destroys an existing valid reference. Returns the duration.
     """
     duration = await _get_duration(str(staged_wav))
@@ -85,11 +91,7 @@ async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav, *
         )
 
     dest = project_dir(project_id) / "reference.wav"
-    if keep_source:
-        # Candidate montages stay on disk so the user can re-pick.
-        await asyncio.to_thread(shutil.copyfile, str(staged_wav), str(dest))
-    else:
-        os.replace(staged_wav, dest)
+    os.replace(staged_wav, dest)
 
     conn.execute(
         "UPDATE projects SET reference_path='reference.wav', reference_origin=?, updated_at=? WHERE id=?",
@@ -132,10 +134,15 @@ async def upload_reference(project_id: str, file: UploadFile = File(...)):
 
 class ScoutRequest(BaseModel):
     source_id: str
+    # Optional: force pyannote to this exact speaker count for the next scan.
+    expected_speaker_count: Optional[int] = None
 
 
 class SelectRequest(BaseModel):
     speaker_label: str
+    # Pool turn indices to leave out of the assembled reference (wrong-voice
+    # turns the user excluded). Empty = today's behaviour (whole montage).
+    excluded_indices: list[int] = []
 
 
 @router.post("/scout", status_code=202)
@@ -154,26 +161,88 @@ async def scout_speakers(project_id: str, body: ScoutRequest):
             "Source has no vocals stem yet; run step 1 first.",
         )
 
-    job_id = enqueue(project_id, "scout_speakers", source_id=body.source_id)
+    params = None
+    if body.expected_speaker_count is not None:
+        if body.expected_speaker_count < 1:
+            raise AppError(
+                422, "invalid_speaker_count",
+                "Expected speaker count must be at least 1.",
+            )
+        params = {"expected_speaker_count": body.expected_speaker_count}
+
+    job_id = enqueue(project_id, "scout_speakers", source_id=body.source_id, params=params)
     recompute_project_status(project_id)
     return {"job_id": job_id, "type": "scout_speakers"}
 
 
 def _candidate_speakers(conn, project_id: str) -> list[dict]:
-    """Serialise the project's current speaker_candidates rows."""
+    """Serialise the project's current speaker_candidates rows, each with its
+    curation pool. Each pool turn carries a per-turn sample_url."""
     candidates = conn.execute(
         "SELECT * FROM speaker_candidates WHERE project_id=? ORDER BY total_secs DESC",
         (project_id,),
     ).fetchall()
-    return [
-        {
+    result = []
+    for c in candidates:
+        pool = json.loads(c["pool_json"])
+        result.append({
             "speaker_label": c["speaker_label"],
             "total_secs": c["total_secs"],
             "segment_count": c["segment_count"],
-            "sample_url": f"/projects/{project_id}/reference/scout/samples/{c['speaker_label']}",
-        }
-        for c in candidates
-    ]
+            "pool": [
+                {
+                    "index": t["index"],
+                    "start": t["start"],
+                    "end": t["end"],
+                    "duration": t["duration"],
+                    "sample_url": (
+                        f"/projects/{project_id}/reference/scout/samples/"
+                        f"{c['speaker_label']}/{t['index']}"
+                    ),
+                }
+                for t in pool
+            ],
+        })
+    return result
+
+
+def _select_reference_turns(pool: list[dict], excluded: set[int], cap_secs: float) -> list[tuple[int, float]]:
+    """Choose pool turns for the reference: longest-first, minus excluded, up to
+    cap_secs. Returns (index, take_secs) pairs; the final turn is truncated so
+    the total lands exactly on the cap. Excluding a turn lets the next-longest
+    kept turn take its place — the backfill."""
+    included = sorted(
+        (t for t in pool if t["index"] not in excluded),
+        key=lambda t: t["duration"],
+        reverse=True,
+    )
+    chosen: list[tuple[int, float]] = []
+    total = 0.0
+    for t in included:
+        remaining = cap_secs - total
+        if remaining <= 0:
+            break
+        take = min(t["duration"], remaining)
+        chosen.append((t["index"], take))
+        total += take
+    return chosen
+
+
+def _assemble_reference_wav(pool_dir: Path, chosen: list[tuple[int, float]], dest) -> None:
+    """Concatenate the chosen pool slices into dest, truncating each to take_secs.
+    Uses the stdlib wave module so the orchestrator needs no audio deps."""
+    with wave.open(str(dest), "wb") as out:
+        params_set = False
+        for index, take in chosen:
+            src = pool_dir / f"{index}.wav"
+            if not src.exists():
+                raise AppError(404, "audio_not_found", f"Pool slice {index} is missing.")
+            with wave.open(str(src), "rb") as w:
+                if not params_set:
+                    out.setparams(w.getparams())
+                    params_set = True
+                nframes = min(w.getnframes(), int(take * w.getframerate()))
+                out.writeframes(w.readframes(nframes))
 
 
 @router.get("/scout")
@@ -211,20 +280,26 @@ async def get_scout(project_id: str):
     return {"status": "complete", "source_id": job["source_id"], "speakers": _candidate_speakers(conn, project_id)}
 
 
-@router.get("/scout/samples/{speaker_label}")
-async def get_scout_sample(project_id: str, speaker_label: str):
+@router.get("/scout/samples/{speaker_label}/{index}")
+async def get_scout_sample(project_id: str, speaker_label: str, index: int):
     conn = require_project(project_id)
 
     cand = conn.execute(
-        "SELECT montage_path FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
+        "SELECT scout_job_id, pool_json FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
         (project_id, speaker_label),
     ).fetchone()
     if cand is None:
         raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
 
-    wav = project_dir(project_id) / cand["montage_path"]
+    if index not in {t["index"] for t in json.loads(cand["pool_json"])}:
+        raise AppError(404, "unknown_segment", "Segment not in this candidate's pool.")
+
+    wav = (
+        project_dir(project_id) / "reference_candidates"
+        / cand["scout_job_id"] / speaker_label / f"{index}.wav"
+    )
     if not wav.exists():
-        raise AppError(404, "audio_not_found", "Montage WAV not found.")
+        raise AppError(404, "audio_not_found", "Pool slice WAV not found.")
 
     return FileResponse(str(wav), media_type="audio/wav")
 
@@ -240,12 +315,36 @@ async def select_speaker(project_id: str, body: SelectRequest):
     if cand is None:
         raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
 
-    montage = project_dir(project_id) / cand["montage_path"]
-    origin = {
-        "type": "diarise_pick",
-        "source_id": cand["source_id"],
-        "speaker_label": cand["speaker_label"],
-    }
-    duration = await _finalise_reference(conn, project_id, origin, montage, keep_source=True)
+    pool = json.loads(cand["pool_json"])
+    excluded = set(body.excluded_indices)
+    chosen = _select_reference_turns(pool, excluded, REFERENCE_MAX_SECS)
+    if not chosen:
+        raise AppError(
+            422, "reference_too_short",
+            "No turns left after exclusions — keep at least one segment.",
+            {"excluded_indices": sorted(excluded)},
+        )
+
+    pool_dir = (
+        project_dir(project_id) / "reference_candidates"
+        / cand["scout_job_id"] / body.speaker_label
+    )
+    # Assemble into a temp file so a too-short result never destroys an existing
+    # valid reference; _finalise_reference gates on duration then installs it.
+    pdir = project_dir(project_id)
+    tmp = pdir / f".reference.{uuid.uuid4().hex}.tmp"
+    try:
+        await asyncio.to_thread(_assemble_reference_wav, pool_dir, chosen, tmp)
+        origin = {
+            "type": "diarise_pick",
+            "source_id": cand["source_id"],
+            "speaker_label": cand["speaker_label"],
+            "excluded_indices": sorted(excluded),
+            "included_indices": [idx for idx, _ in chosen],
+        }
+        duration = await _finalise_reference(conn, project_id, origin, tmp)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
 
     return {"reference_path": "reference.wav", "duration_secs": duration}

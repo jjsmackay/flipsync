@@ -10,7 +10,9 @@ vi.mock('../../api/client', async () => {
     ...actual,
     startScout: vi.fn(),
     getScoutStatus: vi.fn(),
-    getScoutSampleUrl: vi.fn((_projectId: string, label: string) => `/api/samples/${label}`),
+    getScoutSampleUrl: vi.fn(
+      (_projectId: string, label: string, index: number) => `/api/samples/${label}/${index}`,
+    ),
     selectScoutSpeaker: vi.fn(),
     continuePipeline: vi.fn(),
     uploadReference: vi.fn(),
@@ -66,7 +68,14 @@ const RUNNING: ScoutStatus = { status: 'running', progress: 40, source_id: 'src-
 const COMPLETE: ScoutStatus = {
   status: 'complete',
   source_id: 'src-1',
-  speakers: [{ speaker_label: 'SPEAKER_00', total_secs: 120, segment_count: 30, sample_url: 'a' }],
+  speakers: [
+    {
+      speaker_label: 'SPEAKER_00',
+      total_secs: 120,
+      segment_count: 30,
+      pool: [{ index: 0, start: 0, end: 120, duration: 120, sample_url: 'a/0' }],
+    },
+  ],
 }
 
 beforeEach(() => {
@@ -107,7 +116,12 @@ describe('SetReferencePanel poll resilience', () => {
       source_id: 'src-1',
       error: 'GPU out of memory',
       speakers: [
-        { speaker_label: 'SPEAKER_00', total_secs: 300, segment_count: 80, sample_url: 'a' },
+        {
+          speaker_label: 'SPEAKER_00',
+          total_secs: 300,
+          segment_count: 80,
+          pool: [{ index: 0, start: 0, end: 300, duration: 300, sample_url: 'a/0' }],
+        },
       ],
     })
 

@@ -784,18 +784,24 @@ async def _handle_scout_speakers(
         _recompute_project_status(project_id)
         return
 
+    # An optional expected speaker count (from the scout request) forces
+    # pyannote to that exact count; absent, the default 1–10 range applies.
+    expected = params.get("expected_speaker_count")
+    scout_params: dict = {
+        "min_segment_duration": 1.0,
+        "min_speakers": 1,
+        "max_speakers": 10,
+    }
+    if isinstance(expected, int) and expected > 0:
+        scout_params["num_speakers"] = expected
+
     data_prefix = _data_prefix()
     payload = {
         "job_id": job_id,
         "input_path": f"{data_prefix}/projects/{project_id}/{source['vocals_path']}",
         "reference_path": None,
         "output_dir": f"{data_prefix}/projects/{project_id}/reference_candidates/{job_id}/",
-        "params": {
-            "min_segment_duration": 1.0,
-            "min_speakers": 1,
-            "max_speakers": 10,
-            "montage_max_secs": 30.0,
-        },
+        "params": scout_params,
     }
 
     try:
@@ -830,16 +836,18 @@ async def _handle_scout_speakers(
     ]
     conn.execute("DELETE FROM speaker_candidates WHERE project_id=?", (project_id,))
     for sp in result.get("speakers", []):
+        # Store the pool turns (index/start/end/duration). Slice paths are
+        # derived from scout_job_id + speaker_label + index, not persisted.
         conn.execute(
             """
             INSERT INTO speaker_candidates
                 (id, project_id, scout_job_id, source_id, speaker_label,
-                 montage_path, total_secs, segment_count, created_at)
+                 pool_json, total_secs, segment_count, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(uuid.uuid4()), project_id, job_id, source_id, sp["speaker_label"],
-                f"reference_candidates/{job_id}/{sp['speaker_label']}.wav",
+                json.dumps(sp.get("pool", [])),
                 sp["total_secs"], sp["segment_count"], now,
             ),
         )

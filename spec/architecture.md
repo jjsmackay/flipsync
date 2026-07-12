@@ -110,7 +110,7 @@ Two-phase operation:
 
 The service returns all speakers' segments, not just the matched target. The orchestrator filters by confidence threshold for the initial review queue, but stores everything. This allows the threshold to be adjusted without reprocessing.
 
-**Scout mode.** The service also supports a reference-less pass, selected by passing `reference_path: null` — diarisation only, no embedding comparison. Instead of per-segment WAVs it writes one montage WAV per detected speaker (that speaker's segments concatenated up to a capped duration), which the orchestrator surfaces as reference candidates. This is the "diarise + pick" path to acquiring a reference from the source video itself, rather than uploading a separate clip. See [Pipeline](pipeline.md) §Step 2 — Scout mode.
+**Scout mode.** The service also supports a reference-less pass, selected by passing `reference_path: null` — diarisation only, no embedding comparison. For each detected speaker it writes a bounded pool of individual turn WAVs (longest-first, capped), which the orchestrator surfaces as curatable reference candidates. The user can exclude wrong-voice turns and set an expected speaker count; the orchestrator assembles the reference from the kept turns. This is the "diarise + pick" path to acquiring a reference from the source video itself, rather than uploading a separate clip. See [Pipeline](pipeline.md) §Step 2 — Scout mode.
 
 Pyannote requires a HuggingFace token to download models on first run. The token is passed via environment variable. After first run, models are cached in a Docker volume and the token is no longer needed.
 
@@ -215,9 +215,10 @@ projects/
     ├── segments/
     │   └── raw/              # Sliced segment WAVs from diarisation
     ├── reference_candidates/
-    │   └── {scout_job_id}/   # Per-speaker montage WAVs from a scout_speakers job
+    │   └── {scout_job_id}/
+    │       └── {speaker_label}/  # Per-turn pool WAVs ({index}.wav) from a scout_speakers job
     ├── export/               # Cleaned WAVs + manifest.json, written at export time
-    └── reference.wav         # Reference clip for speaker matching — uploaded, or copied from a chosen candidate montage
+    └── reference.wav         # Reference clip for speaker matching — uploaded, or assembled from chosen candidate turns
 ```
 
 ---

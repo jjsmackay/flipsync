@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SetReferencePanel } from './SetReferencePanel'
-import type { ProjectDetail, SourceStatus, JobSummary } from '../../types/api'
+import type { ProjectDetail, SourceStatus, JobSummary, SpeakerCandidate } from '../../types/api'
 import {
   ApiError,
   startPipeline,
@@ -19,7 +19,9 @@ vi.mock('../../api/client', async () => {
     startPipeline: vi.fn(),
     startScout: vi.fn(),
     getScoutStatus: vi.fn(),
-    getScoutSampleUrl: vi.fn((_projectId: string, label: string) => `/api/samples/${label}`),
+    getScoutSampleUrl: vi.fn(
+      (_projectId: string, label: string, index: number) => `/api/samples/${label}/${index}`,
+    ),
     selectScoutSpeaker: vi.fn(),
     uploadReference: vi.fn(),
   }
@@ -87,6 +89,17 @@ beforeEach(() => {
   // Default: no prior scout has run.
   mockGetScoutStatus.mockRejectedValue(new ApiError('no_scout', 'No scout has been run.', null))
 })
+
+// Build a candidate with a pool from a list of turn durations.
+function cand(label: string, totalSecs: number, segmentCount: number, durations: number[]): SpeakerCandidate {
+  let t = 0
+  const pool = durations.map((d, i) => {
+    const turn = { index: i, start: t, end: t + d, duration: d, sample_url: `${label}/${i}` }
+    t += d + 0.5
+    return turn
+  })
+  return { speaker_label: label, total_secs: totalSecs, segment_count: segmentCount, pool }
+}
 
 describe('SetReferencePanel — whose-voice prompt', () => {
   it('offers Find speakers and Upload a clip on a queued source', () => {
@@ -166,14 +179,14 @@ describe('SetReferencePanel — scan and pick', () => {
       status: 'complete',
       source_id: 'src-1',
       speakers: [
-        { speaker_label: 'SPEAKER_01', total_secs: 88.2, segment_count: 41, sample_url: 'x' },
-        { speaker_label: 'SPEAKER_00', total_secs: 412.6, segment_count: 173, sample_url: 'y' },
+        cand('SPEAKER_01', 88.2, 41, [30]),
+        cand('SPEAKER_00', 412.6, 173, [30]),
       ],
     })
 
     render(<SetReferencePanel project={makeProject()} onAction={vi.fn()} pollIntervalMs={10} />)
 
-    await waitFor(() => expect(mockStartScout).toHaveBeenCalledWith('proj-1', 'src-1'))
+    await waitFor(() => expect(mockStartScout).toHaveBeenCalledWith('proj-1', 'src-1', undefined))
     await waitFor(() => expect(screen.getByText('SPEAKER_00')).toBeInTheDocument())
 
     // Sorted by talk time descending.
@@ -185,7 +198,7 @@ describe('SetReferencePanel — scan and pick', () => {
     mockGetScoutStatus.mockResolvedValue({
       status: 'complete',
       source_id: 'src-1',
-      speakers: [{ speaker_label: 'SPEAKER_02', total_secs: 200, segment_count: 60, sample_url: 'z' }],
+      speakers: [cand('SPEAKER_02', 200, 60, [30])],
     })
 
     render(<SetReferencePanel project={makeProject()} onAction={vi.fn()} pollIntervalMs={10} />)
@@ -199,8 +212,8 @@ describe('SetReferencePanel — scan and pick', () => {
       status: 'complete',
       source_id: 'src-1',
       speakers: [
-        { speaker_label: 'SPEAKER_00', total_secs: 120, segment_count: 30, sample_url: 'a' },
-        { speaker_label: 'SPEAKER_01', total_secs: 3.2, segment_count: 2, sample_url: 'b' },
+        cand('SPEAKER_00', 120, 30, [30]),
+        cand('SPEAKER_01', 3.2, 2, [3.2]), // only 3.2s of audio → under the 5s floor
       ],
     })
 
@@ -221,7 +234,7 @@ describe('SetReferencePanel — scan and pick', () => {
     mockGetScoutStatus.mockResolvedValue({
       status: 'complete',
       source_id: 'src-1',
-      speakers: [{ speaker_label: 'SPEAKER_00', total_secs: 412.6, segment_count: 173, sample_url: 'y' }],
+      speakers: [cand('SPEAKER_00', 412.6, 173, [30])],
     })
 
     render(<SetReferencePanel project={makeProject()} onAction={onAction} pollIntervalMs={10} />)
@@ -229,7 +242,51 @@ describe('SetReferencePanel — scan and pick', () => {
     await waitFor(() => expect(screen.getByText('SPEAKER_00')).toBeInTheDocument())
     await user.click(screen.getByRole('button', { name: 'Use this voice' }))
 
-    await waitFor(() => expect(mockSelectScoutSpeaker).toHaveBeenCalledWith('proj-1', 'SPEAKER_00'))
+    await waitFor(() => expect(mockSelectScoutSpeaker).toHaveBeenCalledWith('proj-1', 'SPEAKER_00', []))
     expect(onAction).toHaveBeenCalled()
+  })
+
+  it('excludes a wrong-voice turn and sends the exclusion on select', async () => {
+    const user = userEvent.setup()
+    mockSelectScoutSpeaker.mockResolvedValue({ reference_path: 'reference.wav', duration_secs: 10 })
+    mockGetScoutStatus.mockResolvedValue({
+      status: 'complete',
+      source_id: 'src-1',
+      speakers: [cand('SPEAKER_00', 200, 5, [12, 10])],
+    })
+
+    render(<SetReferencePanel project={makeProject()} onAction={vi.fn()} pollIntervalMs={10} />)
+
+    await waitFor(() => expect(screen.getByText('SPEAKER_00')).toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'Choose segments' }))
+
+    // Two pool turns → two "Not this speaker" checkboxes. Exclude the first.
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(2)
+    await user.click(checkboxes[0])
+
+    await user.click(screen.getByRole('button', { name: 'Use this voice' }))
+    await waitFor(() =>
+      expect(mockSelectScoutSpeaker).toHaveBeenCalledWith('proj-1', 'SPEAKER_00', [0]),
+    )
+  })
+
+  it('re-scans with the expected speaker count from the advanced drawer', async () => {
+    const user = userEvent.setup()
+    mockStartScout.mockResolvedValue({ job_id: 'j', type: 'scout_speakers' })
+    mockGetScoutStatus.mockResolvedValue({
+      status: 'complete',
+      source_id: 'src-1',
+      speakers: [cand('SPEAKER_00', 120, 30, [30])],
+    })
+
+    render(<SetReferencePanel project={makeProject()} onAction={vi.fn()} pollIntervalMs={10} />)
+
+    await waitFor(() => expect(screen.getByText('SPEAKER_00')).toBeInTheDocument())
+
+    fireEvent.change(screen.getByLabelText('Expected number of speakers'), { target: { value: '2' } })
+    await user.click(screen.getByRole('button', { name: 'Scan again' }))
+
+    await waitFor(() => expect(mockStartScout).toHaveBeenCalledWith('proj-1', 'src-1', 2))
   })
 })
