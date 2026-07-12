@@ -20,21 +20,36 @@ from transcriber import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_word(probability: float) -> MagicMock:
+def _make_word(
+    probability: float,
+    word: str = " word",
+    start: float = 0.0,
+    end: float = 0.0,
+) -> MagicMock:
     w = MagicMock()
     w.probability = probability
-    w.text = "word"
+    w.word = word
+    w.text = word
+    w.start = start
+    w.end = end
     return w
 
 
 def _make_model_returning(words: list) -> MagicMock:
-    """Return a mock WhisperModel whose transcribe() yields one segment with given words."""
+    """Return a mock WhisperModel whose transcribe() yields one segment with given words.
+
+    Uses side_effect so repeated transcribe() calls each get a fresh iterator.
+    """
     model = MagicMock()
-    seg = MagicMock()
-    seg.text = " ".join(w.text for w in words)
-    seg.words = words
-    info = MagicMock()
-    model.transcribe.return_value = (iter([seg]), info)
+
+    def _transcribe(wav_path, **kwargs):
+        seg = MagicMock()
+        seg.text = "".join(w.word for w in words)
+        seg.words = list(words)
+        info = MagicMock()
+        return iter([seg]), info
+
+    model.transcribe.side_effect = _transcribe
     return model
 
 
@@ -152,13 +167,13 @@ class TestTranscribeSegment:
 
     def test_transcript_joined_from_segments(self, sine_wav_path):
         """Transcript text is stripped and joined from all segment texts."""
-        words = [_make_word(0.9)]
-        words[0].text = "hello"
+        words = [_make_word(0.9, word="hello")]
         model = _make_model_returning(words)
         # Override seg.text to include leading/trailing spaces
         seg = MagicMock()
         seg.text = "  hello  "
         seg.words = words
+        model.transcribe.side_effect = None
         model.transcribe.return_value = (iter([seg]), MagicMock())
 
         result = transcribe_segment(model, "seg-6", sine_wav_path, language=None)
