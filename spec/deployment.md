@@ -159,6 +159,7 @@ Create a `.env` file at the repo root before first run: `cp .env.example .env`. 
 | `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
 | `FRONTEND_PORT` | no | `3000` | Host port for the UI |
 | `CORS_ORIGINS` | no | `http://localhost:3000,http://127.0.0.1:3000` | Browser origins allowed to call the orchestrator directly |
+| `XTTS_ACCEPT_CPML` | only with `--profile xtts` | — | CPML licence acceptance; the XTTS service refuses to start without it (see §XTTS service) |
 
 Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.
 
