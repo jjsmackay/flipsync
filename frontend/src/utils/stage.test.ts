@@ -8,6 +8,9 @@ function makeProject(overrides: {
   referencePath?: string | null
   pendingCount?: number
   maybeCount?: number
+  approvedCount?: number
+  autoApprovedCount?: number
+  belowThresholdCount?: number
   status?: ProjectDetail['status']
 }): ProjectDetail {
   const {
@@ -16,6 +19,9 @@ function makeProject(overrides: {
     referencePath = null,
     pendingCount = 0,
     maybeCount = 0,
+    approvedCount = 0,
+    autoApprovedCount = 0,
+    belowThresholdCount = 0,
     status = 'ready',
   } = overrides
   return {
@@ -43,14 +49,14 @@ function makeProject(overrides: {
     })),
     recent_failed_jobs: [],
     stats: {
-      approved_count: 0,
+      approved_count: approvedCount,
       approved_duration_secs: 0,
       pending_count: pendingCount,
       maybe_count: maybeCount,
-      total_segments: pendingCount + maybeCount,
-      auto_approved_count: 0,
+      total_segments: pendingCount + maybeCount + belowThresholdCount + approvedCount + autoApprovedCount,
+      auto_approved_count: autoApprovedCount,
       rejected_count: 0,
-      below_threshold_count: 0,
+      below_threshold_count: belowThresholdCount,
       source_coverage: sourceStatuses.map((s, i) => ({
         source_id: `s${i}`,
         filename: `file${i}.mp4`,
@@ -142,6 +148,27 @@ describe('deriveStage', () => {
 
   it('returns export when everything is reviewed', () => {
     const p = makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav' })
+    expect(deriveStage(p)).toBe('export')
+  })
+
+  it('returns review (not export) when every segment is below the threshold', () => {
+    // Nothing pending/maybe, nothing approved, but segments exist below the
+    // match threshold — the user needs to lower it, not export an empty dataset.
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      belowThresholdCount: 12,
+    })
+    expect(deriveStage(p)).toBe('review')
+  })
+
+  it('returns export when there is approved content despite leftover below-threshold', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      approvedCount: 4,
+      belowThresholdCount: 8,
+    })
     expect(deriveStage(p)).toBe('export')
   })
 

@@ -51,7 +51,16 @@ export function deriveStage(project: ProjectDetail): Stage {
 
   if (sources.some((s) => PROCESSING_SOURCE_STATUSES.has(s.status))) return 'process'
 
-  if (project.stats.pending_count + project.stats.maybe_count > 0) return 'review'
+  const { pending_count, maybe_count, approved_count, auto_approved_count, below_threshold_count } =
+    project.stats
+  if (pending_count + maybe_count > 0) return 'review'
+
+  // Nothing queued for review and nothing approved yet, but segments are sitting
+  // below the match threshold: the run matched poorly, not "done". Keep the user
+  // in Review — which shows the lower-the-threshold guidance — rather than
+  // sending them to Export with a misleading "ready to export".
+  if (approved_count + auto_approved_count === 0 && below_threshold_count > 0) return 'review'
+
   return 'export'
 }
 

@@ -12,11 +12,14 @@ import { ExportButton } from '../export/ExportButton'
 interface NextActionCardProps {
   project: ProjectDetail
   onAction: () => void
+  // Opens the (collapsed) project settings panel — used by the Review stage to
+  // send the user to the match-threshold slider when every match is below it.
+  onOpenSettings?: () => void
 }
 
 // One card, one slot, always the same place on the page. Content follows the
 // current stage; the reserved min-height keeps the 3s poll from shifting layout.
-export function NextActionCard({ project, onAction }: NextActionCardProps) {
+export function NextActionCard({ project, onAction, onOpenSettings }: NextActionCardProps) {
   const stage = deriveStage(project)
 
   return (
@@ -27,7 +30,9 @@ export function NextActionCard({ project, onAction }: NextActionCardProps) {
         {stage === 'upload' && <UploadStage project={project} onAction={onAction} />}
         {stage === 'speaker' && <SpeakerStage project={project} onAction={onAction} />}
         {stage === 'process' && <ProcessStage project={project} onAction={onAction} />}
-        {stage === 'review' && <ReviewStage project={project} onAction={onAction} />}
+        {stage === 'review' && (
+          <ReviewStage project={project} onAction={onAction} onOpenSettings={onOpenSettings} />
+        )}
         {stage === 'export' && <ExportStage project={project} onAction={onAction} />}
       </div>
     </div>
@@ -150,11 +155,33 @@ function ProcessStage({ project, onAction }: NextActionCardProps) {
   )
 }
 
-function ReviewStage({ project, onAction }: NextActionCardProps) {
+function ReviewStage({ project, onAction, onOpenSettings }: NextActionCardProps) {
   const [error, setError] = useState<string | null>(null)
   const [transcribing, setTranscribing] = useState(false)
 
   const toReview = project.stats.pending_count + project.stats.maybe_count
+
+  // We're in Review with nothing to review because every segment landed below
+  // the match threshold (deriveStage routes that here, not to Export). Guide the
+  // user to lower the threshold rather than showing an empty review queue.
+  if (toReview === 0) {
+    const below = project.stats.below_threshold_count
+    return (
+      <div>
+        <StageHeading
+          title="No confident matches yet"
+          blurb={`All ${below} segment${below === 1 ? '' : 's'} scored below your match threshold (${project.config.match_threshold.toFixed(2)}). Lower it to bring the closest matches in for review.`}
+        />
+        <button
+          onClick={() => onOpenSettings?.()}
+          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg
+            hover:bg-blue-700 transition-colors"
+        >
+          Adjust threshold
+        </button>
+      </div>
+    )
+  }
 
   async function handleTranscribe() {
     setError(null)

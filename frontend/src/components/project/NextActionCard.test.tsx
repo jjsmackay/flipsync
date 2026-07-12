@@ -26,6 +26,7 @@ function makeProject(overrides: {
   referencePath?: string | null
   pendingCount?: number
   approvedCount?: number
+  belowThresholdCount?: number
   status?: ProjectDetail['status']
 }): ProjectDetail {
   const {
@@ -34,6 +35,7 @@ function makeProject(overrides: {
     referencePath = null,
     pendingCount = 0,
     approvedCount = 0,
+    belowThresholdCount = 0,
     status = 'ready',
   } = overrides
   return {
@@ -65,10 +67,10 @@ function makeProject(overrides: {
       approved_duration_secs: 0,
       pending_count: pendingCount,
       maybe_count: 0,
-      total_segments: pendingCount + approvedCount,
+      total_segments: pendingCount + approvedCount + belowThresholdCount,
       auto_approved_count: 0,
       rejected_count: 0,
-      below_threshold_count: 0,
+      below_threshold_count: belowThresholdCount,
       source_coverage: sourceStatuses.map((s, i) => ({
         source_id: `s${i}`,
         filename: `file${i}.mp4`,
@@ -81,10 +83,10 @@ function makeProject(overrides: {
   }
 }
 
-function renderCard(project: ProjectDetail) {
+function renderCard(project: ProjectDetail, onOpenSettings?: () => void) {
   return render(
     <MemoryRouter>
-      <NextActionCard project={project} onAction={() => {}} />
+      <NextActionCard project={project} onAction={() => {}} onOpenSettings={onOpenSettings} />
     </MemoryRouter>,
   )
 }
@@ -141,5 +143,24 @@ describe('NextActionCard', () => {
   it('shows the export action once review is done', () => {
     renderCard(makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav', approvedCount: 8 }))
     expect(screen.getByText(/ready to export/i)).toBeInTheDocument()
+  })
+
+  it('guides to lower the threshold when every segment is below it', async () => {
+    const onOpenSettings = vi.fn()
+    renderCard(
+      makeProject({
+        sourceStatuses: ['complete'],
+        referencePath: '/data/ref.wav',
+        belowThresholdCount: 12,
+      }),
+      onOpenSettings,
+    )
+    // Not the misleading "ready to export" / "ready to review" copy.
+    expect(screen.queryByText(/ready to export/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/below your match threshold/i)).toBeInTheDocument()
+    const btn = screen.getByRole('button', { name: /adjust threshold/i })
+    const { default: userEvent } = await import('@testing-library/user-event')
+    await userEvent.setup().click(btn)
+    expect(onOpenSettings).toHaveBeenCalled()
   })
 })

@@ -164,7 +164,11 @@ export function ProjectDashboardPage() {
       <StageStrip project={project} />
 
       {/* Next action */}
-      <NextActionCard project={project} onAction={() => void refetch()} />
+      <NextActionCard
+        project={project}
+        onAction={() => void refetch()}
+        onOpenSettings={openSettings}
+      />
 
       {/* Failed jobs — own slot so appearing doesn't reflow the card */}
       {project.recent_failed_jobs.length > 0 && (
