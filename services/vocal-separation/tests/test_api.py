@@ -352,3 +352,53 @@ class TestPreloadHealth:
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Output path is threaded from the request through to separation
+# ---------------------------------------------------------------------------
+
+
+class TestOutputPathThreading:
+    """Regression: the request's output_path must reach separator.separate() and
+    be echoed on completion. It was previously dropped — the job stored a hard
+    None — so separate() received output_path=None and crashed in os.makedirs
+    (TypeError: expected str... not NoneType), failing every real separation."""
+
+    def test_request_output_path_reaches_separate(self, client):
+        captured = {}
+
+        def side_effect(*, output_path, **kwargs):
+            captured["output_path"] = output_path
+            return None
+
+        with patch("separator.separate", side_effect=side_effect):
+            body = _job_body(output_path="/data/projects/p/audio/vocals/xyz.wav")
+            client.post("/jobs", json=body)
+            data = _poll_to_terminal(client, body["job_id"])
+
+        assert captured["output_path"] == "/data/projects/p/audio/vocals/xyz.wav"
+        assert data["status"] == "complete"
+
+    def test_completed_job_echoes_output_path(self, client):
+        with patch("separator.separate", return_value=None):
+            body = _job_body(output_path="/data/projects/p/audio/vocals/abc.wav")
+            client.post("/jobs", json=body)
+            data = _poll_to_terminal(client, body["job_id"])
+
+        assert data["status"] == "complete"
+        assert data["output_path"] == "/data/projects/p/audio/vocals/abc.wav"
+
+    def test_output_path_null_while_running(self, client):
+        """Per contract, output_path is null until the job completes."""
+
+        def slow(**kwargs):
+            time.sleep(0.2)
+
+        with patch("separator.separate", side_effect=slow):
+            body = _job_body()
+            client.post("/jobs", json=body)
+            running = client.get(f"/jobs/{body['job_id']}").json()
+            assert running["status"] == "running"
+            assert running["output_path"] is None
+            _poll_to_terminal(client, body["job_id"])
