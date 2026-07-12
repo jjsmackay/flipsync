@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useProjectPolling } from '../hooks/useProjectPolling'
-import { reprocessSource } from '../api/client'
+import { reprocessSource, runTranscription, triggerExport, ApiError } from '../api/client'
+import type { FailedJob } from '../types/api'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { JobsPanel } from '../components/project/JobsPanel'
 import { StatsPanel } from '../components/project/StatsPanel'
@@ -17,14 +19,71 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+interface ReprocessConfirm {
+  sourceId: string
+  steps: string[]
+  message: string
+}
+
 export function ProjectDashboardPage() {
   const { projectId } = useParams<{ projectId: string }>()
-  const { project, isLoading, error } = useProjectPolling(projectId!)
+  const { project, isLoading, error, refetch } = useProjectPolling(projectId!)
+
+  const [reprocessError, setReprocessError] = useState<string | null>(null)
+  const [reprocessConfirm, setReprocessConfirm] = useState<ReprocessConfirm | null>(null)
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
+
+  async function submitReprocess(sourceId: string, steps: string[], confirm: boolean) {
+    if (!projectId) return
+    await reprocessSource(projectId, sourceId, steps, undefined, confirm)
+    void refetch()
+  }
 
   async function handleReprocess(sourceId: string, steps: string[]) {
+    setReprocessError(null)
+    try {
+      await submitReprocess(sourceId, steps, false)
+    } catch (err) {
+      if (err instanceof ApiError && err.error === 'would_invalidate_approvals') {
+        setReprocessConfirm({ sourceId, steps, message: err.message })
+      } else {
+        setReprocessError(err instanceof Error ? err.message : 'Reprocess failed')
+      }
+    }
+  }
+
+  async function handleConfirmReprocess() {
+    if (!reprocessConfirm) return
+    const { sourceId, steps } = reprocessConfirm
+    setReprocessConfirm(null)
+    setReprocessError(null)
+    try {
+      await submitReprocess(sourceId, steps, true)
+    } catch (err) {
+      setReprocessError(err instanceof Error ? err.message : 'Reprocess failed')
+    }
+  }
+
+  async function handleRetryJob(job: FailedJob) {
     if (!projectId) return
-    await reprocessSource(projectId, sourceId, steps, undefined, true)
-    // polling will pick up changes automatically
+    setReprocessError(null)
+    setRetryingJobId(job.id)
+    try {
+      if (job.type === 'transcription_bulk' || job.type === 'transcription') {
+        await runTranscription(projectId)
+      } else if (job.type === 'export') {
+        await triggerExport(projectId)
+      } else if (job.source_id) {
+        // vocal_separation / extract_audio re-run step 1; diarisation re-runs step 2.
+        const steps = job.type === 'diarisation' ? ['step2'] : ['step1']
+        await reprocessSource(projectId, job.source_id, steps, undefined, true)
+      }
+      void refetch()
+    } catch (err) {
+      setReprocessError(err instanceof Error ? err.message : 'Retry failed')
+    } finally {
+      setRetryingJobId(null)
+    }
   }
 
   if (isLoading && !project) {
@@ -70,6 +129,8 @@ export function ProjectDashboardPage() {
           <JobsPanel
             activeJobs={project.active_jobs}
             failedJobs={project.recent_failed_jobs}
+            onRetry={handleRetryJob}
+            retryingJobId={retryingJobId}
           />
         </Section>
       )}
@@ -81,7 +142,7 @@ export function ProjectDashboardPage() {
 
       {/* Pipeline Controls */}
       <Section title="Pipeline">
-        <PipelineControls project={project} onAction={() => {}} />
+        <PipelineControls project={project} onAction={() => void refetch()} />
       </Section>
 
       {/* Sources */}
@@ -90,12 +151,49 @@ export function ProjectDashboardPage() {
           sources={project.stats.source_coverage}
           onReprocess={handleReprocess}
         />
+        {reprocessError && (
+          <p className="mt-3 text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">
+            {reprocessError}
+          </p>
+        )}
       </Section>
 
       {/* Upload */}
       <Section title="Upload">
-        <UploadArea projectId={project.id} onUploaded={() => {}} />
+        <UploadArea projectId={project.id} onUploaded={() => void refetch()} />
       </Section>
+
+      {/* Reprocess confirmation */}
+      {reprocessConfirm && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => setReprocessConfirm(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Confirm reprocess</h2>
+            <p className="text-sm text-gray-600 mb-5">{reprocessConfirm.message}</p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setReprocessConfirm(null)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmReprocess()}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
+              >
+                Reprocess anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

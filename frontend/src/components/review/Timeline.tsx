@@ -66,10 +66,12 @@ export function Timeline({
       const x = ((visStart - viewStart) / windowDuration) * width
       const w = ((visEnd - visStart) / windowDuration) * width
 
-      if (w < 1) continue
+      // Segments narrower than 2px still render as a single-pixel mark so they
+      // aren't invisible at season scale (spec: timeline component).
+      const drawW = w < 2 ? 1 : Math.ceil(w)
 
       ctx.fillStyle = seg.id === selectedSegmentId ? SELECTED_COLOR : STATUS_COLORS[seg.status]
-      ctx.fillRect(Math.floor(x), 0, Math.ceil(w), height)
+      ctx.fillRect(Math.floor(x), 0, drawW, height)
     }
 
     // Respect visibleRange overlay (optional: dim out-of-range areas)
@@ -109,25 +111,32 @@ export function Timeline({
     if (best) onSegmentSelect(best.id)
   }
 
-  function handleWheel(e: React.WheelEvent<HTMLCanvasElement>) {
-    e.preventDefault()
+  // Wheel-to-zoom must call preventDefault, which React's (passive) onWheel cannot do
+  // without a console error and the page scrolling anyway — attach a non-passive
+  // native listener instead.
+  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const rect = canvas.getBoundingClientRect()
-    const xRatio = (e.clientX - rect.left) / rect.width
-    // Time under cursor before zoom
-    const cursorTime = clampedOffset + xRatio * windowDuration
+    function onWheel(e: WheelEvent) {
+      e.preventDefault()
+      const rect = canvas!.getBoundingClientRect()
+      const xRatio = (e.clientX - rect.left) / rect.width
+      const cursorTime = clampedOffset + xRatio * windowDuration
 
-    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2
-    const newZoom = Math.max(1, Math.min(20, zoom * factor))
-    const newWindowDuration = totalDuration / newZoom
-    // Keep cursorTime fixed: newOffset + xRatio * newWindowDuration = cursorTime
-    const newOffset = cursorTime - xRatio * newWindowDuration
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2
+      const newZoom = Math.max(1, Math.min(20, zoom * factor))
+      const newWindowDuration = totalDuration / newZoom
+      // Keep cursorTime fixed: newOffset + xRatio * newWindowDuration = cursorTime
+      const newOffset = cursorTime - xRatio * newWindowDuration
 
-    setZoom(newZoom)
-    setOffsetSecs(Math.max(0, Math.min(newOffset, totalDuration - newWindowDuration)))
-  }
+      setZoom(newZoom)
+      setOffsetSecs(Math.max(0, Math.min(newOffset, totalDuration - newWindowDuration)))
+    }
+
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', onWheel)
+  }, [zoom, clampedOffset, windowDuration, totalDuration])
 
   if (segments.length === 0 || totalDuration === 0) return null
 
@@ -138,7 +147,6 @@ export function Timeline({
       height={CANVAS_HEIGHT}
       style={{ height: CANVAS_HEIGHT, width: '100%', cursor: 'pointer', display: 'block' }}
       onClick={handleClick}
-      onWheel={handleWheel}
     />
   )
 }

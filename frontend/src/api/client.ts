@@ -12,7 +12,11 @@ import type {
   Job,
 } from '../types/api'
 
-const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) || 'http://localhost:8000'
+// When VITE_API_URL is unset (the default in the shipped compose), talk to the
+// orchestrator on the same host the UI was served from, so LAN access works (SC8).
+const BASE_URL =
+  (import.meta.env.VITE_API_URL as string | undefined) ||
+  `http://${window.location.hostname}:8000`
 
 // ---- Error type ----
 
@@ -174,8 +178,15 @@ export function rerunSegmentTranscription(projectId: string, segmentId: string):
 
 // ---- Segments ----
 
-export function getSegments(projectId: string, params: GetSegmentsParams): Promise<PaginatedSegments> {
-  return request(`/projects/${projectId}/segments${toQueryString(params as Record<string, unknown>)}`)
+export function getSegments(
+  projectId: string,
+  params: GetSegmentsParams,
+  signal?: AbortSignal,
+): Promise<PaginatedSegments> {
+  return request(
+    `/projects/${projectId}/segments${toQueryString(params as Record<string, unknown>)}`,
+    { signal },
+  )
 }
 
 export function getSegmentsCount(projectId: string, filter: BulkFilter): Promise<{ total: number }> {
@@ -213,7 +224,13 @@ export function bulkSegmentAction(
 
 // ---- Export ----
 
-export function triggerExport(projectId: string): Promise<unknown> {
+export interface EnqueuedJob {
+  id: string
+  type: string
+  segment_count?: number
+}
+
+export function triggerExport(projectId: string): Promise<{ enqueued_job: EnqueuedJob }> {
   return request(`/projects/${projectId}/export`, {
     method: 'POST',
   })

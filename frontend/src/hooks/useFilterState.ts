@@ -22,14 +22,22 @@ export const DEFAULT_FILTER: FilterState = {
   page: 1,
 }
 
+function parseNumberParam(raw: string | null, fallback: number): number {
+  if (raw === null || raw === '') return fallback
+  const n = parseFloat(raw)
+  return Number.isNaN(n) ? fallback : n
+}
+
 export function useFilterState() {
   const [params, setParams] = useSearchParams()
+
+  const min_confidence = parseNumberParam(params.get('min_confidence'), DEFAULT_FILTER.min_confidence)
 
   const filter: FilterState = {
     status: params.get('status') ?? DEFAULT_FILTER.status,
     source_id: params.get('source_id') ?? '',
-    min_confidence: parseFloat(params.get('min_confidence') ?? '') || DEFAULT_FILTER.min_confidence,
-    min_duration: parseFloat(params.get('min_duration') ?? '') || 0,
+    min_confidence,
+    min_duration: parseNumberParam(params.get('min_duration'), 0),
     sort: params.get('sort') ?? DEFAULT_FILTER.sort,
     order: (params.get('order') ?? DEFAULT_FILTER.order) as 'asc' | 'desc',
     page: parseInt(params.get('page') ?? '1', 10) || 1,
@@ -40,7 +48,8 @@ export function useFilterState() {
       setParams(prev => {
         const next = new URLSearchParams(prev)
         for (const [k, v] of Object.entries(update)) {
-          if (v === '' || v === null || v === undefined || v === 0) {
+          // Keep 0 in the URL (e.g. min_confidence = 0.00) — only strip truly empty values.
+          if (v === '' || v === null || v === undefined) {
             next.delete(k)
           } else {
             next.set(k, String(v))

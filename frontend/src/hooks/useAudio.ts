@@ -21,10 +21,15 @@ export function useAudio(url: string | null): UseAudioResult {
   const [duration, setDuration] = useState(0)
   const [playbackRate, setPlaybackRateState] = useState(1)
 
+  // Hold the latest rate so a freshly-created Audio element (new segment) can adopt
+  // it without re-running the create effect on every rate change.
+  const playbackRateRef = useRef(1)
+
   // Create / replace audio element when URL changes
   useEffect(() => {
     const audio = new Audio()
     audioRef.current = audio
+    audio.playbackRate = playbackRateRef.current
 
     if (url) {
       audio.src = url
@@ -78,6 +83,7 @@ export function useAudio(url: string | null): UseAudioResult {
   }, [])
 
   const setPlaybackRate = useCallback((rate: number) => {
+    playbackRateRef.current = rate
     if (audioRef.current) {
       audioRef.current.playbackRate = rate
     }
