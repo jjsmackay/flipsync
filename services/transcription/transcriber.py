@@ -4,6 +4,13 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from resegment import (
+    compute_boundaries,
+    normalise_utterances,
+    slice_children,
+    split_into_utterances,
+)
+
 # Lazy import to avoid crashing at startup if faster-whisper isn't installed
 _model_cache: dict = {"model": None, "model_size": None}
 
@@ -69,12 +76,23 @@ def transcribe_segment(
     segment_id: str,
     wav_path: str,
     language: Optional[str],
+    start_secs: float = 0.0,
+    resegment: bool = False,
 ) -> dict:
     """
     Transcribe a single WAV segment.
 
     Returns a dict with keys: id, transcript, transcript_confidence.
     Short segments (< 0.5s) get empty transcript without calling the model.
+
+    When ``resegment`` is true and the transcription yields 2+ normalised
+    utterances, the segment is split instead: child WAVs are sliced from the
+    parent and the result is ``{"id": <parent>, "children": [...]}`` where
+    each child carries a service-generated UUID, its WAV path, absolute
+    ``start_secs``/``end_secs`` (parent ``start_secs`` + in-file offsets),
+    and its own transcript and confidence. A single utterance or a no-word
+    transcription returns the unsplit shape, exactly as if ``resegment``
+    were false.
     """
     # Check duration first
     duration = get_wav_duration(wav_path)
@@ -99,6 +117,13 @@ def transcribe_segment(
         if seg.words:
             all_words.extend(seg.words)
 
+    if resegment and all_words:
+        utterances = normalise_utterances(split_into_utterances(all_words))
+        if len(utterances) >= 2:
+            return _split_segment(
+                segment_id, wav_path, duration, start_secs, utterances
+            )
+
     transcript = "".join(text_parts).strip()
     confidence = compute_confidence(all_words)
 
@@ -107,6 +132,34 @@ def transcribe_segment(
         "transcript": transcript,
         "transcript_confidence": confidence,
     }
+
+
+def _split_segment(
+    segment_id: str,
+    wav_path: str,
+    duration: float,
+    start_secs: float,
+    utterances: list[list],
+) -> dict:
+    """Slice child WAVs for each utterance and build the children result."""
+    boundaries = compute_boundaries(utterances, duration)
+    child_files = slice_children(wav_path, boundaries)
+
+    children = []
+    for utt, (b_start, b_end), child in zip(utterances, boundaries, child_files):
+        children.append(
+            {
+                "id": child["id"],
+                "wav_path": child["wav_path"],
+                "start_secs": start_secs + b_start,
+                "end_secs": start_secs + b_end,
+                # Whisper word tokens carry their own leading spacing.
+                "transcript": "".join(w.word for w in utt).strip(),
+                "transcript_confidence": compute_confidence(utt),
+            }
+        )
+
+    return {"id": segment_id, "children": children}
 
 
 def _transcribe_one(model, seg: dict, language: Optional[str]) -> dict:
@@ -118,7 +171,14 @@ def _transcribe_one(model, seg: dict, language: Optional[str]) -> dict:
     cumulative-results contract holds; the extra ``error`` field is additive.
     """
     try:
-        return transcribe_segment(model, seg["id"], seg["wav_path"], language)
+        return transcribe_segment(
+            model,
+            seg["id"],
+            seg["wav_path"],
+            language,
+            start_secs=seg.get("start_secs") or 0.0,
+            resegment=seg.get("resegment", False),
+        )
     except Exception as exc:
         return {
             "id": seg["id"],

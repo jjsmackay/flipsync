@@ -18,7 +18,7 @@ import httpx
 
 from db import get_conn, project_dir, utc_now as _now
 import service_client
-from status import recompute_project_status as _recompute_project_status
+from status import auto_approve_promote, recompute_project_status as _recompute_project_status
 
 logger = logging.getLogger(__name__)
 
@@ -574,15 +574,23 @@ async def _handle_transcription_bulk(
 
     project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
 
-    # Build segment list with wav_paths (bulk query)
+    # Build segment list with wav_paths (bulk query). Untranscribed
+    # pending/below_threshold segments are eligible for sentence-aligned
+    # re-segmentation (spec/pipeline.md §Sentence-aligned re-segmentation);
+    # user-touched statuses (maybe, ...) are transcribed without splitting.
     data_prefix = _data_prefix()
     placeholders = ",".join("?" * len(segment_ids))
     rows = conn.execute(
-        f"SELECT id, raw_path FROM segments WHERE id IN ({placeholders})",
+        f"SELECT id, raw_path, start_secs, status, transcript FROM segments WHERE id IN ({placeholders})",
         segment_ids,
     ).fetchall()
     seg_list = [
-        {"id": r["id"], "wav_path": f"{data_prefix}/projects/{project_id}/{r['raw_path']}"}
+        {
+            "id": r["id"],
+            "wav_path": f"{data_prefix}/projects/{project_id}/{r['raw_path']}",
+            "start_secs": r["start_secs"],
+            "resegment": r["status"] in ("pending", "below_threshold") and r["transcript"] is None,
+        }
         for r in rows
     ]
 
@@ -609,14 +617,9 @@ async def _handle_transcription_bulk(
         _recompute_project_status(project_id)
         return
 
-    # Pre-load durations for short-transcript flagging (avoids N+1 in poll loop)
-    dur_rows = conn.execute(
-        f"SELECT id, duration_secs FROM segments WHERE id IN ({placeholders})",
-        segment_ids,
-    ).fetchall()
-    seg_durations: dict[str, float | None] = {r["id"]: r["duration_secs"] for r in dur_rows}
-
-    # Track already-written segment IDs to deduplicate cumulative results
+    # Track already-written parent segment IDs to deduplicate cumulative
+    # results (split entries repeat under the parent id after the parent row
+    # has been replaced by children).
     written_ids: set[str] = set()
 
     def on_progress(result):
@@ -625,25 +628,9 @@ async def _handle_transcription_bulk(
             _update_progress(project_id, job_id, progress)
 
         # Write completed segments incrementally
-        completed = result.get("completed_segments", [])
-        now = _now()
-        for cs in completed:
-            seg_id = cs["id"]
-            if seg_id in written_ids:
-                continue
-            written_ids.add(seg_id)
-            conn.execute(
-                """
-                UPDATE segments
-                SET transcript=?, transcript_confidence=?, updated_at=?
-                WHERE id=? AND project_id=?
-                """,
-                (cs["transcript"], cs.get("transcript_confidence"), now, seg_id, project_id),
-            )
-            dur = seg_durations.get(seg_id)
-            if dur is not None and dur < 2.0:
-                _add_flag(conn, seg_id, "short_transcript")
-        conn.commit()
+        _apply_transcription_results(
+            project_id, conn, result.get("completed_segments", []), written_ids
+        )
 
     result = await service_client.poll_until_complete("transcription", job_id, on_progress=on_progress)
 
@@ -705,10 +692,88 @@ async def _handle_transcription_segment(
         _recompute_project_status(project_id)
         return
 
-    completed = result.get("completed_segments", [])
+    # transcription_segment jobs never set resegment, so results are always
+    # unsplit; the shared writer handles the transcript/flag/auto-approve path.
+    completed = [cs for cs in result.get("completed_segments", []) if cs["id"] == seg_id]
+    _apply_transcription_results(project_id, conn, completed, set())
+
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
+
+
+def _apply_transcription_results(
+    project_id: str,
+    conn,
+    completed: list[dict],
+    written_ids: set[str],
+) -> None:
+    """Shared write path for transcription results (bulk and single-segment).
+
+    - Deduplicates cumulative ``completed_segments`` keyed on the PARENT
+      segment id via the caller-owned ``written_ids`` set.
+    - Unsplit entries update transcript/confidence in place (transcript_edited
+      is never touched).
+    - Split entries (``children``) insert one row per child and delete the
+      parent row in the same transaction; the parent WAV is deleted
+      best-effort after commit.
+    - Adds a ``short_transcript`` flag for effective durations < 2.0 s.
+    - Applies auto-approval to the segments written (spec/pipeline.md
+      §Auto-approval).
+
+    Commits at the end (single transaction per call).
+    """
+    if not completed:
+        return
+
     now = _now()
+    pdir = project_dir(project_id)
+    parent_wavs: list[Path] = []
+    touched_ids: list[str] = []
+
     for cs in completed:
-        if cs["id"] == seg_id:
+        seg_id = cs["id"]
+        if seg_id in written_ids:
+            continue
+        written_ids.add(seg_id)
+
+        children = cs.get("children")
+        if children:
+            parent = conn.execute(
+                """SELECT source_id, speaker_label, match_confidence, status, raw_path
+                   FROM segments WHERE id=? AND project_id=?""",
+                (seg_id, project_id),
+            ).fetchone()
+            if parent is None:
+                logger.warning("Transcription returned children for unknown segment %s", seg_id)
+                continue
+            for ch in children:
+                # duration_secs is a GENERATED column — never inserted.
+                # Children inherit attribution + status from the parent; the
+                # service supplies id, WAV, absolute timestamps and transcript.
+                child_raw = f"segments/raw/{Path(ch['wav_path']).name}"
+                conn.execute(
+                    """
+                    INSERT INTO segments
+                        (id, project_id, source_id, raw_path, start_secs, end_secs,
+                         speaker_label, match_confidence, transcript,
+                         transcript_confidence, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ch["id"], project_id, parent["source_id"], child_raw,
+                        ch["start_secs"], ch["end_secs"],
+                        parent["speaker_label"], parent["match_confidence"],
+                        ch["transcript"], ch.get("transcript_confidence"),
+                        parent["status"], now, now,
+                    ),
+                )
+                if (ch["end_secs"] - ch["start_secs"]) < 2.0:
+                    _add_flag(conn, ch["id"], "short_transcript")
+                touched_ids.append(ch["id"])
+            conn.execute("DELETE FROM segments WHERE id=? AND project_id=?", (seg_id, project_id))
+            if parent["raw_path"]:
+                parent_wavs.append(pdir / parent["raw_path"])
+        else:
             conn.execute(
                 """
                 UPDATE segments
@@ -717,11 +782,25 @@ async def _handle_transcription_segment(
                 """,
                 (cs["transcript"], cs.get("transcript_confidence"), now, seg_id, project_id),
             )
-            break
+            row = conn.execute(
+                "SELECT duration_secs FROM segments WHERE id=?", (seg_id,)
+            ).fetchone()
+            if row is not None and row["duration_secs"] is not None and row["duration_secs"] < 2.0:
+                _add_flag(conn, seg_id, "short_transcript")
+            touched_ids.append(seg_id)
+
+    if touched_ids:
+        auto_approve_promote(conn, project_id, now, segment_ids=touched_ids)
+
     conn.commit()
 
-    _complete_job(project_id, job_id)
-    _recompute_project_status(project_id)
+    # Best-effort parent WAV removal, only after the replacement committed.
+    for wav in parent_wavs:
+        try:
+            if wav.exists():
+                wav.unlink()
+        except OSError as exc:
+            logger.warning("Could not delete replaced parent WAV %s: %s", wav, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -738,13 +817,13 @@ async def _handle_export(
     conn = get_conn(project_id)
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
 
-    # Get all approved segments
+    # Get all approved segments (auto_approved is treated identically here)
     approved = conn.execute(
         """
         SELECT seg.*, src.filename AS source_filename
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
-        WHERE seg.project_id=? AND seg.status='approved'
+        WHERE seg.project_id=? AND seg.status IN ('approved', 'auto_approved')
         """,
         (project_id,),
     ).fetchall()
@@ -888,7 +967,7 @@ def _write_manifest(project_id: str, project: Any, pdir: Path) -> list[str]:
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
         WHERE seg.project_id=? AND seg.export_path IS NOT NULL
-          AND seg.status IN ('approved', 'clipping_warning')
+          AND seg.status IN ('approved', 'auto_approved', 'clipping_warning')
         """,
         (project_id,),
     ).fetchall()

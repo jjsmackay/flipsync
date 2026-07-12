@@ -39,6 +39,11 @@ export function StatsPanel({ stats, config }: StatsPanelProps) {
           colorClass="bg-green-50 text-green-800"
         />
         <StatBox
+          label="Auto-approved"
+          value={stats.auto_approved_count}
+          colorClass="bg-teal-50 text-teal-800"
+        />
+        <StatBox
           label="Pending"
           value={stats.pending_count}
           colorClass="bg-gray-50 text-gray-800"
@@ -63,6 +68,7 @@ export function StatsPanel({ stats, config }: StatsPanelProps) {
       <div className="bg-white border border-gray-200 rounded-lg p-4">
         <p className="text-sm font-medium text-gray-700 mb-2">
           Approved duration
+          <span className="ml-2 text-xs font-normal text-gray-400">(includes auto-approved)</span>
         </p>
         <ProgressBar
           value={progressValue}

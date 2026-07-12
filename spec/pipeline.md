@@ -138,6 +138,45 @@ Transcription runs across all segments above the display threshold, not just hig
 
 Transcription does not re-run automatically when a segment is re-processed via diarisation. It is triggered separately, either for all pending segments or for a specific segment.
 
+### Sentence-aligned re-segmentation
+
+Diarisation turns are speaker-attribution units, not good TTS training units — a turn can be a 40-second monologue or a sub-second fragment. TTS training wants sentence-ish utterances of roughly 1–15 seconds. The transcription service therefore re-segments eligible segments on sentence boundaries as part of transcription.
+
+**Eligibility.** The orchestrator marks a segment `resegment: true` in the job request only when the segment is untranscribed (`transcript IS NULL`) and its status is `pending` or `below_threshold`. Segments the user has touched (`maybe`, `approved`, `rejected`) and single-segment re-transcription (`transcription_segment` jobs) are never re-segmented — transcription only fills in the transcript.
+
+**Splitting.** The service transcribes with word-level timestamps enabled. It splits the word sequence into utterances at:
+
+- sentence-terminal punctuation (`.`, `!`, `?`, `…`, optionally followed by a closing quote or bracket), and
+- inter-word silence gaps ≥ 0.6 seconds.
+
+Utterances are then normalised to the target band:
+
+- An utterance longer than 15 seconds is force-split at its largest internal inter-word gap (repeated until all pieces are ≤ 15 s).
+- An utterance shorter than 1 second is merged with its following utterance (or preceding, if it is the last) provided the merged duration stays ≤ 15 s.
+
+If the result is a single utterance spanning the whole segment — or the segment produced no words — the segment is returned unsplit, exactly as a non-resegmented transcription.
+
+**Child boundaries.** Adjacent children split the inter-word silence between them evenly: each child's end and its successor's start sit at the midpoint of the gap between the last word of one utterance and the first word of the next. The first child starts at the parent's start; the last child ends at the parent's end. No audio is lost or duplicated.
+
+**Child WAVs.** The service slices child WAVs from the parent segment WAV and writes them to the same directory, using full UUID filenames it generates. Timestamps returned for children are absolute (parent `start_secs` + in-segment offsets).
+
+**Orchestrator handling.** When a completed segment arrives with `children`, the orchestrator — in one transaction — inserts one row per child (inheriting `source_id`, `speaker_label`, `match_confidence`, and status from the parent; transcript and confidence from the child; a `short_transcript` flag if the child is under 2 seconds) and deletes the parent row. The parent WAV file is deleted best-effort after the transaction commits. Approval state is never at risk: only unreviewed segments are eligible for re-segmentation.
+
+### Auto-approval
+
+Transcription completion is the moment both review signals (speaker match and transcript confidence) exist, so this is where auto-approval is applied. Segments that clear both confidence bars are moved to `auto_approved` — provisionally included in the export, visibly badged, and demotable — so human review can focus on the uncertain middle band.
+
+A segment is eligible for auto-approval when all of the following hold:
+
+- the project has `auto_approve_enabled` set (default: enabled)
+- status is `pending`
+- the effective transcript is non-empty
+- `match_confidence >= max(match_threshold, auto_approve_match_threshold)`
+- `transcript_confidence >= auto_approve_transcript_threshold`
+- `flags` is empty and `clipping_warning` is 0
+
+Auto-approval runs when transcription results are written (parents or children), and re-runs synchronously when the user changes any of the thresholds via `PATCH /projects` — see [API Contracts](api-contracts.md). It never touches user-set statuses; only `pending` ↔ `auto_approved` moves are ever made by the system.
+
 ### Model selection
 
 | Model | Speed | Accuracy | Use case |
@@ -179,10 +218,10 @@ The service transcribes segments in batches of 16 by default, using GPU batching
 
 **Service:** `cleanup`  
 **Tool:** FFmpeg (subprocess)  
-**Input:** Approved segment WAV paths  
+**Input:** Approved segment WAV paths (statuses `approved` and `auto_approved`)  
 **Output:** `export/{segment_id}.wav`
 
-This step runs only when the user triggers an export. It processes approved segments only.
+This step runs only when the user triggers an export. It processes approved segments only — `approved` and `auto_approved` are treated identically here and in the manifest.
 
 ### Processing chain
 
@@ -270,4 +309,6 @@ Export is non-destructive. Re-exporting after changing approvals regenerates `ex
 | Step 3 (all) | All transcripts | All approval states |
 | Step 4 / export | Export directory | All approval states; all transcripts |
 
-The orchestrator enforces these rules. A re-run request that would invalidate approved segments from other files must be confirmed by the user before it proceeds. Re-running step 2 for a single episode does not touch approvals from other episodes.
+The orchestrator enforces these rules. A re-run request that would invalidate approved segments (including `auto_approved`) must be confirmed by the user before it proceeds. Re-running step 2 for a single episode does not touch approvals from other episodes.
+
+One addition to the table above: bulk transcription may **replace** an untranscribed `pending` or `below_threshold` segment with sentence-aligned children (new rows, new UUIDs — see Step 3, sentence-aligned re-segmentation). This never touches reviewed segments; approval state is structurally unaffected because only unreviewed segments are eligible.

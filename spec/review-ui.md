@@ -27,7 +27,8 @@ The entry point for a project. Shows:
 
 - Project name and status
 - Per-source processing status (filename, step 1/2 status, coverage ratio, low-coverage warning if applicable)
-- Summary stats: approved / pending / maybe / rejected / below threshold counts, approved duration vs target
+- Summary stats: approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target (duration includes auto-approved)
+- Project settings: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
 - Active job progress (if any jobs running)
 - **Recent failed jobs** with error messages and retry actions (sourced from `recent_failed_jobs` in the project response). Failed jobs are shown until the user dismisses them or retries the operation.
 - Pipeline controls: Start, re-run per source, transcription trigger
@@ -76,7 +77,7 @@ Each card shows:
 - Match confidence score (colour-coded: green ≥ 0.90, amber 0.75–0.89, red < 0.75)
 - Duration in seconds
 - First ~60 characters of transcript (or placeholder if not yet transcribed)
-- Status indicator (dot: pending grey, approved green, rejected red, maybe amber)
+- Status indicator (dot: pending grey, approved green, auto-approved teal, rejected red, maybe amber)
 - Source filename abbreviated (e.g. `s01e01`)
 
 Cards are tightly packed. No waveform in the list — that lives in the detail panel.
@@ -87,10 +88,10 @@ Above the list. Controls:
 
 | Control | Options |
 |---------|---------|
-| Status | All / Pending / Maybe / Approved / Rejected / Below threshold |
+| Status | All / Pending / Maybe / Approved / Auto-approved / Rejected / Below threshold |
 | Source | All / individual source files |
 | Min confidence | Slider, 0.00–1.00, default 0.75 |
-| Sort | Confidence ↓ (default) / Confidence ↑ / Duration ↓ / Duration ↑ / Source order |
+| Sort | Confidence ↓ (default) / Confidence ↑ / Uncertainty (most borderline first) / Duration ↓ / Duration ↑ / Source order |
 | Min duration | Seconds input, default blank |
 
 Filter state persists in the URL query string so the user can bookmark or share a filtered view.
@@ -160,6 +161,8 @@ Keyboard: `A` approve, `M` maybe, `X` reject.
 
 After any action, focus moves automatically to the next segment in the list. The previous segment's card updates its status indicator in place without re-rendering the list.
 
+If the segment's status is `auto_approved`, a teal "Auto-approved" chip is shown above the action buttons with a tooltip: "Approved automatically — speaker match and transcript confidence both cleared the project's auto-approve thresholds. Approve to confirm, or override." The `A` key (and Approve button) confirms it to `approved`; Maybe/Reject demote it as usual.
+
 If the segment has a `clipping_warning` (the boolean column, not the status), the Approve button shows a warning icon and a tooltip: "This segment was flagged for clipping during cleanup. It may contain audio distortion." This warning persists even after re-approval — it's a fact about the audio, not a workflow state. The `clipping_warning` status puts the segment back in the review queue; the `clipping_warning` column keeps the icon visible regardless of status.
 
 ---
@@ -194,6 +197,7 @@ When the transcript edit field is focused, all keys except `Escape` and `Enter` 
 Accessible from a "Bulk actions" button above the segment list. Opens an inline panel (not a modal) with:
 
 **Preset operations:**
+- Confirm all auto-approved (auto-approved → approved)
 - Approve all pending with confidence ≥ 0.90
 - Approve all pending with confidence ≥ 0.85
 - Reject all pending under 1.5 seconds
@@ -222,7 +226,7 @@ After a bulk operation, the segment list refreshes and the summary stats in the 
 
 A horizontal timeline strip beneath the filter bar, spanning the full width of the list panel. Renders all segments for the current source file (or all sources if "All" is selected) as coloured bars on a time axis.
 
-Colour coding matches segment status: green approved, red rejected, amber maybe, grey pending, light grey below threshold.
+Colour coding matches segment status: green approved, teal auto-approved, red rejected, amber maybe, grey pending, light grey below threshold.
 
 Clicking a bar in the timeline selects that segment. The timeline is for navigation and orientation — seeing where approved segments cluster, identifying gaps — not for editing.
 
@@ -253,12 +257,12 @@ The "Export" button in the header is always visible. Its state:
 - **Running:** Export job in progress; shows spinner and progress
 - **Complete:** Shows "Download" link
 
-Clicking Export (when active) shows a confirmation panel:
+Export includes segments in `approved` and `auto_approved` status. Clicking Export (when active) shows a confirmation panel:
 
 ```
 Export dataset
 
-743 segments · 1h 20m 21s of audio
+1,145 segments (743 approved · 402 auto-approved) · 1h 20m 21s of audio
 
   Segments with clipping warnings: 3
   Segments without transcripts: 0

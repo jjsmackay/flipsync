@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, project_exists, utc_now
 from errors import AppError
 from state_machines import validate_segment_transition
+from status import auto_approve_demote, auto_approve_promote, invalidate_export
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -27,7 +28,8 @@ def _project_stats(project_id: str) -> dict:
         SELECT
             COUNT(*) AS total_segments,
             SUM(status='approved') AS approved_count,
-            SUM(CASE WHEN status='approved' THEN duration_secs ELSE 0 END) AS approved_duration_secs,
+            SUM(status='auto_approved') AS auto_approved_count,
+            SUM(CASE WHEN status IN ('approved','auto_approved') THEN duration_secs ELSE 0 END) AS approved_duration_secs,
             SUM(status='pending') AS pending_count,
             SUM(status='maybe') AS maybe_count,
             SUM(status='rejected') AS rejected_count,
@@ -58,6 +60,7 @@ def _project_stats(project_id: str) -> dict:
     return {
         "total_segments": row["total_segments"] or 0,
         "approved_count": row["approved_count"] or 0,
+        "auto_approved_count": row["auto_approved_count"] or 0,
         "approved_duration_secs": row["approved_duration_secs"] or 0.0,
         "pending_count": row["pending_count"] or 0,
         "maybe_count": row["maybe_count"] or 0,
@@ -108,6 +111,9 @@ def _project_detail(project_id: str) -> dict:
             "language": p["language"],
             "match_threshold": p["match_threshold"],
             "target_duration_secs": p["target_duration_secs"],
+            "auto_approve_enabled": bool(p["auto_approve_enabled"]),
+            "auto_approve_match_threshold": p["auto_approve_match_threshold"],
+            "auto_approve_transcript_threshold": p["auto_approve_transcript_threshold"],
         },
         "stats": _project_stats(project_id),
         "active_jobs": _active_jobs(project_id),
@@ -126,6 +132,9 @@ class ProjectCreate(BaseModel):
     language: Optional[str] = None
     match_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     target_duration_secs: float = Field(default=1800.0, gt=0)
+    auto_approve_enabled: bool = True
+    auto_approve_match_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    auto_approve_transcript_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
 
 
 class ProjectPatch(BaseModel):
@@ -134,6 +143,9 @@ class ProjectPatch(BaseModel):
     target_duration_secs: Optional[float] = Field(default=None, gt=0)
     whisper_model: Optional[str] = None
     language: Optional[str] = None
+    auto_approve_enabled: Optional[bool] = None
+    auto_approve_match_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    auto_approve_transcript_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class ProjectDelete(BaseModel):
@@ -157,7 +169,8 @@ async def list_projects():
             """
             SELECT
                 SUM(status='approved') AS approved_count,
-                SUM(CASE WHEN status='approved' THEN duration_secs ELSE 0 END) AS approved_duration_secs,
+                SUM(status='auto_approved') AS auto_approved_count,
+                SUM(CASE WHEN status IN ('approved','auto_approved') THEN duration_secs ELSE 0 END) AS approved_duration_secs,
                 SUM(status='pending') AS pending_count
             FROM segments WHERE project_id=?
             """,
@@ -172,6 +185,7 @@ async def list_projects():
             "target_duration_secs": p["target_duration_secs"],
             "stats": {
                 "approved_count": stats_row["approved_count"] or 0,
+                "auto_approved_count": stats_row["auto_approved_count"] or 0,
                 "approved_duration_secs": stats_row["approved_duration_secs"] or 0.0,
                 "pending_count": stats_row["pending_count"] or 0,
             },
@@ -188,11 +202,14 @@ async def create_project(body: ProjectCreate):
     conn.execute(
         """
         INSERT INTO projects (id, name, created_at, updated_at, status,
-            whisper_model, language, match_threshold, target_duration_secs)
-        VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?)
+            whisper_model, language, match_threshold, target_duration_secs,
+            auto_approve_enabled, auto_approve_match_threshold, auto_approve_transcript_threshold)
+        VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?)
         """,
         (project_id, body.name, now, now, body.whisper_model,
-         body.language, body.match_threshold, body.target_duration_secs),
+         body.language, body.match_threshold, body.target_duration_secs,
+         int(body.auto_approve_enabled), body.auto_approve_match_threshold,
+         body.auto_approve_transcript_threshold),
     )
     conn.commit()
     return {"id": project_id, "name": body.name, "status": "new"}
@@ -226,29 +243,24 @@ async def patch_project(project_id: str, body: ProjectPatch):
     if "target_duration_secs" in provided and body.target_duration_secs is not None:
         updates["target_duration_secs"] = body.target_duration_secs
 
-    old_threshold = p["match_threshold"]
-    new_threshold = body.match_threshold if "match_threshold" in provided else None
+    if "match_threshold" in provided and body.match_threshold is not None:
+        updates["match_threshold"] = body.match_threshold
+    if "auto_approve_enabled" in provided and body.auto_approve_enabled is not None:
+        updates["auto_approve_enabled"] = int(body.auto_approve_enabled)
+    if "auto_approve_match_threshold" in provided and body.auto_approve_match_threshold is not None:
+        updates["auto_approve_match_threshold"] = body.auto_approve_match_threshold
+    if "auto_approve_transcript_threshold" in provided and body.auto_approve_transcript_threshold is not None:
+        updates["auto_approve_transcript_threshold"] = body.auto_approve_transcript_threshold
 
-    if new_threshold is not None:
-        updates["match_threshold"] = new_threshold
-        # Bidirectional threshold re-evaluation (synchronous, inline SQL)
-        if new_threshold != old_threshold:
-            conn.execute(
-                """
-                UPDATE segments SET status='pending', updated_at=?
-                WHERE project_id=? AND status='below_threshold'
-                  AND match_confidence >= ?
-                """,
-                (utc_now(), project_id, new_threshold),
-            )
-            conn.execute(
-                """
-                UPDATE segments SET status='below_threshold', updated_at=?
-                WHERE project_id=? AND status='pending'
-                  AND match_confidence < ?
-                """,
-                (utc_now(), project_id, new_threshold),
-            )
+    # Changing match_threshold or any auto-approve field triggers a synchronous
+    # segment status re-evaluation (spec/api-contracts.md PATCH /projects).
+    reeval_fields = (
+        "match_threshold",
+        "auto_approve_enabled",
+        "auto_approve_match_threshold",
+        "auto_approve_transcript_threshold",
+    )
+    needs_reeval = any(f in updates and updates[f] != p[f] for f in reeval_fields)
 
     if updates:
         updates["updated_at"] = utc_now()
@@ -258,6 +270,36 @@ async def patch_project(project_id: str, body: ProjectPatch):
             (*updates.values(), project_id),
         )
         conn.commit()
+
+    if needs_reeval:
+        # Spec order: (1) demote ineligible auto_approved -> pending,
+        # (2) promote eligible pending -> auto_approved, (3) bidirectional
+        # pending <-> below_threshold swap against the new match_threshold.
+        now = utc_now()
+        changed = auto_approve_demote(conn, project_id, now)
+        changed += auto_approve_promote(conn, project_id, now)
+        match_threshold = updates.get("match_threshold", p["match_threshold"])
+        changed += conn.execute(
+            """
+            UPDATE segments SET status='pending', updated_at=?
+            WHERE project_id=? AND status='below_threshold'
+              AND match_confidence >= ?
+            """,
+            (now, project_id, match_threshold),
+        ).rowcount
+        changed += conn.execute(
+            """
+            UPDATE segments SET status='below_threshold', updated_at=?
+            WHERE project_id=? AND status='pending'
+              AND match_confidence < ?
+            """,
+            (now, project_id, match_threshold),
+        ).rowcount
+        conn.commit()
+        if changed:
+            # The approved set (auto_approved is exported) may have changed —
+            # any prior export archive is stale.
+            invalidate_export(project_id)
 
     return _project_detail(project_id)
 

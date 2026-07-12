@@ -226,3 +226,31 @@ class TestBulkActionSources:
         assert "maybe" in BULK_ACTION_SOURCES["pending"]
         assert "approved" not in BULK_ACTION_SOURCES["pending"]
         assert "below_threshold" not in BULK_ACTION_SOURCES["pending"]
+
+
+# ---------------------------------------------------------------------------
+# auto_approved segment status
+# ---------------------------------------------------------------------------
+
+class TestAutoApprovedTransitions:
+    def test_auto_approved_exits(self):
+        for target in ("approved", "rejected", "maybe", "pending", "clipping_warning"):
+            assert validate_segment_transition("auto_approved", target) is True
+
+    def test_nothing_enters_auto_approved_via_table(self):
+        """The system assigns auto_approved directly; the transition table has
+        no path into it, so user PATCHes always 409."""
+        for from_status in SEGMENT_TRANSITIONS:
+            assert validate_segment_transition(from_status, "auto_approved") is False
+
+    def test_bulk_approve_includes_auto_approved(self):
+        assert "auto_approved" in BULK_ACTION_SOURCES["approve"]
+
+    def test_bulk_reject_includes_auto_approved(self):
+        assert "auto_approved" in BULK_ACTION_SOURCES["reject"]
+
+    def test_bulk_maybe_includes_auto_approved(self):
+        assert "auto_approved" in BULK_ACTION_SOURCES["maybe"]
+
+    def test_bulk_pending_includes_auto_approved(self):
+        assert BULK_ACTION_SOURCES["pending"] == {"maybe", "auto_approved"}

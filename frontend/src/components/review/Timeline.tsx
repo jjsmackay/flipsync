@@ -11,6 +11,7 @@ interface TimelineProps {
 
 const STATUS_COLORS: Record<SegmentStatus, string> = {
   approved: '#22c55e',
+  auto_approved: '#14b8a6',
   rejected: '#ef4444',
   maybe: '#f59e0b',
   pending: '#94a3b8',

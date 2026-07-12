@@ -115,6 +115,20 @@ class TestReprocess:
         assert resp.status_code == 409
         assert resp.json()["error"] == "would_invalidate_approvals"
 
+    def test_reprocess_with_auto_approved_segments_requires_confirm(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "complete")
+        _insert_segment(conn, project, source_id, status="auto_approved")
+
+        resp = client.post(
+            f"/projects/{project}/sources/{source_id}/reprocess",
+            json={"steps": ["step1"]},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "would_invalidate_approvals"
+        assert resp.json()["detail"]["approved_count"] == 1
+
     def test_reprocess_with_approved_segments_confirm_proceeds(self, client, project):
         import db
         conn = db.get_conn(project)

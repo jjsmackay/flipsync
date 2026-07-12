@@ -24,6 +24,10 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
   const [counts, setCounts] = useState<ExportCounts | null>(null)
 
   const approvedCount = project.stats.approved_count
+  const autoApprovedCount = project.stats.auto_approved_count
+  // Export includes both approved and auto_approved segments; approved_duration_secs
+  // already covers both (drives the progress bar too).
+  const exportCount = approvedCount + autoApprovedCount
   const approvedDuration = project.stats.approved_duration_secs
   const hasLowCoverage = project.stats.source_coverage.some(s => s.low_coverage_warning)
 
@@ -59,7 +63,7 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
       let pages = 1
       do {
         const res = await getSegments(project.id, {
-          status: 'approved',
+          status: 'approved,auto_approved',
           sort: 'start_secs',
           order: 'asc',
           page,
@@ -96,7 +100,7 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
     }
   }
 
-  if (approvedCount === 0) {
+  if (exportCount === 0) {
     return (
       <button
         disabled
@@ -113,7 +117,7 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
         onClick={() => setState('confirm')}
         className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 border border-blue-600"
       >
-        Export ({approvedCount} · {formatDuration(approvedDuration)})
+        Export ({exportCount} · {formatDuration(approvedDuration)})
       </button>
     )
   }
@@ -122,7 +126,9 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
     return (
       <div className="flex flex-col gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded text-xs">
         <div className="text-gray-700">
-          <p className="font-medium">{approvedCount} segments · {formatDuration(approvedDuration)} of audio</p>
+          <p className="font-medium">
+            {exportCount} segments ({approvedCount} approved · {autoApprovedCount} auto-approved) · {formatDuration(approvedDuration)} of audio
+          </p>
           {counts === null ? (
             <p className="text-gray-400 mt-1">Checking segments…</p>
           ) : (

@@ -129,11 +129,11 @@ Language can be specified or left as auto-detect. Auto-detect works well for sin
 ### Service 4 — Cleanup and Normalisation
 
 **Technology:** Python, FFmpeg (subprocess)  
-**Input:** List of approved segment audio file paths  
+**Input:** List of approved segment audio file paths (statuses `approved` and `auto_approved`)  
 **Output:** Cleaned WAV files in the export directory  
 **Port:** 8004 (internal only)
 
-Runs only on approved segments, immediately before export. Applies in order:
+Runs only on approved segments (including auto-approved), immediately before export. Applies in order:
 
 1. Loudness normalisation (EBU R128, target -23 LUFS)
 2. Silence trimming (leading and trailing, configurable threshold)

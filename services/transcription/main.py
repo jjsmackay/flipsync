@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from transcriber import VALID_MODELS, load_model, process_batch
 
@@ -34,6 +34,18 @@ MAX_JOBS = 500
 class SegmentRef(BaseModel):
     id: str
     wav_path: str
+    # Absolute start of the segment within its source; required when
+    # resegment is true so child timestamps can be made absolute.
+    start_secs: Optional[float] = None
+    # Whether the service may split this segment into sentence-aligned
+    # children (spec/pipeline.md §Sentence-aligned re-segmentation).
+    resegment: bool = False
+
+    @model_validator(mode="after")
+    def _start_required_for_resegment(self) -> "SegmentRef":
+        if self.resegment and self.start_secs is None:
+            raise ValueError("start_secs is required when resegment is true.")
+        return self
 
 
 class JobRequest(BaseModel):
@@ -197,7 +209,15 @@ async def submit_job(req: JobRequest):
     _jobs[req.job_id] = job_state
     _job_locks[req.job_id] = asyncio.Lock()
 
-    segments_plain = [{"id": s.id, "wav_path": s.wav_path} for s in req.segments]
+    segments_plain = [
+        {
+            "id": s.id,
+            "wav_path": s.wav_path,
+            "start_secs": s.start_secs,
+            "resegment": s.resegment,
+        }
+        for s in req.segments
+    ]
 
     # Launch background task and retain a strong reference until it finishes.
     task = asyncio.create_task(

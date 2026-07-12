@@ -16,6 +16,10 @@ interface Preset {
 
 const PRESETS: Preset[] = [
   {
+    label: 'Confirm all auto-approved',
+    req: { action: 'approve', filter: { status: 'auto_approved' } },
+  },
+  {
     label: 'Approve pending ≥0.90',
     req: { action: 'approve', filter: { status: 'pending', min_confidence: 0.9 } },
   },
@@ -40,6 +44,7 @@ const PRESETS: Preset[] = [
 const STATUS_VALUES: SegmentStatus[] = [
   'pending',
   'approved',
+  'auto_approved',
   'rejected',
   'maybe',
   'below_threshold',

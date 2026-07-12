@@ -43,9 +43,14 @@ CREATE TABLE projects (
     language        TEXT,                   -- NULL = auto-detect
     match_threshold      REAL NOT NULL DEFAULT 0.75,
     target_lufs          REAL NOT NULL DEFAULT -23.0,
-    target_duration_secs REAL NOT NULL DEFAULT 1800.0  -- progress bar target; default 30 minutes
+    target_duration_secs REAL NOT NULL DEFAULT 1800.0, -- progress bar target; default 30 minutes
+    auto_approve_enabled             INTEGER NOT NULL DEFAULT 1,    -- boolean
+    auto_approve_match_threshold     REAL NOT NULL DEFAULT 0.85,
+    auto_approve_transcript_threshold REAL NOT NULL DEFAULT 0.90
 );
 ```
+
+**Auto-approve columns.** When `auto_approve_enabled` is set, segments whose `match_confidence` and `transcript_confidence` clear the two auto-approve thresholds (and that carry no flags or clipping warning) are moved from `pending` to `auto_approved` when transcription results land. See [Pipeline](pipeline.md) §Auto-approval for the full eligibility rule and [API Contracts](api-contracts.md) `PATCH /projects` for re-evaluation on threshold changes.
 
 ---
 
@@ -116,6 +121,8 @@ CREATE TABLE segments (
 ```
 
 **Effective transcript:** the orchestrator always uses `COALESCE(transcript_edited, transcript)` when writing the export manifest. User edits take precedence; the original is preserved.
+
+**Segment rows are not immutable across transcription.** Bulk transcription may replace an untranscribed `pending`/`below_threshold` segment with two or more sentence-aligned child rows (new UUIDs, inheriting `source_id`, `speaker_label`, and `match_confidence` from the parent; the parent row and WAV are deleted). Reviewed segments are never replaced. See [Pipeline](pipeline.md) §Sentence-aligned re-segmentation.
 
 **`clipping_warning` column vs `clipping_warning` status.** These are related but distinct. The `clipping_warning` INTEGER column is a persistent flag set by the cleanup service — it records "this segment's audio clips." The `clipping_warning` status is a review state that puts the segment back in the review queue. When the user re-approves a clipping segment (status → `approved`), the `clipping_warning` column remains `1` so the UI can still show the warning icon. The column is a fact about the audio; the status is a workflow state.
 
@@ -224,6 +231,7 @@ step2_failed      -> step2_pending     (user retries step 2)
 |-------|---------|
 | `pending` | Not yet reviewed |
 | `approved` | User approved; included in export |
+| `auto_approved` | System approved on confidence; included in export; user can demote |
 | `rejected` | User rejected; excluded from export |
 | `maybe` | User deferred decision |
 | `below_threshold` | Below display threshold; not shown by default |
@@ -234,6 +242,7 @@ State transitions:
 
 ```
 pending          -> approved
+pending          -> auto_approved    (system: transcription results land, or auto-approve re-evaluation)
 pending          -> rejected
 pending          -> maybe
 pending          -> below_threshold  (when user raises match threshold)
@@ -243,10 +252,17 @@ maybe            -> pending          (bulk reset: move all maybe → pending)
 approved         -> rejected         (user changes mind)
 approved         -> maybe            (user defers decision)
 approved         -> clipping_warning (after cleanup step flags it)
+auto_approved    -> approved         (user confirms)
+auto_approved    -> rejected         (user overrides)
+auto_approved    -> maybe            (user defers)
+auto_approved    -> pending          (system: auto-approve re-evaluation; or bulk reset)
+auto_approved    -> clipping_warning (after cleanup step flags it)
 below_threshold  -> pending          (when user lowers match threshold)
 clipping_warning -> approved         (user accepts the risk)
 clipping_warning -> rejected
 ```
+
+`auto_approved` behaves like `approved` for export and duration statistics, but is visually distinct in the UI and freely demotable. Only the system moves segments *into* `auto_approved`, and only from `pending`; the `PATCH /segments` endpoint rejects user requests to set it (409).
 
 `auto_rejected` is a terminal state with no exit. These segments were silent after trimming — they contain no usable audio. If the user re-runs step 2 for the source, all segments (including `auto_rejected`) for that source are deleted and new segments are created from scratch.
 
@@ -281,8 +297,9 @@ These are computed by the orchestrator on request; not stored.
 {
   "total_segments": 1842,
   "approved_count": 743,
+  "auto_approved_count": 402,
   "approved_duration_secs": 4821.3,
-  "pending_count": 891,
+  "pending_count": 489,
   "maybe_count": 47,
   "rejected_count": 161,
   "below_threshold_count": 312,
@@ -298,6 +315,8 @@ These are computed by the orchestrator on request; not stored.
 ```
 
 `low_coverage_warning` is `true` when `coverage_ratio < 0.15` (i.e. the target speaker accounts for less than 15% of the source file's total audio). This threshold is hardcoded in v1.
+
+**Counts are per-status:** `approved_count` counts status `approved` only; `auto_approved_count` counts status `auto_approved`. **`approved_duration_secs` covers both** — it measures what the export would contain, and drives the progress bar. UI copy that reports "approved" totals should show the breakdown (e.g. "1,145 approved · 402 of those auto").
 
 **Approved duration** drives the progress indicator in the project header. XTTS-v2 needs roughly 30 minutes of clean audio for a fine-tune. The UI surfaces this as a progress bar towards a configurable target (default 1800 seconds).
 

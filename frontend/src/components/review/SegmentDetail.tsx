@@ -346,8 +346,18 @@ export function SegmentDetail({
         <p className="text-xs text-red-600 bg-red-50 rounded px-2 py-1">{error}</p>
       )}
 
+      {/* Auto-approved chip */}
+      {segment.status === 'auto_approved' && (
+        <div
+          className="mt-auto inline-flex w-fit items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-teal-100 text-teal-800 cursor-help"
+          title="Approved automatically — speaker match and transcript confidence both cleared the project's auto-approve thresholds. Approve to confirm, or override."
+        >
+          Auto-approved
+        </div>
+      )}
+
       {/* Action buttons */}
-      <div className="flex gap-2 mt-auto pt-2 border-t border-gray-100">
+      <div className={`flex gap-2 ${segment.status === 'auto_approved' ? '' : 'mt-auto'} pt-2 border-t border-gray-100`}>
         <button
           type="button"
           onClick={() => void handleStatusAction('approved')}
