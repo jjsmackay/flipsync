@@ -1,7 +1,8 @@
 """In-memory FIFO job queue backed by the jobs SQLite table.
 
-Jobs execute one at a time per project. Each job type has a handler registered
-in HANDLERS. Wave 3 implements real handlers for external service jobs.
+Jobs execute one at a time per project; GPU-bound jobs (see GPU_JOB_TYPES)
+additionally serialise host-wide via a global lock. Each job type has a handler
+registered in HANDLERS. Wave 3 implements real handlers for external service jobs.
 """
 
 import asyncio
@@ -10,6 +11,7 @@ import logging
 import os
 import tarfile
 import uuid
+import weakref
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
@@ -24,6 +26,31 @@ logger = logging.getLogger(__name__)
 
 # One asyncio.Lock per project to enforce one-at-a-time execution.
 _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+# GPU-bound job types additionally serialise host-wide: at most one GPU job
+# runs across ALL projects at any time (all projects share the same GPU;
+# concurrent GPU jobs contend for VRAM and OOM). CPU jobs (extract_audio,
+# export — FFmpeg subprocess / CPU-only cleanup service) are not gated.
+GPU_JOB_TYPES = frozenset(
+    {"vocal_separation", "diarisation", "transcription_bulk", "transcription_segment"}
+)
+
+# The global GPU lock is created lazily per event loop: an asyncio.Lock binds
+# to the loop it is first awaited on, and tests run each case in a fresh loop
+# via asyncio.run() — a module-level Lock bound to a dead loop would raise.
+_gpu_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _gpu_lock() -> asyncio.Lock:
+    """Return the host-wide GPU lock for the running event loop."""
+    loop = asyncio.get_running_loop()
+    lock = _gpu_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _gpu_locks[loop] = lock
+    return lock
 
 # In-memory queue: project_id -> list of job_id strings (FIFO)
 _queues: dict[str, asyncio.Queue] = defaultdict(asyncio.Queue)
@@ -159,7 +186,13 @@ async def _execute_job(project_id: str, job_id: str) -> None:
         return
 
     try:
-        await handler(project_id, job_id, row["source_id"], params)
+        if job_type in GPU_JOB_TYPES:
+            # Host-wide GPU gate: held for the full duration of the handler so
+            # no two GPU jobs (across any projects) ever run concurrently.
+            async with _gpu_lock():
+                await handler(project_id, job_id, row["source_id"], params)
+        else:
+            await handler(project_id, job_id, row["source_id"], params)
     except Exception as exc:
         logger.exception("Job %s (%s) raised an exception", job_id, job_type)
         _fail_job(project_id, job_id, str(exc))
