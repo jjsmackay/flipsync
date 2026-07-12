@@ -1,6 +1,17 @@
 fastapi
 uvicorn
-# coqui-tts is the Idiap-maintained fork of the discontinued Coqui TTS; it pulls
-# torch and the `trainer` package and ships the XTTS-v2 GPTTrainer recipe.
+# coqui-tts is the Idiap-maintained fork of the discontinued Coqui TTS; it ships
+# the XTTS-v2 GPTTrainer recipe and pulls the `trainer` package. It does NOT
+# declare torch as a hard dependency (it expects the environment to provide a
+# torch matching the target CUDA/accelerator), so torch/torchaudio are pinned
+# explicitly below. Without them the image has no torch at all, and every
+# CUDA-touching call — including the VRAM pre-flight — fails, surfacing as
+# "insufficient_vram: 12 GB required, 0.0 GB available".
 coqui-tts
 soundfile
+# PyPI's linux x86_64 torch wheel is the CUDA build (bundles its own CUDA
+# runtime), so no CUDA base image or system toolkit is needed — the host just
+# needs a recent NVIDIA driver. Pinned to the versions coqui-tts 0.27.5
+# currently resolves against.
+torch==2.13.0
+torchaudio==2.11.0
