@@ -57,7 +57,7 @@ services:
     build: ./services/vocal-separation
     volumes:
       - ./data:/data
-      - /mnt/models/flipsync/demucs:/root/.cache/torch
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
     environment:
       - DEMUCS_MODEL=htdemucs
     deploy:
@@ -74,7 +74,7 @@ services:
     build: ./services/diarisation
     volumes:
       - ./data:/data
-      - /mnt/models/flipsync/pyannote:/root/.cache/torch
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
     deploy:
@@ -91,7 +91,7 @@ services:
     build: ./services/transcription
     volumes:
       - ./data:/data
-      - /mnt/models/flipsync/whisper:/root/.cache/huggingface
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
     environment:
       - WHISPER_MODEL=large-v2
     deploy:
@@ -129,7 +129,7 @@ networks:
 
 **Shared `/data` volume.** All services mount the same `./data` directory on the host. This is how services read each other's output — the vocal separation service writes to `/data/projects/{id}/audio/vocals/`, and the diarisation service reads from the same path. No inter-service file transfer. No shared memory. Files on disk are the interface.
 
-**Model caches are bind mounts under `/mnt/models/flipsync/`**, not named Docker volumes. This host reserves a dedicated disk at `/mnt/models` for model caches across services (Ollama, whisperx-asr, etc.) — using the same mount keeps FlipSync's ~5 GB of model downloads off the (often much smaller) disk backing Docker's default volume storage, and keeps them visible/manageable directly from the host filesystem. Models are downloaded once on first run and cached permanently; `docker compose down` doesn't touch them. If deploying to a host without this convention, named Docker volumes (as before) are a reasonable fallback — just don't mix the two per service.
+**Model caches are bind mounts under `${MODELS_ROOT:-/mnt/models/flipsync}/`**, not named Docker volumes. This host reserves a dedicated disk at `/mnt/models` for model caches across services (Ollama, whisperx-asr, etc.) — using the same mount keeps FlipSync's ~5 GB of model downloads off the (often much smaller) disk backing Docker's default volume storage, and keeps them visible/manageable directly from the host filesystem. `MODELS_ROOT` is an optional `.env` override for hosts without that mount (e.g. local dev — point it at a plain directory under `./data`). Models are downloaded once on first run and cached permanently; `docker compose down` doesn't touch them.
 
 **The cleanup service has no GPU reservation.** FFmpeg runs on CPU. This is intentional and correct.
 
@@ -144,6 +144,9 @@ Create a `.env` file at the repo root before first run. This file is gitignored.
 ```bash
 # Required
 HF_TOKEN=hf_...          # HuggingFace token for pyannote model download
+
+# Optional
+MODELS_ROOT=/mnt/models/flipsync   # host dir for model caches; default shown
 ```
 
 Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.

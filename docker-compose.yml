@@ -24,7 +24,7 @@ services:
     image: ghcr.io/jjsmackay/flipsync/vocal-separation:latest
     volumes:
       - ./data:/data
-      - /mnt/models/flipsync/demucs:/root/.cache/torch
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
     deploy:
       resources:
         reservations:
@@ -40,7 +40,7 @@ services:
     image: ghcr.io/jjsmackay/flipsync/diarisation:latest
     volumes:
       - ./data:/data
-      - /mnt/models/flipsync/pyannote:/root/.cache/torch
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
     deploy:
@@ -58,7 +58,7 @@ services:
     image: ghcr.io/jjsmackay/flipsync/transcription:latest
     volumes:
       - ./data:/data
-      - /mnt/models/flipsync/whisper:/root/.cache/huggingface
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
