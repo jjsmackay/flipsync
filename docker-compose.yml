@@ -1,6 +1,6 @@
 services:
   orchestrator:
-    build: ./services/orchestrator
+    image: ghcr.io/jjsmackay/flipsync/orchestrator:latest
     ports:
       - "8000:8000"
     volumes:
@@ -21,7 +21,7 @@ services:
       - flipsync
 
   vocal-separation:
-    build: ./services/vocal-separation
+    image: ghcr.io/jjsmackay/flipsync/vocal-separation:latest
     volumes:
       - ./data:/data
       - demucs-models:/root/.cache/torch
@@ -37,7 +37,7 @@ services:
       - flipsync
 
   diarisation:
-    build: ./services/diarisation
+    image: ghcr.io/jjsmackay/flipsync/diarisation:latest
     volumes:
       - ./data:/data
       - pyannote-models:/root/.cache/torch
@@ -55,7 +55,7 @@ services:
       - flipsync
 
   transcription:
-    build: ./services/transcription
+    image: ghcr.io/jjsmackay/flipsync/transcription:latest
     volumes:
       - ./data:/data
       - whisper-models:/root/.cache/huggingface
@@ -71,7 +71,7 @@ services:
       - flipsync
 
   cleanup:
-    build: ./services/cleanup
+    image: ghcr.io/jjsmackay/flipsync/cleanup:latest
     volumes:
       - ./data:/data
     restart: unless-stopped
@@ -79,7 +79,7 @@ services:
       - flipsync
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/jjsmackay/flipsync/frontend:latest
     ports:
       - "3000:3000"
     depends_on:
