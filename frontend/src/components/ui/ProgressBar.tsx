@@ -18,12 +18,12 @@ export function ProgressBar({ value, label, className = '', color = 'green' }: P
   return (
     <div className={`w-full ${className}`}>
       {label && (
-        <div className="flex justify-between text-xs text-gray-500 mb-1">
+        <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
           <span>{label}</span>
           <span>{pct.toFixed(0)}%</span>
         </div>
       )}
-      <div className="w-full bg-gray-200 rounded-full h-2">
+      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
         <div
           className={`h-2 rounded-full transition-all ${COLORS[color]}`}
           style={{ width: `${pct}%` }}

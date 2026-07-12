@@ -3,30 +3,30 @@ import type { ProjectStatus, SegmentStatus, SourceStatus } from '../../types/api
 type AnyStatus = ProjectStatus | SegmentStatus | SourceStatus
 
 const STATUS_STYLES: Record<string, string> = {
-  new: 'bg-gray-100 text-gray-700',
-  processing: 'bg-blue-100 text-blue-700',
-  review: 'bg-yellow-100 text-yellow-700',
-  ready: 'bg-gray-100 text-gray-700',
-  exporting: 'bg-blue-100 text-blue-700',
-  exported: 'bg-green-100 text-green-700',
-  complete: 'bg-green-100 text-green-700',
-  pending: 'bg-gray-100 text-gray-700',
-  approved: 'bg-green-100 text-green-700',
-  rejected: 'bg-red-100 text-red-700',
-  maybe: 'bg-yellow-100 text-yellow-700',
-  below_threshold: 'bg-gray-200 text-gray-500',
-  clipping_warning: 'bg-orange-100 text-orange-700',
-  auto_rejected: 'bg-red-200 text-red-600',
-  auto_approved: 'bg-teal-100 text-teal-700',
-  uploaded: 'bg-gray-100 text-gray-600',
-  extracting: 'bg-blue-100 text-blue-600',
-  step1_pending: 'bg-gray-100 text-gray-600',
-  step1_running: 'bg-blue-100 text-blue-600',
-  step1_failed: 'bg-red-100 text-red-700',
-  step2_pending: 'bg-gray-100 text-gray-600',
-  step2_running: 'bg-blue-100 text-blue-600',
-  step2_failed: 'bg-red-100 text-red-700',
-  extraction_failed: 'bg-red-100 text-red-700',
+  new: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  processing: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  review: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',
+  ready: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  exporting: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  exported: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  complete: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  pending: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  approved: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  rejected: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  maybe: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',
+  below_threshold: 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+  clipping_warning: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
+  auto_rejected: 'bg-red-200 text-red-600 dark:bg-red-900/50 dark:text-red-300',
+  auto_approved: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
+  uploaded: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  extracting: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
+  step1_pending: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  step1_running: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
+  step1_failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  step2_pending: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+  step2_running: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
+  step2_failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  extraction_failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -46,7 +46,7 @@ interface StatusBadgeProps {
 }
 
 export function StatusBadge({ status, dot = false }: StatusBadgeProps) {
-  const style = STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-600'
+  const style = STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
   const dotStyle = STATUS_DOT[status]
 
   if (dot && dotStyle) {
