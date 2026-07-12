@@ -1,0 +1,153 @@
+import { describe, it, expect } from 'vitest'
+import { deriveStage, stageStates } from './stage'
+import type { ProjectDetail, SourceStatus, JobSummary } from '../types/api'
+
+function makeProject(overrides: {
+  sourceStatuses?: SourceStatus[]
+  activeJobs?: Partial<JobSummary>[]
+  referencePath?: string | null
+  pendingCount?: number
+  maybeCount?: number
+  status?: ProjectDetail['status']
+}): ProjectDetail {
+  const {
+    sourceStatuses = [],
+    activeJobs = [],
+    referencePath = null,
+    pendingCount = 0,
+    maybeCount = 0,
+    status = 'ready',
+  } = overrides
+  return {
+    id: 'p1',
+    name: 'Test',
+    status,
+    created_at: '',
+    updated_at: '',
+    reference_path: referencePath,
+    reference_origin: null,
+    config: {
+      whisper_model: 'large-v2',
+      language: null,
+      match_threshold: 0.75,
+      target_duration_secs: 1800,
+      auto_approve_enabled: false,
+      auto_approve_match_threshold: 0.9,
+      auto_approve_transcript_threshold: 0.9,
+    },
+    active_jobs: activeJobs.map((j, i) => ({
+      id: j.id ?? `j${i}`,
+      type: j.type ?? 'vocal_separation',
+      status: j.status ?? 'running',
+      progress: j.progress ?? null,
+    })),
+    recent_failed_jobs: [],
+    stats: {
+      approved_count: 0,
+      approved_duration_secs: 0,
+      pending_count: pendingCount,
+      maybe_count: maybeCount,
+      total_segments: pendingCount + maybeCount,
+      auto_approved_count: 0,
+      rejected_count: 0,
+      below_threshold_count: 0,
+      source_coverage: sourceStatuses.map((s, i) => ({
+        source_id: `s${i}`,
+        filename: `file${i}.mp4`,
+        status: s,
+        coverage_ratio: 0,
+        low_coverage_warning: false,
+        error: null,
+      })),
+    },
+  }
+}
+
+describe('deriveStage', () => {
+  it('returns upload when there are no sources', () => {
+    expect(deriveStage(makeProject({}))).toBe('upload')
+  })
+
+  it('returns process while a pipeline job is active', () => {
+    const p = makeProject({
+      sourceStatuses: ['separation_running'],
+      activeJobs: [{ type: 'vocal_separation' }],
+    })
+    expect(deriveStage(p)).toBe('process')
+  })
+
+  it('returns speaker at the reference gate with no reference', () => {
+    const p = makeProject({ sourceStatuses: ['diarisation_pending'] })
+    expect(deriveStage(p)).toBe('speaker')
+  })
+
+  it('stays on speaker while a scout job runs', () => {
+    const p = makeProject({
+      sourceStatuses: ['diarisation_pending'],
+      activeJobs: [{ type: 'scout_speakers' }],
+    })
+    expect(deriveStage(p)).toBe('speaker')
+  })
+
+  it('returns process at the gate once a reference is set', () => {
+    const p = makeProject({
+      sourceStatuses: ['diarisation_pending'],
+      referencePath: '/data/ref.wav',
+    })
+    expect(deriveStage(p)).toBe('process')
+  })
+
+  it('returns process for a queued source with no jobs running', () => {
+    const p = makeProject({ sourceStatuses: ['separation_pending'] })
+    expect(deriveStage(p)).toBe('process')
+  })
+
+  it('returns process when a source failed', () => {
+    const p = makeProject({ sourceStatuses: ['separation_failed'] })
+    expect(deriveStage(p)).toBe('process')
+  })
+
+  it('returns review when sources are complete and segments await review', () => {
+    const p = makeProject({ sourceStatuses: ['complete'], pendingCount: 5, maybeCount: 1 })
+    expect(deriveStage(p)).toBe('review')
+  })
+
+  it('returns export when everything is reviewed', () => {
+    const p = makeProject({ sourceStatuses: ['complete'] })
+    expect(deriveStage(p)).toBe('export')
+  })
+
+  it('returns export while an export job runs', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      activeJobs: [{ type: 'export' }],
+      status: 'exporting',
+    })
+    expect(deriveStage(p)).toBe('export')
+  })
+
+  it('prefers process over review when a new source is added mid-review', () => {
+    const p = makeProject({ sourceStatuses: ['complete', 'uploaded'], pendingCount: 5 })
+    expect(deriveStage(p)).toBe('process')
+  })
+})
+
+describe('stageStates', () => {
+  it('marks earlier stages done, current needs_you, later upcoming', () => {
+    const p = makeProject({ sourceStatuses: ['diarisation_pending'] })
+    const states = stageStates(p)
+    expect(states.upload).toBe('done')
+    expect(states.speaker).toBe('needs_you')
+    expect(states.process).toBe('upcoming')
+    expect(states.review).toBe('upcoming')
+    expect(states.export).toBe('upcoming')
+  })
+
+  it('marks the current stage active while jobs run', () => {
+    const p = makeProject({
+      sourceStatuses: ['separation_running'],
+      activeJobs: [{ type: 'vocal_separation' }],
+    })
+    expect(stageStates(p).process).toBe('active')
+  })
+})

@@ -23,22 +23,55 @@ Lists all projects with name, status, approved duration, and a progress bar towa
 
 ### 2. Project dashboard (`/projects/{id}`)
 
-The entry point for a project. Shows:
+The entry point for a project, organised as a **guided stage flow**. Internal identifiers (statuses, job types) never render raw — every user-visible name goes through the label map in `src/utils/labels.ts` (e.g. `separation_running` → "Separating vocals", `diarisation` → "Speaker matching", `awaiting_reference` → "Needs speaker").
 
-- Project name and status
-- Per-source processing status (filename, step 1/2 status, coverage ratio, low-coverage warning if applicable)
-- Summary stats: approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target (duration includes auto-approved)
-- Project settings: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
-- Active job progress (if any jobs running)
-- **Recent failed jobs** with error messages and retry actions (sourced from `recent_failed_jobs` in the project response). Failed jobs are shown until the user dismisses them or retries the operation.
-- Pipeline controls: Start, re-run per source, transcription trigger
-- Link to the review queue
+#### Stage model
+
+Five user-facing stages: **Upload → Speaker → Process → Review → Export**. A pure function `deriveStage(project)` maps the polled project response to the single current stage, by precedence:
+
+1. No sources → **Upload**
+2. Active jobs other than `export` and `scout_speakers` → **Process**
+3. Any source in `uploaded`, `extracting`, `separation_pending`, `separation_running`, `diarisation_running`, or a failed state (`extraction_failed`, `separation_failed`, `diarisation_failed`) → **Process** (checked after the reference gate below when only `diarisation_pending` sources remain)
+4. A source at `diarisation_pending` (the reference gate): no reference set → **Speaker**; reference set → **Process** (Continue)
+5. `pending_count + maybe_count > 0` → **Review**
+6. Otherwise → **Export**
+
+(Exact evaluation order in code: sources-empty, active-jobs, gate-without-reference, remaining processing statuses, review, export.)
+
+Scout jobs belong to the Speaker stage and export jobs to the Export stage, so neither flips the strip to Process. Stages are not strictly linear — adding a source mid-review returns the project to Process; that is expected.
+
+#### Page layout (top to bottom)
+
+1. **Header** — project name, settings gear (expands and scrolls to the Settings section), theme toggle. No review-queue button; review is reached via the stage strip and action card.
+2. **Stage strip** — the five stages, each rendered as done (✓) / active (pulsing, jobs running) / needs-you (amber) / upcoming (dimmed). The Review chip links to the review queue once segments exist.
+3. **Next-action card** — one card, fixed slot, reserved min-height (no layout shift on the 3 s poll); content cross-fades on stage change:
+   - *Upload*: full drag-and-drop upload area.
+   - *Speaker*: the Set reference panel (below).
+   - *Process*: active job progress with human labels; or a **Start processing** button (queued sources, nothing running); or **Continue processing** (reference set at the gate); or a "processing stopped" notice pointing at the failed-job alerts.
+   - *Review*: "N segments ready to review" with a **Start reviewing →** link and a secondary **Transcribe segments** button.
+   - *Export*: export confirmation/summary and download (export flow below).
+4. **Failed-job alerts** — only when present, own slot, error messages with retry/dismiss (sourced from `recent_failed_jobs`). Shown until dismissed or retried.
+5. **Videos** (sources) — filename, human status label, speaker coverage (— until diarisation completes), per-row ⋯ menu with **Re-run from vocal separation** (`steps: ["separation", "diarisation"]`) and **Re-run speaker matching** (`steps: ["diarisation"]`), plus an inline compact **+ Add video** upload button. Hidden while the project has no sources.
+6. **Segments** (stats) — compact grid: approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target (duration includes auto-approved). Hidden until segments exist.
+7. **Settings** — collapsed disclosure: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
 
 The dashboard is the place for pipeline operations and error recovery. The review queue is for segment decisions only.
 
+#### Terminology
+
+| Internal | User sees |
+|---|---|
+| `uploaded` / `extracting` / `extraction_failed` | Uploaded / Extracting audio / Extraction failed |
+| `separation_pending` / `separation_running` / `separation_failed` | Queued / Separating vocals / Vocal separation failed |
+| `diarisation_pending` / `diarisation_running` / `diarisation_failed` | Waiting for speaker / Matching speaker / Speaker matching failed |
+| `complete` (source) | Processed |
+| `awaiting_reference` (project) | Needs speaker |
+| `vocal_separation` / `diarisation` / `scout_speakers` (jobs) | Separating vocals / Matching speaker / Scanning for speakers |
+| `transcription_bulk` / `export` (jobs) | Transcribing segments / Exporting dataset |
+
 #### Set reference panel
 
-Shown only while the project is in `awaiting_reference` — step 1 has finished for at least one source and no reference is set. This is what unblocks step 2. Two tabs:
+Rendered inside the next-action card at the **Speaker** stage — vocal separation has finished for at least one source and no reference is set. This is what unblocks speaker matching. Two tabs:
 
 **Find speakers** (default tab):
 1. A source dropdown listing sources with a vocals stem ready (`vocals_path` set); defaults to the first such source.

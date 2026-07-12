@@ -78,9 +78,9 @@ CREATE TABLE sources (
     vocals_path     TEXT,                   -- audio/vocals/{id}.wav, set after step 1
     duration_secs   REAL,                   -- set after extraction
     status          TEXT NOT NULL,          -- see Source status
-    step1_model     TEXT,                   -- Demucs model used
-    step1_error     TEXT,                   -- error message if step1 failed
-    step2_error     TEXT,
+    separation_model     TEXT,                   -- Demucs model used
+    separation_error     TEXT,                   -- error message if separation failed
+    diarisation_error     TEXT,
     coverage_ratio  REAL,                   -- fraction of file attributed to target speaker
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
@@ -89,9 +89,9 @@ CREATE TABLE sources (
 
 **Orchestrator write behaviour for sources:**
 - `audio_path` and `duration_secs` are set when the `extract_audio` job completes.
-- `vocals_path` and `step1_model` are set when the `vocal_separation` job completes. `step1_model` records the Demucs model variant actually used (which may differ from the default if the user requested a specific model or the orchestrator retried with a fallback).
-- `step1_error` is set when vocal separation fails; cleared when step 1 is re-run.
-- `step2_error` is set when diarisation fails; cleared when step 2 is re-run.
+- `vocals_path` and `separation_model` are set when the `vocal_separation` job completes. `separation_model` records the Demucs model variant actually used (which may differ from the default if the user requested a specific model or the orchestrator retried with a fallback).
+- `separation_error` is set when vocal separation fails; cleared when step 1 is re-run.
+- `diarisation_error` is set when diarisation fails; cleared when step 2 is re-run.
 - `coverage_ratio` is set from the diarisation service response when step 2 completes.
 
 ### `segments`
@@ -211,7 +211,7 @@ new                 -> ready              (first source file uploaded)
 ready               -> processing         (pipeline started)
 processing          -> review             (all jobs complete, no failures)
 processing          -> ready              (all jobs complete, some failed — user action needed)
-processing          -> awaiting_reference (jobs drained; ≥1 source at step2_pending; reference_path IS NULL)
+processing          -> awaiting_reference (jobs drained; ≥1 source at diarisation_pending; reference_path IS NULL)
 awaiting_reference  -> processing          (user sets a reference and triggers pipeline/continue, OR a scout job is enqueued)
 review              -> processing         (user re-runs a step or triggers transcription)
 review              -> exporting          (user triggers export)
@@ -225,7 +225,7 @@ The orchestrator recomputes project status after each job completion or user act
 
 1. `processing` — any job is `queued` or `running` (a running `scout_speakers` job counts, so scouting simply shows as `processing`).
 2. `review` — all sources are `complete`.
-3. `awaiting_reference` — no active jobs, `reference_path IS NULL`, and at least one source is at `step2_pending`.
+3. `awaiting_reference` — no active jobs, `reference_path IS NULL`, and at least one source is at `diarisation_pending`.
 4. `ready` — no active jobs and one or more sources ended in a failed state (some failed, user action needed).
 
 ---
@@ -237,30 +237,30 @@ The orchestrator recomputes project status after each job completion or user act
 | `uploaded` | File received, audio not yet extracted |
 | `extracting` | FFmpeg audio extraction running |
 | `extraction_failed` | FFmpeg failed; user action required |
-| `step1_pending` | Audio extracted, step 1 not started |
-| `step1_running` | Demucs running |
-| `step1_failed` | Demucs failed |
-| `step2_pending` | Step 1 complete, step 2 not started |
-| `step2_running` | pyannote running |
-| `step2_failed` | pyannote failed |
+| `separation_pending` | Audio extracted, step 1 not started |
+| `separation_running` | Demucs running |
+| `separation_failed` | Demucs failed |
+| `diarisation_pending` | Step 1 complete, step 2 not started |
+| `diarisation_running` | pyannote running |
+| `diarisation_failed` | pyannote failed |
 | `complete` | Both steps done; segments written to database |
 
 State transitions:
 
 ```
 uploaded          -> extracting        (upload handler enqueues extraction job)
-extracting        -> step1_pending     (extraction succeeds)
+extracting        -> separation_pending     (extraction succeeds)
 extracting        -> extraction_failed (extraction fails)
-step1_pending     -> step1_running     (vocal separation job starts)
-step1_running     -> step2_pending     (step 1 succeeds)
-step1_running     -> step1_failed      (step 1 fails, including after OOM retry)
-step2_pending     -> step2_running     (diarisation job starts)
-step2_running     -> complete          (step 2 succeeds)
-step2_running     -> step2_failed      (step 2 fails)
-complete          -> step1_pending     (user re-runs step 1; deletes all segments for this source)
-complete          -> step2_pending     (user re-runs step 2; deletes segments for this source)
-step1_failed      -> step1_pending     (user retries step 1)
-step2_failed      -> step2_pending     (user retries step 2)
+separation_pending     -> separation_running     (vocal separation job starts)
+separation_running     -> diarisation_pending     (step 1 succeeds)
+separation_running     -> separation_failed      (step 1 fails, including after OOM retry)
+diarisation_pending     -> diarisation_running     (diarisation job starts)
+diarisation_running     -> complete          (step 2 succeeds)
+diarisation_running     -> diarisation_failed      (step 2 fails)
+complete          -> separation_pending     (user re-runs step 1; deletes all segments for this source)
+complete          -> diarisation_pending     (user re-runs step 2; deletes segments for this source)
+separation_failed      -> separation_pending     (user retries step 1)
+diarisation_failed      -> diarisation_pending     (user retries step 2)
 ```
 
 `extraction_failed` has no forward transition. The user must delete the source and re-upload. This is intentional — a corrupt file won't become less corrupt on retry.

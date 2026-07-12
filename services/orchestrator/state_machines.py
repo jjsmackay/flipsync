@@ -47,15 +47,15 @@ def validate_segment_transition(from_status: str, to_status: str) -> bool:
 
 SOURCE_TRANSITIONS: dict[str, set[str]] = {
     "uploaded": {"extracting"},
-    "extracting": {"step1_pending", "extraction_failed"},
+    "extracting": {"separation_pending", "extraction_failed"},
     "extraction_failed": set(),  # terminal — user must delete and re-upload
-    "step1_pending": {"step1_running"},
-    "step1_running": {"step2_pending", "step1_failed"},
-    "step1_failed": {"step1_pending"},
-    "step2_pending": {"step2_running"},
-    "step2_running": {"complete", "step2_failed"},
-    "step2_failed": {"step2_pending"},
-    "complete": {"step1_pending", "step2_pending"},
+    "separation_pending": {"separation_running"},
+    "separation_running": {"diarisation_pending", "separation_failed"},
+    "separation_failed": {"separation_pending"},
+    "diarisation_pending": {"diarisation_running"},
+    "diarisation_running": {"complete", "diarisation_failed"},
+    "diarisation_failed": {"diarisation_pending"},
+    "complete": {"separation_pending", "diarisation_pending"},
 }
 
 
@@ -86,7 +86,7 @@ def compute_project_status(
     all_sources_complete: bool,
     export_complete: bool,
     reference_set: bool = True,
-    has_step2_pending: bool = False,
+    has_diarisation_pending: bool = False,
 ) -> str:
     """Compute project status from observed state.
 
@@ -111,7 +111,7 @@ def compute_project_status(
     if all_sources_complete:
         return "review"
 
-    if not reference_set and has_step2_pending:
+    if not reference_set and has_diarisation_pending:
         return "awaiting_reference"
 
     return "ready"

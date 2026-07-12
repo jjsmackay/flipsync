@@ -24,17 +24,17 @@ async def start_pipeline(project_id: str):
     conn = require_project(project_id)
 
     pending_sources = conn.execute(
-        "SELECT id FROM sources WHERE project_id=? AND status='step1_pending'",
+        "SELECT id FROM sources WHERE project_id=? AND status='separation_pending'",
         (project_id,),
     ).fetchall()
 
     if not pending_sources:
         raise AppError(
             409, "no_pending_sources",
-            "No sources in step1_pending status. Upload sources or check source status.",
+            "No sources in separation_pending status. Upload sources or check source status.",
         )
 
-    # Step 1 always runs regardless of reference. If no reference is set, step 2
+    # Separation always runs regardless of reference. If no reference is set, diarisation
     # is not chained (see jobs._auto_enqueue_diarisation) — the project rests in
     # awaiting_reference until the user sets a reference and calls pipeline/continue.
     enqueued = []
@@ -68,14 +68,14 @@ async def continue_pipeline(project_id: str):
         )
 
     pending_sources = conn.execute(
-        "SELECT id FROM sources WHERE project_id=? AND status='step2_pending'",
+        "SELECT id FROM sources WHERE project_id=? AND status='diarisation_pending'",
         (project_id,),
     ).fetchall()
 
     if not pending_sources:
         raise AppError(
             409, "no_pending_sources",
-            "No sources in step2_pending status. Run step 1 first.",
+            "No sources in diarisation_pending status. Run vocal separation first.",
         )
 
     enqueued = []
@@ -113,11 +113,11 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     if source is None:
         raise AppError(404, "not_found", "Source not found.")
 
-    valid_step_combos = [["step1"], ["step2"], ["step1", "step2"]]
+    valid_step_combos = [["separation"], ["diarisation"], ["separation", "diarisation"]]
     if body.steps not in valid_step_combos:
         raise AppError(
             422, "invalid_steps",
-            "steps must be ['step1'], ['step2'], or ['step1', 'step2'].",
+            "steps must be ['separation'], ['diarisation'], or ['separation', 'diarisation'].",
         )
 
     # Check for approved segments that would be invalidated. Re-running either
@@ -129,9 +129,9 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     ).fetchone()[0]
     if approved_count > 0 and not body.confirm:
         step_label = {
-            ("step1",): "step 1",
-            ("step2",): "step 2",
-            ("step1", "step2"): "steps 1 and 2",
+            ("separation",): "vocal separation",
+            ("diarisation",): "speaker matching",
+            ("separation", "diarisation"): "vocal separation and speaker matching",
         }[tuple(body.steps)]
         raise AppError(
             409, "would_invalidate_approvals",
@@ -143,16 +143,16 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     now = utc_now()
     current_status = source["status"]
 
-    if "step1" in body.steps:
-        if not validate_source_transition(current_status, "step1_pending"):
+    if "separation" in body.steps:
+        if not validate_source_transition(current_status, "separation_pending"):
             raise AppError(
                 409, "invalid_source_status",
-                f"Cannot reprocess step 1 from source status '{current_status}'.",
-                {"from": current_status, "to": "step1_pending"},
+                f"Cannot re-run vocal separation from source status '{current_status}'.",
+                {"from": current_status, "to": "separation_pending"},
             )
         _delete_source_segments(conn, project_id, source_id)
         conn.execute(
-            "UPDATE sources SET status='step1_pending', vocals_path=NULL, step1_error=NULL, step2_error=NULL, updated_at=? WHERE id=?",
+            "UPDATE sources SET status='separation_pending', vocals_path=NULL, separation_error=NULL, diarisation_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
         )
         conn.commit()
@@ -162,16 +162,16 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         job_id = enqueue(project_id, "vocal_separation", source_id=source_id, params=params)
         enqueued.append({"id": job_id, "type": "vocal_separation", "source_id": source_id})
 
-    elif "step2" in body.steps:
-        if not validate_source_transition(current_status, "step2_pending"):
+    elif "diarisation" in body.steps:
+        if not validate_source_transition(current_status, "diarisation_pending"):
             raise AppError(
                 409, "invalid_source_status",
-                f"Cannot reprocess step 2 from source status '{current_status}'.",
-                {"from": current_status, "to": "step2_pending"},
+                f"Cannot re-run speaker matching from source status '{current_status}'.",
+                {"from": current_status, "to": "diarisation_pending"},
             )
         _delete_source_segments(conn, project_id, source_id)
         conn.execute(
-            "UPDATE sources SET status='step2_pending', step2_error=NULL, updated_at=? WHERE id=?",
+            "UPDATE sources SET status='diarisation_pending', diarisation_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
         )
         conn.commit()

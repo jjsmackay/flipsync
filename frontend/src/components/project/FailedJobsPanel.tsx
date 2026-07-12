@@ -1,25 +1,11 @@
 import { useState } from 'react'
-import type { JobSummary, FailedJob } from '../../types/api'
-import { ProgressBar } from '../ui/ProgressBar'
+import type { FailedJob } from '../../types/api'
+import { jobLabel } from '../../utils/labels'
 
-interface JobsPanelProps {
-  activeJobs: JobSummary[]
+interface FailedJobsPanelProps {
   failedJobs: FailedJob[]
   onRetry?: (job: FailedJob) => void
   retryingJobId?: string | null
-}
-
-const JOB_LABELS: Record<string, string> = {
-  extract_audio: 'Extracting audio',
-  vocal_separation: 'Vocal separation',
-  diarisation: 'Diarisation',
-  transcription: 'Transcription',
-  cleanup: 'Cleanup',
-  export: 'Export',
-}
-
-function jobLabel(type: string): string {
-  return JOB_LABELS[type] ?? type.replace(/_/g, ' ')
 }
 
 function formatTime(iso: string | null): string {
@@ -28,7 +14,7 @@ function formatTime(iso: string | null): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-export function JobsPanel({ activeJobs, failedJobs, onRetry, retryingJobId }: JobsPanelProps) {
+export function FailedJobsPanel({ failedJobs, onRetry, retryingJobId }: FailedJobsPanelProps) {
   // Dismissed failed jobs are hidden locally; the API keeps returning them, so this
   // is a per-session hide (spec: shown until dismissed or retried).
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set())
@@ -43,28 +29,18 @@ export function JobsPanel({ activeJobs, failedJobs, onRetry, retryingJobId }: Jo
     })
   }
 
-  if (activeJobs.length === 0 && visibleFailed.length === 0) {
+  if (visibleFailed.length === 0) {
     return null
   }
 
   return (
     <div className="space-y-3">
-      {activeJobs.map((job) => (
-        <div key={job.id} className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-lg p-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium text-blue-800 dark:text-blue-300">{jobLabel(job.type)}</span>
-            <span className="text-xs text-blue-500 dark:text-blue-400 capitalize">{job.status}</span>
-          </div>
-          {job.progress !== null && (
-            <ProgressBar value={job.progress} color="blue" />
-          )}
-        </div>
-      ))}
-
       {visibleFailed.map((job) => (
         <div key={job.id} className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium text-red-800 dark:text-red-300">{jobLabel(job.type)}</span>
+            <span className="text-sm font-medium text-red-800 dark:text-red-300">
+              {jobLabel(job.type)} failed
+            </span>
             {job.completed_at && (
               <span className="text-xs text-red-400 dark:text-red-500">{formatTime(job.completed_at)}</span>
             )}

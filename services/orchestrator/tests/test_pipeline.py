@@ -10,7 +10,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _insert_source(conn, project_id, status="step1_pending"):
+def _insert_source(conn, project_id, status="separation_pending"):
     source_id = str(uuid.uuid4())
     now = _now()
     conn.execute(
@@ -41,8 +41,8 @@ class TestPipelineStart:
     def test_start_enqueues_vocal_separation_jobs(self, client, project):
         import db
         conn = db.get_conn(project)
-        _insert_source(conn, project, "step1_pending")
-        _insert_source(conn, project, "step1_pending")
+        _insert_source(conn, project, "separation_pending")
+        _insert_source(conn, project, "separation_pending")
         conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project,))
         conn.commit()
 
@@ -52,13 +52,13 @@ class TestPipelineStart:
         assert len(jobs) == 2
         assert all(j["type"] == "vocal_separation" for j in jobs)
 
-    def test_start_without_reference_enqueues_step1_only(self, client, project):
+    def test_start_without_reference_enqueues_separation_only(self, client, project):
         """Start now always runs step 1; the reference gate happens after step 1
         drains (project → awaiting_reference), not at start."""
         import db
         conn = db.get_conn(project)
-        _insert_source(conn, project, "step1_pending")
-        _insert_source(conn, project, "step1_pending")
+        _insert_source(conn, project, "separation_pending")
+        _insert_source(conn, project, "separation_pending")
 
         resp = client.post(f"/projects/{project}/pipeline/start")
         assert resp.status_code == 202
@@ -72,26 +72,26 @@ class TestPipelineStart:
 
 
 class TestReprocess:
-    def test_reprocess_step1_valid(self, client, project):
+    def test_reprocess_separation_valid(self, client, project):
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "complete")
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step1"]},
+            json={"steps": ["separation"]},
         )
         assert resp.status_code == 202
         assert resp.json()["enqueued_jobs"][0]["type"] == "vocal_separation"
 
-    def test_reprocess_step2_valid(self, client, project):
+    def test_reprocess_diarisation_valid(self, client, project):
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "complete")
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step2"]},
+            json={"steps": ["diarisation"]},
         )
         assert resp.status_code == 202
         assert resp.json()["enqueued_jobs"][0]["type"] == "diarisation"
@@ -115,7 +115,7 @@ class TestReprocess:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step1"]},
+            json={"steps": ["separation"]},
         )
         assert resp.status_code == 409
         assert resp.json()["error"] == "would_invalidate_approvals"
@@ -128,7 +128,7 @@ class TestReprocess:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step1"]},
+            json={"steps": ["separation"]},
         )
         assert resp.status_code == 409
         assert resp.json()["error"] == "would_invalidate_approvals"
@@ -142,7 +142,7 @@ class TestReprocess:
 
         resp = client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step1"], "confirm": True},
+            json={"steps": ["separation"], "confirm": True},
         )
         assert resp.status_code == 202
 
@@ -154,7 +154,7 @@ class TestReprocess:
 
         client.post(
             f"/projects/{project}/sources/{source_id}/reprocess",
-            json={"steps": ["step1"], "confirm": True},
+            json={"steps": ["separation"], "confirm": True},
         )
         count = conn.execute("SELECT COUNT(*) FROM segments WHERE source_id=?", (source_id,)).fetchone()[0]
         assert count == 0
@@ -162,7 +162,7 @@ class TestReprocess:
     def test_reprocess_nonexistent_source_returns_404(self, client, project):
         resp = client.post(
             f"/projects/{project}/sources/bad-id/reprocess",
-            json={"steps": ["step1"]},
+            json={"steps": ["separation"]},
         )
         assert resp.status_code == 404
 
@@ -276,7 +276,7 @@ class TestExport:
         """Exporting a project that hasn't reached review/exported is rejected."""
         import db
         conn = db.get_conn(project)
-        source_id = _insert_source(conn, project, "step1_running")
+        source_id = _insert_source(conn, project, "separation_running")
         _insert_segment(conn, project, source_id, status="approved")
         # Project left in 'new'/processing-ish state (never recomputed to review).
 

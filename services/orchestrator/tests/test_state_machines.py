@@ -118,46 +118,46 @@ class TestSourceTransitions:
     def test_uploaded_to_extracting(self):
         assert validate_source_transition("uploaded", "extracting") is True
 
-    def test_extracting_to_step1_pending(self):
-        assert validate_source_transition("extracting", "step1_pending") is True
+    def test_extracting_to_separation_pending(self):
+        assert validate_source_transition("extracting", "separation_pending") is True
 
     def test_extracting_to_extraction_failed(self):
         assert validate_source_transition("extracting", "extraction_failed") is True
 
-    def test_step1_pending_to_step1_running(self):
-        assert validate_source_transition("step1_pending", "step1_running") is True
+    def test_separation_pending_to_separation_running(self):
+        assert validate_source_transition("separation_pending", "separation_running") is True
 
-    def test_step1_running_to_step2_pending(self):
-        assert validate_source_transition("step1_running", "step2_pending") is True
+    def test_separation_running_to_diarisation_pending(self):
+        assert validate_source_transition("separation_running", "diarisation_pending") is True
 
-    def test_step1_running_to_step1_failed(self):
-        assert validate_source_transition("step1_running", "step1_failed") is True
+    def test_separation_running_to_separation_failed(self):
+        assert validate_source_transition("separation_running", "separation_failed") is True
 
-    def test_step1_failed_to_step1_pending(self):
-        assert validate_source_transition("step1_failed", "step1_pending") is True
+    def test_separation_failed_to_separation_pending(self):
+        assert validate_source_transition("separation_failed", "separation_pending") is True
 
-    def test_step2_pending_to_step2_running(self):
-        assert validate_source_transition("step2_pending", "step2_running") is True
+    def test_diarisation_pending_to_diarisation_running(self):
+        assert validate_source_transition("diarisation_pending", "diarisation_running") is True
 
-    def test_step2_running_to_complete(self):
-        assert validate_source_transition("step2_running", "complete") is True
+    def test_diarisation_running_to_complete(self):
+        assert validate_source_transition("diarisation_running", "complete") is True
 
-    def test_step2_running_to_step2_failed(self):
-        assert validate_source_transition("step2_running", "step2_failed") is True
+    def test_diarisation_running_to_diarisation_failed(self):
+        assert validate_source_transition("diarisation_running", "diarisation_failed") is True
 
-    def test_step2_failed_to_step2_pending(self):
-        assert validate_source_transition("step2_failed", "step2_pending") is True
+    def test_diarisation_failed_to_diarisation_pending(self):
+        assert validate_source_transition("diarisation_failed", "diarisation_pending") is True
 
-    def test_complete_to_step1_pending(self):
-        assert validate_source_transition("complete", "step1_pending") is True
+    def test_complete_to_separation_pending(self):
+        assert validate_source_transition("complete", "separation_pending") is True
 
-    def test_complete_to_step2_pending(self):
-        assert validate_source_transition("complete", "step2_pending") is True
+    def test_complete_to_diarisation_pending(self):
+        assert validate_source_transition("complete", "diarisation_pending") is True
 
     # Invalid transitions
     def test_extraction_failed_is_terminal(self):
         assert validate_source_transition("extraction_failed", "extracting") is False
-        assert validate_source_transition("extraction_failed", "step1_pending") is False
+        assert validate_source_transition("extraction_failed", "separation_pending") is False
         assert validate_source_transition("extraction_failed", "uploaded") is False
 
     def test_uploaded_to_complete_is_invalid(self):
@@ -166,8 +166,8 @@ class TestSourceTransitions:
     def test_complete_to_uploaded_is_invalid(self):
         assert validate_source_transition("complete", "uploaded") is False
 
-    def test_step1_running_to_uploaded_is_invalid(self):
-        assert validate_source_transition("step1_running", "uploaded") is False
+    def test_separation_running_to_uploaded_is_invalid(self):
+        assert validate_source_transition("separation_running", "uploaded") is False
 
     def test_unknown_status_returns_false(self):
         assert validate_source_transition("made_up_status", "complete") is False
