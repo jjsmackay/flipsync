@@ -309,6 +309,6 @@ Export is non-destructive. Re-exporting after changing approvals regenerates `ex
 | Step 3 (all) | All transcripts | All approval states |
 | Step 4 / export | Export directory | All approval states; all transcripts |
 
-The orchestrator enforces these rules. A re-run request that would invalidate approved segments from other files must be confirmed by the user before it proceeds. Re-running step 2 for a single episode does not touch approvals from other episodes.
+The orchestrator enforces these rules. A re-run request that would invalidate approved segments (including `auto_approved`) must be confirmed by the user before it proceeds. Re-running step 2 for a single episode does not touch approvals from other episodes.
 
 One addition to the table above: bulk transcription may **replace** an untranscribed `pending` or `below_threshold` segment with sentence-aligned children (new rows, new UUIDs — see Step 3, sentence-aligned re-segmentation). This never touches reviewed segments; approval state is structurally unaffected because only unreviewed segments are eligible.

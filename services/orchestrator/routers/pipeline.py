@@ -89,7 +89,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     # step deletes and recreates this source's segments, so both discard
     # approvals; the message names the steps actually requested.
     approved_count = conn.execute(
-        "SELECT COUNT(*) FROM segments WHERE source_id=? AND status='approved'",
+        "SELECT COUNT(*) FROM segments WHERE source_id=? AND status IN ('approved', 'auto_approved')",
         (source_id,),
     ).fetchone()[0]
     if approved_count > 0 and not body.confirm:
