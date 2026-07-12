@@ -7,6 +7,11 @@ uvicorn==0.30.6
 # torchaudio and torchcodec are pulled transitively; torchcodec needs FFmpeg
 # shared libraries, which the Dockerfile installs (ffmpeg package).
 pyannote.audio==4.0.7
+# omegaconf is required to load the pyannote/embedding checkpoint: its Lightning
+# hparams were saved as an OmegaConf config, so Model.from_pretrained needs
+# omegaconf to deserialize them. pyannote 4.x dropped omegaconf from its own
+# deps (its new pipelines don't use it), so we depend on it explicitly.
+omegaconf
 scipy
 soundfile
 numpy
