@@ -10,6 +10,7 @@ import {
   uploadReference,
 } from '../../api/client'
 import { formatDuration } from '../../utils/format'
+import { usePolling } from '../../hooks/usePolling'
 
 // Minimum montage length (seconds) the orchestrator accepts as a reference.
 // The card's "Use this voice" is disabled below this so the user never hits
@@ -42,7 +43,6 @@ export function SetReferencePanel({ project, onAction, pollIntervalMs = 3000 }: 
     () => scoutableSources[0]?.source_id ?? '',
   )
   const [scout, setScout] = useState<ScoutStatus | null>(null)
-  const [polling, setPolling] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [selectingLabel, setSelectingLabel] = useState<string | null>(null)
   const [findError, setFindError] = useState<string | null>(null)
@@ -63,7 +63,6 @@ export function SetReferencePanel({ project, onAction, pollIntervalMs = 3000 }: 
       .then((result) => {
         if (cancelled) return
         setScout(result)
-        if (result.status === 'running') setPolling(true)
       })
       .catch((err) => {
         if (cancelled) return
@@ -76,28 +75,19 @@ export function SetReferencePanel({ project, onAction, pollIntervalMs = 3000 }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id])
 
-  // Poll scout status while a scan is running. Stops on complete/failed/unmount.
-  useEffect(() => {
-    if (!polling) return
-    let cancelled = false
-    const id = setInterval(() => {
-      getScoutStatus(project.id)
-        .then((result) => {
-          if (cancelled) return
-          setScout(result)
-          if (result.status !== 'running') setPolling(false)
-        })
-        .catch((err) => {
-          if (cancelled) return
-          setFindError(errorMessage(err, 'Failed to poll scout status'))
-          setPolling(false)
-        })
-    }, pollIntervalMs)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-  }, [polling, project.id, pollIntervalMs])
+  // Poll scout status while a scan is running — derived purely from fetched
+  // state, so one failed poll can't wedge the panel: usePolling keeps its
+  // interval alive through errors (we surface a transient "retrying" note) and
+  // the loop stops itself when the fetched status leaves 'running'.
+  const scoutRunning = scout?.status === 'running'
+  const { error: pollError } = usePolling<ScoutStatus>(
+    () => getScoutStatus(project.id),
+    {
+      intervalMs: pollIntervalMs,
+      enabled: scoutRunning,
+      onData: setScout,
+    },
+  )
 
   async function handleScan() {
     if (!selectedSourceId) return
@@ -105,8 +95,8 @@ export function SetReferencePanel({ project, onAction, pollIntervalMs = 3000 }: 
     setScanning(true)
     try {
       await startScout(project.id, selectedSourceId)
+      // Setting a running status starts the poll loop (it's derived from scout state).
       setScout({ status: 'running', progress: 0, source_id: selectedSourceId, speakers: [] })
-      setPolling(true)
     } catch (err) {
       setFindError(errorMessage(err, 'Failed to start scan'))
     } finally {
@@ -159,7 +149,7 @@ export function SetReferencePanel({ project, onAction, pollIntervalMs = 3000 }: 
   const candidates: SpeakerCandidate[] =
     scout && scout.speakers ? [...scout.speakers].sort((a, b) => b.total_secs - a.total_secs) : []
 
-  const isScanning = scanning || polling || scout?.status === 'running'
+  const isScanning = scanning || scoutRunning
 
   function referenceLabel(): string | null {
     const origin = project.reference_origin
@@ -226,12 +216,16 @@ export function SetReferencePanel({ project, onAction, pollIntervalMs = 3000 }: 
               {typeof scout.progress === 'number' && (
                 <span className="ml-1 font-mono text-gray-500 dark:text-gray-400">{Math.round(scout.progress)}%</span>
               )}
+              {pollError && (
+                <span className="ml-2 text-amber-600 dark:text-amber-400">Connection lost — retrying…</span>
+              )}
             </p>
           )}
 
           {scout?.status === 'failed' && (
             <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
               Scan failed: {scout.error}
+              {candidates.length > 0 && ' Speakers from the last successful scan are still available below.'}
             </p>
           )}
 

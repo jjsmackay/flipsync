@@ -129,6 +129,9 @@ export interface Segment {
   end_secs: number
   duration_secs: number
   match_confidence: number
+  // Cluster-level secondary score from diarisation; null for segments cut
+  // before migration 006, absent from older orchestrators.
+  speaker_match_confidence?: number | null
   transcript: string | null
   transcript_edited: string | null
   transcript_confidence: number | null

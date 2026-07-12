@@ -45,6 +45,7 @@ export function SegmentDetail({
   const audioApiUrl = getSegmentAudioUrl(projectId, segment.id)
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  const [audioError, setAudioError] = useState<string | null>(null)
   const audio = useAudio(objectUrl)
 
   const [isEditing, setIsEditing] = useState(false)
@@ -61,8 +62,14 @@ export function SegmentDetail({
     let createdUrl: string | null = null
     setAudioBlob(null)
     setObjectUrl(null)
+    setAudioError(null)
     fetch(audioApiUrl)
-      .then((r) => r.blob())
+      .then((r) => {
+        // A non-2xx here returns the JSON error body — never hand that to the
+        // audio element or waveform decoder.
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.blob()
+      })
       .then((blob) => {
         if (cancelled) return
         createdUrl = URL.createObjectURL(blob)
@@ -70,7 +77,8 @@ export function SegmentDetail({
         setObjectUrl(createdUrl)
       })
       .catch(() => {
-        /* player and waveform show their empty states */
+        if (cancelled) return
+        setAudioError('Audio unavailable — this segment may have been re-cut or its source reprocessed.')
       })
     return () => {
       cancelled = true
@@ -208,6 +216,14 @@ export function SegmentDetail({
           {segment.source_filename} &nbsp;·&nbsp; {formatTimestamp(segment.start_secs)} – {formatTimestamp(segment.end_secs)}
           &nbsp;({segment.duration_secs.toFixed(1)}s)
         </p>
+        {segment.speaker_match_confidence != null && (
+          <p
+            className="text-xs text-gray-500 dark:text-gray-400"
+            title="Cluster score: how well this segment's diarisation cluster matches the reference overall (secondary signal to the per-segment match)."
+          >
+            Cluster score: {segment.speaker_match_confidence.toFixed(2)}
+          </p>
+        )}
         {segment.flags && segment.flags.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1">
             {segment.flags.map((flag) => {
@@ -238,31 +254,39 @@ export function SegmentDetail({
 
       {/* Waveform */}
       <div className="flex flex-col gap-1.5">
-        <WaveformCanvas
-          audioBlob={audioBlob}
-          currentTime={audio.currentTime}
-          duration={audio.duration}
-          onSeek={audio.seek}
-          showSpectrogram={showSpectrogram}
-        />
-        <AudioControls
-          isPlaying={audio.isPlaying}
-          currentTime={audio.currentTime}
-          duration={audio.duration}
-          playbackRate={audio.playbackRate}
-          onToggle={audio.toggle}
-          onRestart={audio.restart}
-          onSpeedChange={audio.setPlaybackRate}
-        />
+        {audioError ? (
+          <p className="text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded px-3 py-2">
+            {audioError}
+          </p>
+        ) : (
+          <>
+            <WaveformCanvas
+              audioBlob={audioBlob}
+              currentTime={audio.currentTime}
+              duration={audio.duration}
+              onSeek={audio.seek}
+              showSpectrogram={showSpectrogram}
+            />
+            <AudioControls
+              isPlaying={audio.isPlaying}
+              currentTime={audio.currentTime}
+              duration={audio.duration}
+              playbackRate={audio.playbackRate}
+              onToggle={audio.toggle}
+              onRestart={audio.restart}
+              onSpeedChange={audio.setPlaybackRate}
+            />
 
-        {/* Spectrogram toggle */}
-        <button
-          type="button"
-          onClick={onSpectrogramToggle}
-          className="self-start text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 focus:outline-none"
-        >
-          {showSpectrogram ? 'Hide spectrogram' : 'Show spectrogram'}
-        </button>
+            {/* Spectrogram toggle */}
+            <button
+              type="button"
+              onClick={onSpectrogramToggle}
+              className="self-start text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 focus:outline-none"
+            >
+              {showSpectrogram ? 'Hide spectrogram' : 'Show spectrogram'}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Transcript */}
