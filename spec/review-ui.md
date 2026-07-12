@@ -163,6 +163,8 @@ After any action, focus moves automatically to the next segment in the list. The
 
 If the segment's status is `auto_approved`, a teal "Auto-approved" chip is shown above the action buttons with a tooltip: "Approved automatically — speaker match and transcript confidence both cleared the project's auto-approve thresholds. Approve to confirm, or override." The `A` key (and Approve button) confirms it to `approved`; Maybe/Reject demote it as usual.
 
+If the segment's status is `rejected`, the three primary actions are replaced with a single "Un-reject" button (restores the segment to `pending`) — button only, no keyboard shortcut, to avoid a second misclick undoing the first.
+
 If the segment has a `clipping_warning` (the boolean column, not the status), the Approve button shows a warning icon and a tooltip: "This segment was flagged for clipping during cleanup. It may contain audio distortion." This warning persists even after re-approval — it's a fact about the audio, not a workflow state. The `clipping_warning` status puts the segment back in the review queue; the `clipping_warning` column keeps the icon visible regardless of status.
 
 ---
