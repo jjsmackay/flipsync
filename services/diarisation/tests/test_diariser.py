@@ -65,6 +65,56 @@ def test_cosine_similarity_zero_vector():
 
 
 # ---------------------------------------------------------------------------
+# Test: match_confidence clamping to [0, 1]
+# ---------------------------------------------------------------------------
+
+
+def test_clamp_confidence_bounds():
+    from diariser import clamp_confidence
+
+    assert clamp_confidence(-1.0) == 0.0
+    assert clamp_confidence(-0.3) == 0.0
+    assert clamp_confidence(0.42) == 0.42
+    assert clamp_confidence(1.0) == 1.0
+    assert clamp_confidence(1.5) == 1.0
+
+
+def test_match_confidence_clamped_in_pipeline(sample_wav_path, reference_wav_path, output_dir):
+    """A dissimilar speaker (negative cosine) yields match_confidence 0.0, never negative."""
+    from unittest.mock import MagicMock
+    from diariser import run_diarisation
+
+    mock_turn = MagicMock()
+    mock_turn.start = 1.0
+    mock_turn.end = 4.0
+
+    mock_diarization = MagicMock()
+    mock_diarization.itertracks.return_value = [(mock_turn, None, "SPEAKER_00")]
+
+    mock_pipeline = MagicMock(return_value=mock_diarization)
+
+    # Reference and speaker embeddings point in opposite directions → cosine = -1.
+    ref_emb = np.array([1.0, 0.0])
+    seg_emb = np.array([-1.0, 0.0])
+
+    mock_inference = MagicMock()
+    mock_inference.__call__ = MagicMock(return_value=ref_emb)
+    mock_inference.crop = MagicMock(return_value=seg_emb)
+
+    segments, _ = run_diarisation(
+        pipeline=mock_pipeline,
+        embedding_model=mock_inference,
+        input_path=sample_wav_path,
+        reference_path=reference_wav_path,
+        output_dir=output_dir,
+        min_segment_duration=1.0,
+    )
+
+    assert len(segments) == 1
+    assert segments[0]["match_confidence"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Test: coverage_ratio calculation
 # ---------------------------------------------------------------------------
 

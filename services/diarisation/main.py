@@ -12,43 +12,61 @@ blocking pyannote calls do not stall the event loop.
 import asyncio
 import contextlib
 import logging
-import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-
-@contextlib.asynccontextmanager
-async def lifespan(app: FastAPI):
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        logger.warning(
-            "HF_TOKEN is not set. pyannote models cannot be downloaded. "
-            "Jobs will fail until HF_TOKEN is provided."
-        )
-    else:
-        logger.info("HF_TOKEN is set. Models will be downloaded on first job.")
-    yield
-
-
-app = FastAPI(title="FlipSync Diarisation Service", lifespan=lifespan)
-
 # In-memory job store
 _jobs: dict[str, dict] = {}
+
+# Retain background job futures so they aren't garbage-collected mid-run.
+_tasks: set[Future] = set()
 
 # Thread pool for blocking pyannote calls (one worker keeps GPU usage sequential)
 _executor = ThreadPoolExecutor(max_workers=1)
 
-# Lazy-loaded models (None until first job)
+# Lazy-loaded models (populated by the lifespan preload, reused across jobs)
 _pipeline = None
 _embedding_model = None
+
+# Readiness / startup state
+_models_ready = False
+_startup_error: Optional[str] = None
+
+# Keep at most this many finished jobs in memory before evicting the oldest.
+_MAX_FINISHED_JOBS = 100
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Preload pyannote models before the service reports ready.
+
+    The spec allows up to a 5-minute startup while ~2 GB of models download.
+    Loading here means a missing/invalid token or download failure is surfaced
+    at startup (loudly logged) rather than mid-pipeline.
+    """
+    global _models_ready, _startup_error
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(_executor, _load_models)
+        _models_ready = True
+        logger.info("Diarisation models preloaded; service is ready.")
+    except Exception as exc:  # noqa: BLE001 — log loudly, keep container up for diagnosis
+        _startup_error = str(exc)
+        logger.error("FATAL: model preload failed — service not ready: %s", exc, exc_info=True)
+    yield
+
+
+app = FastAPI(title="FlipSync Diarisation Service", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -82,8 +100,21 @@ def _error_response(code: str, message: str, detail: dict | None = None, status_
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return validation errors in the standard flat error format."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "validation_error",
+            "message": "Request validation failed.",
+            "detail": {"errors": jsonable_encoder(exc.errors())},
+        },
+    )
+
+
 def _load_models():
-    """Load pyannote pipeline and embedding model (called once in background)."""
+    """Load pyannote pipeline and embedding model (once, at startup)."""
     global _pipeline, _embedding_model
     if _pipeline is None or _embedding_model is None:
         logger.info("Loading pyannote models…")
@@ -94,9 +125,21 @@ def _load_models():
         logger.info("pyannote models loaded")
 
 
+def _evict_finished_jobs():
+    """Bound the job store: drop the oldest finished jobs beyond the cap.
+
+    dict preserves insertion order, so the earliest-submitted finished jobs
+    are evicted first. Running jobs are always retained.
+    """
+    finished = [jid for jid, job in _jobs.items() if job["status"] in ("complete", "failed")]
+    excess = len(finished) - _MAX_FINISHED_JOBS
+    for jid in finished[:excess]:
+        _jobs.pop(jid, None)
+
+
 def _run_job(job_id: str, request: JobRequest):
     """Blocking job runner — executes in thread pool."""
-    from diariser import run_diarisation
+    from diariser import DiarisationError, run_diarisation
 
     def _progress(pct: int):
         if job_id in _jobs:
@@ -124,10 +167,22 @@ def _run_job(job_id: str, request: JobRequest):
                 "segments": segments,
                 "coverage_ratio": coverage_ratio,
                 "error": None,
+                "message": None,
             }
         )
         logger.info("Job %s complete — %d segments", job_id, len(segments))
 
+    except DiarisationError as exc:
+        logger.exception("Job %s failed (%s): %s", job_id, exc.error_code, exc)
+        _jobs[job_id].update(
+            {
+                "status": "failed",
+                "segments": None,
+                "coverage_ratio": None,
+                "error": exc.error_code,
+                "message": str(exc),
+            }
+        )
     except Exception as exc:
         logger.exception("Job %s failed: %s", job_id, exc)
         _jobs[job_id].update(
@@ -136,8 +191,11 @@ def _run_job(job_id: str, request: JobRequest):
                 "segments": None,
                 "coverage_ratio": None,
                 "error": "diarisation_failed",
+                "message": str(exc),
             }
         )
+    finally:
+        _evict_finished_jobs()
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +205,12 @@ def _run_job(job_id: str, request: JobRequest):
 
 @app.get("/health")
 async def health():
+    if not _models_ready:
+        return _error_response(
+            "models_not_ready",
+            _startup_error or "Models are still loading.",
+            status_code=503,
+        )
     return {"status": "ok"}
 
 
@@ -161,10 +225,13 @@ async def submit_job(req: JobRequest):
         "segments": None,
         "coverage_ratio": None,
         "error": None,
+        "message": None,
     }
 
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(_executor, _run_job, job_id, req)
+    future = loop.run_in_executor(_executor, _run_job, job_id, req)
+    _tasks.add(future)
+    future.add_done_callback(_tasks.discard)
 
     return {"job_id": job_id}
 

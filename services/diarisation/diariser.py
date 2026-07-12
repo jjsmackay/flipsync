@@ -15,6 +15,24 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+class DiarisationError(Exception):
+    """Base for diarisation failures that carry a stable error code."""
+
+    error_code = "diarisation_failed"
+
+
+class HuggingFaceTokenMissing(DiarisationError):
+    """HF_TOKEN is not set, so pyannote models cannot be loaded."""
+
+    error_code = "huggingface_token_missing"
+
+
+class ModelDownloadFailed(DiarisationError):
+    """A pyannote model could not be downloaded or loaded from cache."""
+
+    error_code = "model_download_failed"
+
+
 def _get_hf_token() -> Optional[str]:
     token = os.environ.get("HF_TOKEN")
     if not token:
@@ -25,36 +43,65 @@ def _get_hf_token() -> Optional[str]:
     return token
 
 
+def _select_device():
+    """Return the CUDA device when available, otherwise CPU."""
+    import torch
+
+    if torch.cuda.is_available():
+        logger.info("CUDA is available; diarisation will run on GPU.")
+        return torch.device("cuda")
+    logger.warning(
+        "CUDA is not available; diarisation will run on CPU. "
+        "A full episode may take hours."
+    )
+    return torch.device("cpu")
+
+
 def load_pipeline():
-    """Load and return the pyannote speaker diarisation pipeline."""
+    """Load and return the pyannote speaker diarisation pipeline (on GPU if present)."""
     from pyannote.audio import Pipeline
 
     token = _get_hf_token()
     if not token:
-        raise RuntimeError(
+        raise HuggingFaceTokenMissing(
             "HF_TOKEN environment variable is required to load pyannote models."
         )
 
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=token,
-    )
+    try:
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            use_auth_token=token,
+        )
+    except Exception as exc:  # noqa: BLE001 — network/auth/licence all surface here
+        raise ModelDownloadFailed(
+            f"Failed to download or load the pyannote diarisation pipeline: {exc}"
+        ) from exc
+
+    # pyannote 3.x loads on CPU by default — move the pipeline to GPU explicitly.
+    pipeline.to(_select_device())
     return pipeline
 
 
 def load_embedding_model():
-    """Load and return the pyannote speaker embedding model."""
+    """Load and return the pyannote speaker embedding model (on GPU if present)."""
     from pyannote.audio import Model
     from pyannote.audio import Inference
 
     token = _get_hf_token()
     if not token:
-        raise RuntimeError(
+        raise HuggingFaceTokenMissing(
             "HF_TOKEN environment variable is required to load pyannote models."
         )
 
-    model = Model.from_pretrained("pyannote/embedding", use_auth_token=token)
-    inference = Inference(model, window="whole")
+    try:
+        model = Model.from_pretrained("pyannote/embedding", use_auth_token=token)
+    except Exception as exc:  # noqa: BLE001 — network/auth/licence all surface here
+        raise ModelDownloadFailed(
+            f"Failed to download or load the pyannote embedding model: {exc}"
+        ) from exc
+
+    # Inference defaults to CPU; pass device= so embedding extraction uses the GPU.
+    inference = Inference(model, window="whole", device=_select_device())
     return inference
 
 
@@ -101,6 +148,11 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
     distance = cosine_distance(a, b)
     return float(1.0 - distance)
+
+
+def clamp_confidence(value: float) -> float:
+    """Clamp a raw cosine similarity ([-1, 1]) to the spec's [0, 1] match range."""
+    return float(max(0.0, min(1.0, value)))
 
 
 def compute_coverage_ratio(segments: list[dict], top_speaker_label: str, total_duration: float) -> float:
@@ -203,9 +255,9 @@ def run_diarisation(
             logger.warning("No embeddings for speaker %s; assigning zero confidence", label)
             speaker_embeddings[label] = np.zeros_like(reference_embedding)
 
-    # Compute cosine similarity for each speaker
+    # Compute cosine similarity for each speaker, clamped to the spec's [0, 1] range.
     speaker_confidence: dict[str, float] = {
-        label: cosine_similarity(reference_embedding, emb)
+        label: clamp_confidence(cosine_similarity(reference_embedding, emb))
         for label, emb in speaker_embeddings.items()
     }
 
@@ -217,7 +269,9 @@ def run_diarisation(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     _progress(75)
 
-    # Load source audio once
+    # Load source audio once. NOTE: this reads the whole vocals file into RAM
+    # (~2.4 GB for a 2 h stereo file). Left whole-file for v1 simplicity; a future
+    # refinement could seek/read per-segment via sf.SoundFile to bound memory.
     audio_data, sample_rate = sf.read(input_path, dtype="float32", always_2d=False)
 
     segments = []

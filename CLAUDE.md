@@ -214,7 +214,7 @@ Frontend needs:
 - **Docker:** Available in rootless mode. `docker compose up --build` from repo root.
 - **Orchestrator tests:** `cd services/orchestrator && uv run --with fastapi --with uvicorn --with python-multipart --with aiofiles --with httpx --with pytest --with pytest-asyncio --with anyio python -m pytest tests/ -v`
 - **Vocal separation tests:** `cd services/vocal-separation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with anyio --with soundfile --with numpy python -m pytest tests/ -v`
-- **Diarisation tests:** `cd services/diarisation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with soundfile --with numpy python -m pytest tests/ -v`
+- **Diarisation tests:** `cd services/diarisation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with soundfile --with numpy --with scipy python -m pytest tests/ -v`
 - **Transcription tests:** `cd services/transcription && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio python -m pytest tests/ -v`
 - **Cleanup tests:** `cd services/cleanup && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with numpy --with soundfile python -m pytest tests/ -v`
 
