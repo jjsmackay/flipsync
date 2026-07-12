@@ -43,5 +43,8 @@ jobs:
           tags: |
             ghcr.io/jjsmackay/flipsync/${{ matrix.service }}:latest
             ghcr.io/jjsmackay/flipsync/${{ matrix.service }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          # transcription pulls a large CUDA base image; registry cache has no
+          # 10 GB/repo cap (unlike type=gha) and its layers dedupe on pull, so
+          # it caches better than GHA here. Other services stay on GHA cache.
+          cache-from: ${{ matrix.service == 'transcription' && format('type=registry,ref=ghcr.io/jjsmackay/flipsync/{0}:buildcache', matrix.service) || format('type=gha,scope={0}', matrix.service) }}
+          cache-to: ${{ matrix.service == 'transcription' && format('type=registry,ref=ghcr.io/jjsmackay/flipsync/{0}:buildcache,mode=max', matrix.service) || format('type=gha,mode=max,scope={0}', matrix.service) }}
