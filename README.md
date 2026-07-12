@@ -65,9 +65,25 @@ Ports and a few deployment options (custom hostnames behind a reverse proxy, mod
 
 ---
 
+## Using FlipSync
+
+Once it's running, everything happens in the browser — no command line:
+
+1. **Create a project** — one target speaker per project.
+2. **Upload source videos** — audio is extracted automatically as each file lands.
+3. **Upload a reference clip** — 5+ seconds of clean speech from the target speaker; this is what matching scores against.
+4. **Run the pipeline** — click *Start*. The four steps run in sequence, one job at a time.
+5. **Review segments** — keyboard-driven approve / maybe / reject in the review queue, with filters, a timeline, and bulk operations for the easy cases.
+6. **Export** — download the labelled WAVs and `manifest.json`.
+
+Full walkthrough — including the keyboard shortcuts, threshold tuning, and troubleshooting — in **[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)**.
+
+---
+
 ## Documentation
 
-Full specification in [`/spec`](spec/README.md). Start with [`spec/overview.md`](spec/overview.md).
+- **[User guide](docs/USER_GUIDE.md)** — how to operate FlipSync end to end.
+- **[Specification](spec/README.md)** — design documents (architecture, data models, API contracts, per-step pipeline detail). Start with [`spec/overview.md`](spec/overview.md).
 
 ---
 
