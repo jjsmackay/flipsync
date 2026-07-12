@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import main as app_module
 from main import app, _run_job
+from cleaner import BinaryNotFoundError
 
 client = TestClient(app)
 
@@ -126,6 +127,44 @@ def test_post_jobs_missing_segments():
     }
     response = client.post("/jobs", json=payload)
     assert response.status_code == 422
+
+
+def test_validation_error_uses_flat_format():
+    """C6: 422 validation errors use the standard flat error format."""
+    app_module._jobs.clear()
+
+    response = client.post("/jobs", json={"segments": []})  # missing job_id
+    assert response.status_code == 422
+    data = response.json()
+    assert data["error"] == "validation_error"
+    assert isinstance(data["message"], str)
+    assert isinstance(data["detail"], dict)
+    # Must NOT be FastAPI's default {"detail": [...]} shape.
+    assert not isinstance(data.get("detail"), list)
+
+
+def test_duplicate_job_id_returns_409(tmp_path):
+    """C5: submitting a second job with an existing job_id returns 409."""
+    app_module._jobs.clear()
+
+    payload = {
+        "job_id": "dup-job",
+        "segments": [
+            {
+                "id": "seg-001",
+                "input_path": str(tmp_path / "input.wav"),
+                "output_path": str(tmp_path / "output" / "seg-001.wav"),
+            }
+        ],
+    }
+    first = client.post("/jobs", json=payload)
+    assert first.status_code == 202
+
+    second = client.post("/jobs", json=payload)
+    assert second.status_code == 409
+    data = second.json()
+    assert data["error"] == "job_exists"
+    assert "detail" in data
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +304,49 @@ def test_job_continues_after_segment_failure(tmp_path):
     # Second segment: success, has output_path, no error
     assert res_by_id["seg-ok"]["output_path"] == seg2_output
     assert res_by_id["seg-ok"]["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# Test: C3 — missing binary fails the whole job (not N per-segment errors)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_binary_fails_job(tmp_path):
+    """C3: a missing ffmpeg binary must fail the entire job with a job-level
+    error, NOT complete with per-segment errors (which would make the
+    orchestrator auto-reject the user's whole approved set)."""
+    app_module._jobs.clear()
+
+    seg_input = str(tmp_path / "in.wav")
+    sf.write(seg_input, np.zeros(22050, dtype=np.float32), 22050)
+
+    job_id = "job-nobin"
+    app_module._jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "progress": 0,
+        "results": None,
+        "error": None,
+    }
+
+    from main import SegmentInputModel, CleanupParamsModel
+
+    segments = [
+        SegmentInputModel(id="seg-a", input_path=seg_input, output_path=str(tmp_path / "a.wav")),
+        SegmentInputModel(id="seg-b", input_path=seg_input, output_path=str(tmp_path / "b.wav")),
+    ]
+
+    def raise_binary_missing(segment, params):
+        raise BinaryNotFoundError("ffmpeg binary not found")
+
+    with patch("cleaner.process_segment", side_effect=raise_binary_missing):
+        asyncio.run(_run_job(job_id, segments, CleanupParamsModel()))
+
+    data = app_module._jobs[job_id]
+    assert data["status"] == "failed"
+    assert data["results"] is None
+    assert data["error"] is not None
+    assert "binary_not_found" in data["error"]
 
 
 # ---------------------------------------------------------------------------

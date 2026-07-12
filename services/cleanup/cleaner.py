@@ -22,6 +22,24 @@ import soundfile as sf
 logger = logging.getLogger(__name__)
 
 
+class BinaryNotFoundError(Exception):
+    """Raised when the ffmpeg/ffprobe binary is not installed.
+
+    This is a job-level failure, not a per-segment failure: if the binary is
+    missing for one segment it is missing for all of them. The caller must fail
+    the whole job rather than record N per-segment errors.
+    """
+
+
+class ProbeError(Exception):
+    """Raised when ffprobe runs but cannot determine a file's duration.
+
+    Distinct from genuine silence (a valid, near-zero-duration file): a probe
+    error means we could not measure the segment, so it becomes a per-segment
+    error rather than a false auto-reject.
+    """
+
+
 @dataclass
 class CleanupParams:
     target_lufs: float = -23.0
@@ -56,12 +74,15 @@ def run_ffmpeg(args: list[str]) -> tuple[int, str, str]:
     """Run an FFmpeg command. Returns (returncode, stdout, stderr)."""
     cmd = ["ffmpeg", "-y"] + args
     logger.debug("Running ffmpeg: %s", " ".join(cmd))
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise BinaryNotFoundError("ffmpeg binary not found") from e
     return result.returncode, result.stdout, result.stderr
 
 
@@ -82,26 +103,53 @@ def _extract_loudnorm_json(stderr: str) -> dict:
 
 
 def _get_audio_duration(path: str) -> float:
-    """Get the duration of an audio file in seconds using ffprobe."""
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "json",
-            path,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    """Get the duration of an audio file in seconds using ffprobe.
+
+    Raises:
+        BinaryNotFoundError: ffprobe is not installed (job-level failure).
+        ProbeError: ffprobe ran but could not determine the duration. This is
+            distinct from a genuine near-zero duration (silence), which returns
+            a small float rather than raising.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise BinaryNotFoundError("ffprobe binary not found") from e
+
     if result.returncode != 0:
-        return 0.0
+        raise ProbeError(f"ffprobe failed (exit {result.returncode}): {result.stderr.strip()[:300]}")
     try:
         data = json.loads(result.stdout)
         return float(data["format"]["duration"])
-    except (KeyError, ValueError, json.JSONDecodeError):
-        return 0.0
+    except (KeyError, ValueError, json.JSONDecodeError) as e:
+        raise ProbeError(f"could not parse ffprobe output: {e}")
+
+
+def _is_silent_measurement(measured_i) -> bool:
+    """Return True if a loudnorm pass-1 integrated loudness indicates silence.
+
+    Digital silence measures as ``-inf`` LUFS; near-silent content measures far
+    below any real speech (which sits around -30 to -16 LUFS). Feeding ``-inf``
+    into the pass-2 ``measured_I`` makes ffmpeg exit non-zero, which would
+    otherwise be misreported as an ffmpeg_error instead of an auto-reject.
+    """
+    try:
+        value = float(measured_i)
+    except (TypeError, ValueError):
+        # Non-numeric such as the literal string "-inf".
+        return str(measured_i).strip().lower().lstrip("+").startswith("-inf")
+    return value == float("-inf") or value < -99.0
 
 
 def detect_clipping(
@@ -166,7 +214,9 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
     2. Silence trimming + high-pass filter (combined)
     3. Clipping detection
 
-    Returns a SegmentResult. Never raises — errors are captured in result.error.
+    Returns a SegmentResult. Per-segment failures are captured in result.error.
+    Raises BinaryNotFoundError if ffmpeg/ffprobe is missing — that is a
+    job-level failure the caller must propagate, not a per-segment error.
     """
     segment_id = segment.id
     input_path = segment.input_path
@@ -225,6 +275,18 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         measured_thresh = loudnorm_data["input_thresh"]
         target_offset = loudnorm_data["target_offset"]
 
+        # If pass 1 measured (near-)silence, the segment has no usable audio.
+        # Auto-reject it now: feeding measured_I=-inf into pass 2 makes ffmpeg
+        # exit non-zero, which would be misreported as an ffmpeg_error.
+        if _is_silent_measurement(measured_i):
+            return SegmentResult(
+                id=segment_id,
+                output_path=None,
+                clipping_warning=False,
+                auto_rejected=True,
+                error=None,
+            )
+
         # -----------------------------------------------------------------------
         # Pass 2: Apply loudness normalisation + sample rate / channel conversion
         # -----------------------------------------------------------------------
@@ -252,17 +314,24 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
             )
 
         # -----------------------------------------------------------------------
-        # Silence trimming + high-pass filter (combined)
+        # Silence trimming (leading + trailing only) + high-pass filter
         # -----------------------------------------------------------------------
-        silence_filter = (
+        # Trim ONLY leading and trailing silence; mid-segment pauses (natural
+        # breaths, beats between phrases) must survive — they carry the pacing
+        # the voice-clone dataset depends on. `stop_periods=-1` would strip
+        # every internal pause, so instead: trim the head with one
+        # start-trigger pass, then reverse the stream, trim the (now-leading)
+        # tail with a second start-trigger pass, and reverse back.
+        trim_leading = (
             f"silenceremove=start_periods=1"
             f":start_duration={params.silence_min_duration_secs}"
             f":start_threshold={params.silence_threshold_db}dB"
-            f":stop_periods=-1"
-            f":stop_duration={params.silence_min_duration_secs}"
-            f":stop_threshold={params.silence_threshold_db}dB"
         )
-        combined_filter = f"{silence_filter},highpass=f={params.highpass_hz}"
+        combined_filter = (
+            f"{trim_leading},"
+            f"areverse,{trim_leading},areverse,"
+            f"highpass=f={params.highpass_hz}"
+        )
         trim_args = [
             "-i", intermediate,
             "-af", combined_filter,
@@ -282,7 +351,20 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         # -----------------------------------------------------------------------
         # Silent detection: check if output is < 0.05 seconds
         # -----------------------------------------------------------------------
-        duration = _get_audio_duration(trimmed)
+        # A ProbeError means we could not measure the file, NOT that it is
+        # silent — report it as a per-segment error rather than auto-rejecting
+        # a potentially healthy segment. (BinaryNotFoundError propagates: a
+        # missing ffprobe is a job-level failure.)
+        try:
+            duration = _get_audio_duration(trimmed)
+        except ProbeError as e:
+            return SegmentResult(
+                id=segment_id,
+                output_path=None,
+                clipping_warning=False,
+                auto_rejected=False,
+                error=f"ffmpeg_error: could not probe trimmed output: {e}",
+            )
         if duration < 0.05:
             return SegmentResult(
                 id=segment_id,
