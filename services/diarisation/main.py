@@ -12,10 +12,13 @@ blocking pyannote calls do not stall the event loop.
 import asyncio
 import contextlib
 import logging
+import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Optional
 
 import uvicorn
+
+import idle_unload
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -45,6 +48,65 @@ _startup_error: Optional[str] = None
 # Keep at most this many finished jobs in memory before evicting the oldest.
 _MAX_FINISHED_JOBS = 100
 
+# Idle VRAM unloader + its background watcher task. Enabled in the lifespan when
+# IDLE_UNLOAD_SECS > 0; the pyannote pipeline + embedding model are released
+# from VRAM after the configured idle period so they don't squat on GPU memory a
+# later pipeline stage (transcription, in another container) needs.
+_unloader: Optional[idle_unload.IdleUnloader] = None
+_idle_watch_task: Optional[asyncio.Task] = None
+
+
+def _is_loaded() -> bool:
+    """True while either pyannote model is resident (and thus holding VRAM)."""
+    return _pipeline is not None or _embedding_model is not None
+
+
+def _unload_models() -> None:
+    """Drop the pyannote pipeline + embedding model and return VRAM to the driver.
+
+    Readiness (`_models_ready`) is intentionally left untouched — it means "loaded
+    successfully at least once", so /health stays green and the orchestrator keeps
+    submitting; the next job just reloads via ``_load_models`` on demand. Torch may
+    be absent in unit tests, so the empty_cache is best-effort.
+    """
+    global _pipeline, _embedding_model
+    import gc
+
+    _pipeline = None
+    _embedding_model = None
+    gc.collect()
+    try:
+        import torch
+
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+async def _idle_watch(idle_secs: float) -> None:
+    """Poll the unloader and, when idle, run the free on the job executor.
+
+    Running perform_unload on ``_executor`` (single worker, shared with jobs)
+    guarantees the unload never overlaps a running diarisation. should_unload is
+    checked first on the event loop so the executor task is only ever queued when
+    the model is genuinely idle.
+    """
+    interval = max(1.0, min(15.0, idle_secs))
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if _unloader is not None and _unloader.should_unload():
+                did = await loop.run_in_executor(_executor, _unloader.perform_unload)
+                if did:
+                    logger.info(
+                        "Idle for %.0fs — released pyannote models from VRAM", idle_secs
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a watcher hiccup must not kill the loop
+            logger.exception("idle-unload watcher error")
+
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,7 +116,7 @@ async def lifespan(app: FastAPI):
     Loading here means a missing/invalid token or download failure is surfaced
     at startup (loudly logged) rather than mid-pipeline.
     """
-    global _models_ready, _startup_error
+    global _models_ready, _startup_error, _unloader, _idle_watch_task
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(_executor, _load_models)
@@ -63,7 +125,28 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 — log loudly, keep container up for diagnosis
         _startup_error = str(exc)
         logger.error("FATAL: model preload failed — service not ready: %s", exc, exc_info=True)
-    yield
+
+    _unloader = None
+    _idle_watch_task = None
+    idle_secs = idle_unload.parse_idle_secs(os.environ.get("IDLE_UNLOAD_SECS"))
+    if idle_secs > 0:
+        _unloader = idle_unload.IdleUnloader(
+            idle_secs=idle_secs, is_loaded=_is_loaded, unload=_unload_models
+        )
+        _idle_watch_task = asyncio.create_task(_idle_watch(idle_secs))
+        logger.info("Idle VRAM unload enabled (IDLE_UNLOAD_SECS=%.0f)", idle_secs)
+    else:
+        logger.info("Idle VRAM unload disabled (IDLE_UNLOAD_SECS<=0)")
+
+    try:
+        yield
+    finally:
+        if _idle_watch_task is not None:
+            _idle_watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _idle_watch_task
+        _unloader = None
+        _idle_watch_task = None
 
 
 app = FastAPI(title="FlipSync Diarisation Service", lifespan=lifespan)
@@ -237,6 +320,9 @@ def _run_job(job_id: str, request: JobRequest):
         )
     finally:
         _evict_finished_jobs()
+        # Restart the idle clock once the job is done, whatever the outcome.
+        if _unloader is not None:
+            _unloader.on_finish()
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +365,10 @@ async def submit_job(req: JobRequest):
         "error": None,
         "message": None,
     }
+
+    # Count from accept so a queued job blocks an idle unload before it starts.
+    if _unloader is not None:
+        _unloader.on_submit()
 
     loop = asyncio.get_running_loop()
     future = loop.run_in_executor(_executor, _run_job, job_id, req)

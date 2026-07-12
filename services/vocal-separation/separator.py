@@ -281,6 +281,31 @@ def stitch_chunks(chunks: list, overlap_samples: int):
     return result
 
 
+def is_model_loaded() -> bool:
+    """True while any Demucs model is resident in the cache (and thus VRAM)."""
+    return bool(_model_cache)
+
+
+def unload_models() -> None:
+    """Drop all cached Demucs models and return their VRAM to the driver.
+
+    Clearing the cache drops the Python refs; ``gc.collect()`` finalises any
+    lingering tensors and ``torch.cuda.empty_cache()`` releases Torch's reserved
+    blocks back to CUDA so another process/container can allocate them. Torch may
+    be absent (unit tests) — the cache clear still happens, the rest is a no-op.
+    """
+    import gc
+
+    _model_cache.clear()
+    gc.collect()
+    try:
+        import torch
+
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def preload_models(model_names: list[str]) -> None:
     """Preload models at startup to avoid first-job latency.
 

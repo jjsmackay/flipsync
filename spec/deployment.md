@@ -249,7 +249,17 @@ If a release includes breaking changes to the data directory layout, the release
 
 All three GPU services (vocal separation, diarisation, transcription) request the same GPU. Docker does not enforce exclusive GPU access — all three containers can hold the GPU simultaneously, and CUDA will context-switch between them.
 
-The orchestrator serialises GPU-bound jobs (vocal separation, diarisation, transcription) host-wide: at most one GPU job runs across all projects at any time, so the services never compete for VRAM under normal operation. CPU jobs (audio extraction, export) are not gated. See [Architecture](architecture.md) §Job queue.
+The orchestrator serialises GPU-bound jobs (vocal separation, diarisation, transcription) host-wide: at most one GPU job *runs* across all projects at any time. CPU jobs (audio extraction, export) are not gated. See [Architecture](architecture.md) §Job queue.
+
+That lock governs *execution*, not *residency*. Each service is a long-lived container that loads its model into VRAM on first use and keeps it there. So even though only one job computes at a time, an idle service still holds its model — Demucs, both pyannote models, and faster-whisper can all sit in VRAM at once. On a 6 GB card that combination alone can exhaust VRAM before the last stage (transcription) even allocates.
+
+### Idle VRAM unloading
+
+To stop idle upstream services squatting on GPU memory the current stage needs, **vocal separation** and **diarisation** release their models after a configurable idle period (`IDLE_UNLOAD_SECS`, default 60 s; set to 0 to disable and keep models warm). A watcher checks periodically and, when the service has been idle with no job in flight, frees the model and calls `torch.cuda.empty_cache()` so the VRAM returns to the driver for another container to use. The model reloads transparently on the next job — a few seconds for Demucs, ~5–15 s for pyannote. Back-to-back jobs within a stage keep the model warm; it only releases once the stage goes quiet.
+
+The unload runs on each service's single-worker job executor, so it can never overlap a running job, and a job arriving during the idle window cancels a pending unload rather than losing its model mid-run. `/health` stays green throughout — readiness means "loaded successfully at least once", not "resident right now" — so the orchestrator keeps submitting normally.
+
+Transcription is deliberately excluded: it's the last GPU stage, so nothing waits behind its model, and holding it avoids reload churn across a batch of segments.
 
 ---
 

@@ -27,3 +27,4 @@ You own the diarisation service (`services/diarisation/`). Do not modify any oth
 - **On completion**, return `segments` array (id, start_secs, end_secs, speaker_label, match_confidence, speaker_match_confidence, wav_path) and `coverage_ratio`.
 - **pyannote requires `HF_TOKEN`** env var. Models download on first run (~2 GB). Use generous startup timeout.
 - **Error responses** use: `{"error": "snake_case", "message": "Human-readable.", "detail": {}}`.
+- **Idle VRAM unloading.** After `IDLE_UNLOAD_SECS` (default 60; 0 disables) of no jobs, the pyannote pipeline + embedding model are released from VRAM (`main._unload_models`) and reload on the next job. The watcher runs `perform_unload` on the single-worker job executor so it can never overlap a job. Keep `_run_job` calling `_load_models()` at the top — that's what makes reload-on-demand work; and don't touch `_models_ready` on unload (health must stay green). See `idle_unload.py`.

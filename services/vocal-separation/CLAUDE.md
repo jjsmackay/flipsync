@@ -25,3 +25,4 @@ You own the vocal separation service (`services/vocal-separation/`). Do not modi
 - **OOM handling:** Attempt whole-file processing first. On CUDA OOM, return `{"status": "failed", "error": "cuda_oom", "retry_with_chunk_secs": 60}`. The orchestrator will resubmit with `chunk_secs` set.
 - **Chunked processing:** When `chunk_secs` is set, process audio in chunks with 1-second overlap, then stitch before writing output.
 - **Error responses** use: `{"error": "snake_case", "message": "Human-readable.", "detail": {}}`.
+- **Idle VRAM unloading.** After `IDLE_UNLOAD_SECS` (default 60; 0 disables) of no jobs, the Demucs model is released from VRAM (`separator.unload_models`) and reloads on the next job. The watcher runs `perform_unload` on the single-worker job executor so it can never overlap a job. Keep `separate()` calling `_load_model` at the top of every job — that's what makes reload-on-demand work. See `idle_unload.py`.

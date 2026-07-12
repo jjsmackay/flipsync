@@ -26,6 +26,10 @@ services:
     volumes:
       - ${DATA_ROOT:-data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
+    environment:
+      # Release the Demucs model from VRAM after this many idle seconds so it
+      # doesn't squat on GPU memory a later stage needs. 0 disables (stay warm).
+      - IDLE_UNLOAD_SECS=${IDLE_UNLOAD_SECS:-60}
     deploy:
       resources:
         reservations:
@@ -44,6 +48,9 @@ services:
       - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
+      # Release the pyannote models from VRAM after this many idle seconds so
+      # they don't squat on GPU memory a later stage needs. 0 disables.
+      - IDLE_UNLOAD_SECS=${IDLE_UNLOAD_SECS:-60}
     deploy:
       resources:
         reservations:

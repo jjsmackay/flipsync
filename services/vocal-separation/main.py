@@ -9,6 +9,7 @@ Exposes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+import idle_unload
 import separator as sep
 
 logging.basicConfig(
@@ -56,6 +58,38 @@ _executor = ThreadPoolExecutor(max_workers=1)
 # all fail anyway.
 _preload_error: Optional[str] = None
 
+# Idle VRAM unloader + its background watcher task. Populated in the lifespan
+# when IDLE_UNLOAD_SECS > 0; left None (disabled) otherwise. When enabled, the
+# Demucs model is released from VRAM after the configured idle period so it
+# doesn't squat on GPU memory a later pipeline stage needs.
+_unloader: Optional[idle_unload.IdleUnloader] = None
+_idle_watch_task: Optional[asyncio.Task] = None
+
+
+async def _idle_watch(idle_secs: float) -> None:
+    """Poll the unloader and, when idle, run the free on the job executor.
+
+    Running perform_unload on ``_executor`` (a single worker, shared with jobs)
+    guarantees the unload never overlaps a running separation. should_unload is
+    checked first on the event loop so we only ever queue the executor task when
+    the model is genuinely idle — never behind an in-flight job.
+    """
+    interval = max(1.0, min(15.0, idle_secs))
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if _unloader is not None and _unloader.should_unload():
+                did = await loop.run_in_executor(_executor, _unloader.perform_unload)
+                if did:
+                    logger.info(
+                        "Idle for %.0fs — released Demucs model from VRAM", idle_secs
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — a watcher hiccup must not kill the loop
+            logger.exception("idle-unload watcher error")
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -70,7 +104,7 @@ async def lifespan(app: FastAPI):
     swallowed — the previous behaviour let the service report healthy while
     every job failed.
     """
-    global _preload_error
+    global _preload_error, _unloader, _idle_watch_task
     preload = os.environ.get("PRELOAD_MODELS", "htdemucs").split(",")
     preload = [m.strip() for m in preload if m.strip()]
     if preload:
@@ -84,7 +118,30 @@ async def lifespan(app: FastAPI):
                 exc,
                 exc_info=True,
             )
-    yield
+
+    _unloader = None
+    _idle_watch_task = None
+    idle_secs = idle_unload.parse_idle_secs(os.environ.get("IDLE_UNLOAD_SECS"))
+    if idle_secs > 0:
+        _unloader = idle_unload.IdleUnloader(
+            idle_secs=idle_secs,
+            is_loaded=sep.is_model_loaded,
+            unload=sep.unload_models,
+        )
+        _idle_watch_task = asyncio.create_task(_idle_watch(idle_secs))
+        logger.info("Idle VRAM unload enabled (IDLE_UNLOAD_SECS=%.0f)", idle_secs)
+    else:
+        logger.info("Idle VRAM unload disabled (IDLE_UNLOAD_SECS<=0)")
+
+    try:
+        yield
+    finally:
+        if _idle_watch_task is not None:
+            _idle_watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _idle_watch_task
+        _unloader = None
+        _idle_watch_task = None
 
 
 app = FastAPI(title="FlipSync Vocal Separation Service", lifespan=lifespan)
@@ -272,7 +329,12 @@ def _run_separation(job: dict) -> None:
 async def _run_job_async(job: dict) -> None:
     """Kick off separation in the thread pool so the event loop stays free."""
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(_executor, _run_separation, job)
+    try:
+        await loop.run_in_executor(_executor, _run_separation, job)
+    finally:
+        # Restart the idle clock once the job is done, whatever the outcome.
+        if _unloader is not None:
+            _unloader.on_finish()
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +415,9 @@ async def submit_job(req: JobRequest):
     }
     _jobs[req.job_id] = job
     _evict_old_jobs()
+    # Count from accept so a queued job blocks an idle unload before it starts.
+    if _unloader is not None:
+        _unloader.on_submit()
     task = asyncio.create_task(_run_job_async(job))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
