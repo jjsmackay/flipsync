@@ -315,3 +315,16 @@ class TestValidation:
         resp = client.post("/jobs", json=body)
         assert resp.status_code == 422
         assert resp.json()["error"] == "validation_error"
+
+    def test_post_jobs_503_when_cpml_unset(self, monkeypatch, tmp_path):
+        import main as svc
+
+        monkeypatch.delenv("XTTS_ACCEPT_CPML", raising=False)
+        try:
+            with TestClient(svc.app) as c:  # re-runs lifespan with env unset
+                body = _synth_body(["/data/ref.wav"], str(tmp_path / "out.wav"))
+                resp = c.post("/jobs", json=body)
+                assert resp.status_code == 503
+                assert resp.json()["error"] == "cpml_not_accepted"
+        finally:
+            svc._startup_error = None

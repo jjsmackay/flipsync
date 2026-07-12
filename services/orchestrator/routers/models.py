@@ -3,6 +3,7 @@
 import json
 import shutil
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
@@ -18,7 +19,7 @@ REQUIRED_DATASET_SECS = 300.0
 
 
 class DatasetSpec(BaseModel):
-    mode: str = "approved"
+    mode: Literal["approved", "auto"] = "approved"
     min_confidence: float = 0.85
 
 

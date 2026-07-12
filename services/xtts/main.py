@@ -240,25 +240,28 @@ def _run_finetune(job: dict, req: FinetuneJob) -> None:
                     job_id,
                     req.params.batch_size,
                 )
+                # "status" is written LAST: the orchestrator acts the moment it
+                # polls a terminal status, so error/retry_with must already be
+                # in place when it does.
                 job.update(
                     {
-                        "status": "failed",
                         "error": "cuda_oom",
                         "retry_with": {
                             "batch_size": 1,
                             "grad_accum": req.params.batch_size * req.params.grad_accum,
                         },
+                        "status": "failed",
                     }
                 )
             else:
                 # Already at the minimum batch size — retrying is futile.
                 logger.error("Job %s: CUDA OOM at batch_size=1; terminal", job_id)
                 job.update(
-                    {"status": "failed", "error": "cuda_oom", "retry_with": None}
+                    {"error": "cuda_oom", "retry_with": None, "status": "failed"}
                 )
         else:
             logger.exception("Job %s: fine-tune failed", job_id)
-            job.update({"status": "failed", "error": str(exc)})
+            job.update({"error": str(exc), "status": "failed"})
 
 
 def _run_synthesise(job: dict, req: SynthesiseJob) -> None:
@@ -359,6 +362,15 @@ def _evict_old_jobs() -> None:
 
 @app.post("/jobs", status_code=202)
 async def submit_job(req: JobRequest):
+    if _startup_error is not None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "cpml_not_accepted",
+                "message": _startup_error,
+                "detail": {},
+            },
+        )
     if req.job_id in _jobs:
         return JSONResponse(
             status_code=409,

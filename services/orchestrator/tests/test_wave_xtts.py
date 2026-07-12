@@ -780,3 +780,43 @@ class TestPreviewsRouter:
         jobs_resp = client.get(f"/projects/{project}/jobs").json()
         job = [j for j in jobs_resp["jobs"] if j["id"] == jid][0]
         assert job["progress_detail"]["train_loss"] == 3.1
+
+
+# ========================================================================
+# Review fixes — mode validation + empty-manifest guard
+# ========================================================================
+
+
+class TestReviewFixes:
+    def test_invalid_dataset_mode_returns_422(self, client, project):
+        resp = client.post(
+            f"/projects/{project}/models", json={"dataset": {"mode": "bogus"}}
+        )
+        assert resp.status_code == 422
+
+    def test_dataset_build_all_missing_transcripts_fails_early(
+        self, client, project, isolated_data_dir
+    ):
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        # 31 cleaned 10 s segments (>300 s floor) but none has a transcript.
+        for i in range(31):
+            _insert_seg(conn, project, src, transcript=None,
+                        start=i * 20.0, end=i * 20.0 + 10.0,
+                        export_path=f"export/x{i}.wav")
+        model_id = _insert_model(conn, project)
+
+        with patch("service_client.submit_job", new=AsyncMock()) as mock_submit, \
+             patch("service_client.poll_until_complete", new=AsyncMock()):
+            job_id = _enqueue_and_run(project, "dataset_build",
+                                      params={"model_id": model_id, "mode": "approved",
+                                              "min_confidence": None})
+            mock_submit.assert_not_awaited()  # all cleaned — no cleanup call
+
+        job = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        assert "no usable segments" in job["error"]
+        m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "failed"
+        assert "no usable segments" in m["error"]

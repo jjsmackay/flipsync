@@ -1786,6 +1786,13 @@ async def _handle_dataset_build(
             "transcript_confidence": r["transcript_confidence"],
         })
 
+    if not manifest_segments:
+        msg = "no usable segments after cleanup (missing transcripts or cleaned audio)"
+        _fail_model(msg)
+        _fail_job(project_id, job_id, msg)
+        _recompute_project_status(project_id)
+        return
+
     manifest = {
         "version": "1",
         "project_id": project_id,
