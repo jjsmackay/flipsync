@@ -30,6 +30,19 @@ def sine_wav_path(tmp_path_factory):
     return p
 
 
+@pytest.fixture()
+def write_wav(tmp_path):
+    """Factory fixture: write a sine WAV into this test's tmp dir.
+
+    Used by re-segmentation tests that slice child WAVs next to the parent —
+    a per-test directory keeps assertions about created files clean.
+    """
+    def _write(name: str = "parent.wav", duration_secs: float = 5.0, sample_rate: int = 16000) -> str:
+        return _write_sine_wav(str(tmp_path / name), duration_secs, sample_rate)
+
+    return _write
+
+
 @pytest.fixture(scope="session")
 def short_wav_path(tmp_path_factory):
     """0.3-second WAV file (shorter than the 0.5s threshold)."""

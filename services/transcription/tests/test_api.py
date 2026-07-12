@@ -34,11 +34,14 @@ def _make_mock_model(words_per_segment=None):
         else:
             word = MagicMock()
             word.probability = 0.9
-            word.text = "hello"
+            word.word = " hello"
+            word.text = " hello"
+            word.start = 0.0
+            word.end = 0.5
             words = [word]
 
         seg = MagicMock()
-        seg.text = " ".join(w.text for w in words) if words else ""
+        seg.text = "".join(w.word for w in words) if words else ""
         seg.words = words
 
         info = MagicMock()
@@ -46,6 +49,27 @@ def _make_mock_model(words_per_segment=None):
 
     model.transcribe.side_effect = _transcribe
     return model
+
+
+def _make_timed_word(word: str, start: float, end: float, probability: float = 0.9):
+    w = MagicMock()
+    w.word = word
+    w.text = word
+    w.start = start
+    w.end = end
+    w.probability = probability
+    return w
+
+
+def _poll_until_done(client, job_id, timeout_secs=5.0):
+    import time
+
+    deadline = time.time() + timeout_secs
+    poll = client.get(f"/jobs/{job_id}").json()
+    while poll["status"] == "running" and time.time() < deadline:
+        time.sleep(0.1)
+        poll = client.get(f"/jobs/{job_id}").json()
+    return poll
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +318,205 @@ class TestCumulativeCompletedSegments:
             ids_in_r2 = {s["id"] for s in r2["completed_segments"]}
             assert seg1_id in ids_in_r2
             assert seg2_id in ids_in_r2
+
+
+class TestResegmentValidation:
+    def test_resegment_without_start_secs_returns_flat_422(self, client, sine_wav_path, job_id):
+        payload = {
+            "job_id": job_id,
+            "segments": [
+                {"id": str(uuid.uuid4()), "wav_path": sine_wav_path, "resegment": True},
+            ],
+            "model": "large-v2",
+        }
+        resp = client.post("/jobs", json=payload)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error"] == "validation_error"
+        assert "message" in body
+        assert "detail" in body
+
+    def test_resegment_with_start_secs_accepted(self, client, sine_wav_path, job_id):
+        payload = {
+            "job_id": job_id,
+            "segments": [
+                {
+                    "id": str(uuid.uuid4()),
+                    "wav_path": sine_wav_path,
+                    "start_secs": 12.5,
+                    "resegment": True,
+                },
+            ],
+            "model": "large-v2",
+        }
+        with patch("main.load_model", return_value=_make_mock_model()):
+            resp = client.post("/jobs", json=payload)
+        assert resp.status_code == 202
+
+    def test_start_secs_without_resegment_accepted(self, client, sine_wav_path, job_id):
+        payload = {
+            "job_id": job_id,
+            "segments": [
+                {"id": str(uuid.uuid4()), "wav_path": sine_wav_path, "start_secs": 3.0},
+            ],
+            "model": "large-v2",
+        }
+        with patch("main.load_model", return_value=_make_mock_model()):
+            resp = client.post("/jobs", json=payload)
+        assert resp.status_code == 202
+
+
+class TestResegmentChildren:
+    def test_split_segment_returns_children_entry(self, client, write_wav, job_id):
+        """A resegment-eligible segment with 2 sentences comes back as a
+        {id, children} entry with absolute timestamps and real child WAVs."""
+        import os
+
+        parent_wav = write_wav(duration_secs=5.0)
+        parent_id = str(uuid.uuid4())
+        words = [
+            _make_timed_word(" Hello", 0.1, 0.6, 0.8),
+            _make_timed_word(" there.", 0.7, 1.4, 0.9),
+            _make_timed_word(" Bye", 2.4, 3.0, 1.0),
+            _make_timed_word(" now", 3.1, 4.0, 0.6),
+        ]
+
+        with patch("main.load_model", return_value=_make_mock_model([words])):
+            payload = {
+                "job_id": job_id,
+                "segments": [
+                    {
+                        "id": parent_id,
+                        "wav_path": parent_wav,
+                        "start_secs": 100.0,
+                        "resegment": True,
+                    },
+                ],
+                "model": "large-v2",
+            }
+            assert client.post("/jobs", json=payload).status_code == 202
+            poll = _poll_until_done(client, job_id)
+
+        assert poll["status"] == "complete"
+        assert len(poll["completed_segments"]) == 1
+        entry = poll["completed_segments"][0]
+        assert entry["id"] == parent_id
+        assert "transcript" not in entry
+
+        children = entry["children"]
+        assert len(children) == 2
+        for child in children:
+            assert set(child) == {
+                "id",
+                "wav_path",
+                "start_secs",
+                "end_secs",
+                "transcript",
+                "transcript_confidence",
+            }
+            assert os.path.isfile(child["wav_path"])
+        assert children[0]["start_secs"] == pytest.approx(100.0)
+        assert children[0]["end_secs"] == pytest.approx(101.9)
+        assert children[1]["start_secs"] == pytest.approx(101.9)
+        assert children[1]["end_secs"] == pytest.approx(105.0)
+        assert children[0]["transcript"] == "Hello there."
+        assert children[1]["transcript"] == "Bye now"
+
+    def test_resegment_single_sentence_returns_unsplit(self, client, write_wav, job_id):
+        """resegment=true but only one utterance: unsplit shape, no children."""
+        parent_wav = write_wav(duration_secs=5.0)
+        parent_id = str(uuid.uuid4())
+        words = [
+            _make_timed_word(" just", 0.1, 0.5),
+            _make_timed_word(" talking", 0.6, 1.2),
+        ]
+
+        with patch("main.load_model", return_value=_make_mock_model([words])):
+            payload = {
+                "job_id": job_id,
+                "segments": [
+                    {
+                        "id": parent_id,
+                        "wav_path": parent_wav,
+                        "start_secs": 0.0,
+                        "resegment": True,
+                    },
+                ],
+                "model": "large-v2",
+            }
+            assert client.post("/jobs", json=payload).status_code == 202
+            poll = _poll_until_done(client, job_id)
+
+        assert poll["status"] == "complete"
+        entry = poll["completed_segments"][0]
+        assert entry["id"] == parent_id
+        assert "children" not in entry
+        assert entry["transcript"] == "just talking"
+
+    def test_cumulative_with_mixed_split_and_unsplit_entries(self, job_id):
+        """Cumulative polling preserves both entry shapes across polls."""
+        import main as svc
+        from main import app
+
+        parent_id = str(uuid.uuid4())
+        plain_id = str(uuid.uuid4())
+        child_a, child_b = str(uuid.uuid4()), str(uuid.uuid4())
+
+        svc._jobs[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "progress": 50,
+            "completed_segments": [
+                {"id": plain_id, "transcript": "Hello", "transcript_confidence": 0.9},
+            ],
+            "error": None,
+        }
+        svc._job_locks[job_id] = asyncio.Lock()
+
+        with TestClient(app) as client:
+            r1 = client.get(f"/jobs/{job_id}").json()
+            assert len(r1["completed_segments"]) == 1
+
+            # Simulate a later batch completing with a split entry.
+            svc._jobs[job_id]["completed_segments"].append(
+                {
+                    "id": parent_id,
+                    "children": [
+                        {
+                            "id": child_a,
+                            "wav_path": f"/data/segments/raw/{child_a}.wav",
+                            "start_secs": 201.40,
+                            "end_secs": 205.92,
+                            "transcript": "I told you not to come back here.",
+                            "transcript_confidence": 0.93,
+                        },
+                        {
+                            "id": child_b,
+                            "wav_path": f"/data/segments/raw/{child_b}.wav",
+                            "start_secs": 205.92,
+                            "end_secs": 209.31,
+                            "transcript": "And yet here you are.",
+                            "transcript_confidence": 0.91,
+                        },
+                    ],
+                }
+            )
+            svc._jobs[job_id]["status"] = "complete"
+            svc._jobs[job_id]["progress"] = 100
+
+            r2 = client.get(f"/jobs/{job_id}").json()
+            assert len(r2["completed_segments"]) == 2
+            by_id = {e["id"]: e for e in r2["completed_segments"]}
+            # Unsplit entry unchanged
+            assert by_id[plain_id]["transcript"] == "Hello"
+            # Split entry keyed by parent id, children intact
+            split_entry = by_id[parent_id]
+            assert "transcript" not in split_entry
+            assert [c["id"] for c in split_entry["children"]] == [child_a, child_b]
+
+            # Idempotent: a third poll returns the same cumulative list.
+            r3 = client.get(f"/jobs/{job_id}").json()
+            assert r3["completed_segments"] == r2["completed_segments"]
 
 
 class TestShortSegmentHandling:

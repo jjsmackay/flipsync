@@ -26,4 +26,5 @@ You own the transcription service (`services/transcription/`). Do not modify any
 - **Batch size:** Accept `batch_size` param (default 16). Number of segments to transcribe concurrently on GPU.
 - **No automatic OOM retry.** If the service OOMs, the job fails. The user re-triggers with a smaller batch_size.
 - **Per-segment output:** Return `id`, `transcript` (string), and `transcript_confidence` (mean word probability, 0.0–1.0).
+- **Sentence-aligned re-segmentation:** When a segment has `resegment: true` (with required `start_secs`), split the word sequence per `spec/pipeline.md` §Sentence-aligned re-segmentation and slice child WAVs from the parent (stdlib `wave`, same directory, full-UUID filenames). The completed entry becomes `{id, children: [{id, wav_path, start_secs, end_secs, transcript, transcript_confidence}]}` keyed by the parent id, with **absolute** child timestamps (`start_secs` + in-file offsets). Single utterance or no words → return the unsplit shape. `resegment` false/absent → exactly the old behaviour. Logic lives in `resegment.py`.
 - **Error responses** use: `{"error": "snake_case", "message": "Human-readable.", "detail": {}}`.
