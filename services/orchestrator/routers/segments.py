@@ -38,12 +38,15 @@ def _serialize_segment(row, project_id: str) -> dict:
 
 
 # Maps accepted `sort` values (spec + column aliases) to the actual column name.
+# `uncertainty` is not a column: it sorts by ABS(match_confidence - the
+# project's match_threshold), so borderline segments come first (default asc).
 SORT_FIELD_MAP = {
     "match_confidence": "match_confidence",
     "duration": "duration_secs",
     "duration_secs": "duration_secs",
     "start_secs": "start_secs",
     "transcript_confidence": "transcript_confidence",
+    "uncertainty": None,
 }
 VALID_ORDERS = {"asc", "desc"}
 
@@ -61,7 +64,7 @@ async def list_segments(
     min_duration: Optional[float] = None,
     max_duration: Optional[float] = None,
     sort: str = "match_confidence",
-    order: str = "desc",
+    order: Optional[str] = None,
     page: int = 1,
     per_page: int = 50,
     count_only: bool = False,
@@ -70,9 +73,21 @@ async def list_segments(
 
     if sort not in SORT_FIELD_MAP:
         raise AppError(422, "invalid_sort", f"sort must be one of {sorted(SORT_FIELD_MAP)}.")
+    if order is None:
+        # Spec default: desc, except uncertainty where the most borderline
+        # (smallest distance from the threshold) come first.
+        order = "asc" if sort == "uncertainty" else "desc"
     if order not in VALID_ORDERS:
         raise AppError(422, "invalid_order", "order must be 'asc' or 'desc'.")
-    sort_col = SORT_FIELD_MAP[sort]
+    if sort == "uncertainty":
+        match_threshold = conn.execute(
+            "SELECT match_threshold FROM projects WHERE id=?", (project_id,)
+        ).fetchone()["match_threshold"]
+        order_expr = "ABS(seg.match_confidence - ?)"
+        order_params: list = [match_threshold]
+    else:
+        order_expr = f"seg.{SORT_FIELD_MAP[sort]}"
+        order_params = []
     per_page = min(per_page, 200)
     page = max(page, 1)
 
@@ -126,10 +141,10 @@ async def list_segments(
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
         WHERE {where}
-        ORDER BY seg.{sort_col} {order.upper()}
+        ORDER BY {order_expr} {order.upper()}
         LIMIT ? OFFSET ?
         """,
-        [*params, per_page, offset],
+        [*params, *order_params, per_page, offset],
     ).fetchall()
 
     segments_out = [_serialize_segment(r, project_id) for r in rows]
@@ -184,6 +199,14 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
     updates: dict = {}
 
     if body.status is not None:
+        # auto_approved is system-assigned only — reject regardless of the
+        # current status (spec/api-contracts.md PATCH /segments).
+        if body.status == "auto_approved":
+            raise AppError(
+                409, "invalid_transition",
+                "auto_approved is assigned by the system and cannot be set directly.",
+                {"from": seg["status"], "to": body.status},
+            )
         if not validate_segment_transition(seg["status"], body.status):
             raise AppError(
                 409, "invalid_transition",

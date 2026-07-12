@@ -252,7 +252,7 @@ async def trigger_export(project_id: str):
     conn = require_project(project_id)
 
     approved_count = conn.execute(
-        "SELECT COUNT(*) FROM segments WHERE project_id=? AND status='approved'",
+        "SELECT COUNT(*) FROM segments WHERE project_id=? AND status IN ('approved','auto_approved')",
         (project_id,),
     ).fetchone()[0]
 

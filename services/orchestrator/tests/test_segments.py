@@ -271,3 +271,132 @@ class TestBulkAction:
     def test_bulk_nonexistent_project_returns_404(self, client):
         resp = client.post("/projects/bad-id/segments/bulk", json={"action": "approve"})
         assert resp.status_code == 404
+
+
+class TestAutoApprovedStatus:
+    def test_patch_to_auto_approved_returns_409(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        for status in ("pending", "maybe", "approved", "auto_approved"):
+            seg = _insert_segment(conn, project, source_id, status=status)
+            resp = client.patch(f"/projects/{project}/segments/{seg}",
+                                json={"status": "auto_approved"})
+            assert resp.status_code == 409, f"from {status}"
+            assert resp.json()["error"] == "invalid_transition"
+
+    @pytest.mark.parametrize("target", ["approved", "rejected", "maybe", "pending"])
+    def test_user_can_leave_auto_approved(self, client, project, target):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg = _insert_segment(conn, project, source_id, status="auto_approved")
+
+        resp = client.patch(f"/projects/{project}/segments/{seg}", json={"status": target})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == target
+
+    def test_status_filter_accepts_auto_approved(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg = _insert_segment(conn, project, source_id, status="auto_approved")
+        _insert_segment(conn, project, source_id, status="pending")
+
+        resp = client.get(f"/projects/{project}/segments", params={"status": "auto_approved"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [s["id"] for s in body["segments"]] == [seg]
+
+
+class TestUncertaintySort:
+    def test_uncertainty_sort_defaults_to_most_borderline_first(self, client, project):
+        """Default order for uncertainty is asc: smallest |confidence - threshold| first."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        # Project match_threshold defaults to 0.75
+        seg_far = _insert_segment(conn, project, source_id, confidence=0.99)      # |0.24|
+        seg_close = _insert_segment(conn, project, source_id, confidence=0.76)    # |0.01|
+        seg_mid = _insert_segment(conn, project, source_id, confidence=0.85)      # |0.10|
+
+        resp = client.get(f"/projects/{project}/segments", params={"sort": "uncertainty"})
+        assert resp.status_code == 200
+        ids = [s["id"] for s in resp.json()["segments"]]
+        assert ids == [seg_close, seg_mid, seg_far]
+
+    def test_uncertainty_sort_desc(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg_far = _insert_segment(conn, project, source_id, confidence=0.99)
+        seg_close = _insert_segment(conn, project, source_id, confidence=0.76)
+
+        resp = client.get(f"/projects/{project}/segments",
+                          params={"sort": "uncertainty", "order": "desc"})
+        ids = [s["id"] for s in resp.json()["segments"]]
+        assert ids == [seg_far, seg_close]
+
+    def test_uncertainty_uses_project_threshold(self, client, project):
+        """Raising the threshold changes which segment is most borderline."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg_a = _insert_segment(conn, project, source_id, confidence=0.76)
+        seg_b = _insert_segment(conn, project, source_id, confidence=0.94)
+
+        client.patch(f"/projects/{project}", json={"match_threshold": 0.93})
+        resp = client.get(f"/projects/{project}/segments", params={"sort": "uncertainty"})
+        ids = [s["id"] for s in resp.json()["segments"]]
+        # seg_a fell to below_threshold (excluded by default filter); seg_b first anyway
+        assert ids[0] == seg_b
+
+    def test_other_sorts_still_default_desc(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg_low = _insert_segment(conn, project, source_id, confidence=0.80)
+        seg_high = _insert_segment(conn, project, source_id, confidence=0.95)
+
+        resp = client.get(f"/projects/{project}/segments")
+        ids = [s["id"] for s in resp.json()["segments"]]
+        assert ids == [seg_high, seg_low]
+
+
+class TestBulkAutoApproved:
+    def test_bulk_approve_confirms_auto_approved(self, client, project):
+        """Bulk approve with status filter auto_approved is 'confirm all auto-approved'."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg = _insert_segment(conn, project, source_id, status="auto_approved")
+
+        resp = client.post(f"/projects/{project}/segments/bulk",
+                           json={"action": "approve", "filter": {"status": "auto_approved"}})
+        assert resp.status_code == 200
+        assert resp.json()["affected_count"] == 1
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "approved"
+
+    def test_bulk_pending_resets_auto_approved(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg = _insert_segment(conn, project, source_id, status="auto_approved")
+
+        resp = client.post(f"/projects/{project}/segments/bulk",
+                           json={"action": "pending", "filter": {"status": "auto_approved,maybe"}})
+        assert resp.json()["affected_count"] == 1
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg,)).fetchone()["status"] == "pending"
+
+    def test_default_bulk_filter_does_not_touch_auto_approved(self, client, project):
+        """A filterless bulk reject only hits the default pending+maybe set."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg_auto = _insert_segment(conn, project, source_id, status="auto_approved")
+        seg_pending = _insert_segment(conn, project, source_id, status="pending")
+
+        resp = client.post(f"/projects/{project}/segments/bulk", json={"action": "reject"})
+        assert resp.json()["affected_count"] == 1
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg_auto,)).fetchone()["status"] == "auto_approved"
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (seg_pending,)).fetchone()["status"] == "rejected"

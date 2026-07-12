@@ -205,3 +205,75 @@ class TestDeleteProject:
         resp = client.request("DELETE", f"/projects/{project}", json={"confirm": True})
         assert resp.status_code == 409
         assert resp.json()["error"] == "jobs_active"
+
+
+class TestAutoApproveConfig:
+    def test_defaults_on_create(self, client):
+        resp = client.post("/projects", json={"name": "Defaults"})
+        pid = resp.json()["id"]
+        cfg = client.get(f"/projects/{pid}").json()["config"]
+        assert cfg["auto_approve_enabled"] is True
+        assert cfg["auto_approve_match_threshold"] == 0.85
+        assert cfg["auto_approve_transcript_threshold"] == 0.90
+
+    def test_create_with_auto_approve_fields(self, client):
+        resp = client.post("/projects", json={
+            "name": "Custom",
+            "auto_approve_enabled": False,
+            "auto_approve_match_threshold": 0.7,
+            "auto_approve_transcript_threshold": 0.8,
+        })
+        assert resp.status_code == 201
+        cfg = client.get(f"/projects/{resp.json()['id']}").json()["config"]
+        assert cfg["auto_approve_enabled"] is False
+        assert cfg["auto_approve_match_threshold"] == 0.7
+        assert cfg["auto_approve_transcript_threshold"] == 0.8
+
+    def test_patch_auto_approve_fields(self, client, project):
+        resp = client.patch(f"/projects/{project}", json={
+            "auto_approve_enabled": False,
+            "auto_approve_match_threshold": 0.9,
+            "auto_approve_transcript_threshold": 0.95,
+        })
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        assert cfg["auto_approve_enabled"] is False
+        assert cfg["auto_approve_match_threshold"] == 0.9
+        assert cfg["auto_approve_transcript_threshold"] == 0.95
+
+    def test_invalid_auto_approve_threshold_returns_422(self, client, project):
+        resp = client.patch(f"/projects/{project}", json={"auto_approve_match_threshold": 1.5})
+        assert resp.status_code == 422
+
+    def test_stats_include_auto_approved_count_and_duration(self, client, project):
+        import uuid as _uuid
+        from datetime import datetime, timezone
+        import db
+        conn = db.get_conn(project)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        src = str(_uuid.uuid4())
+        conn.execute(
+            "INSERT INTO sources (id, project_id, filename, file_path, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            (src, project, "ep.wav", "source/ep.wav", "complete", now, now),
+        )
+        for status, dur in (("approved", 4.0), ("auto_approved", 6.0), ("pending", 3.0)):
+            sid = str(_uuid.uuid4())
+            conn.execute(
+                """INSERT INTO segments (id, project_id, source_id, raw_path, start_secs, end_secs,
+                   speaker_label, match_confidence, status, created_at, updated_at)
+                   VALUES (?,?,?,?,0,?,'S0',0.9,?,?,?)""",
+                (sid, project, src, f"segments/raw/{sid}.wav", dur, status, now, now),
+            )
+        conn.commit()
+
+        stats = client.get(f"/projects/{project}").json()["stats"]
+        assert stats["approved_count"] == 1
+        assert stats["auto_approved_count"] == 1
+        # approved_duration_secs covers approved + auto_approved (export contents)
+        assert stats["approved_duration_secs"] == 10.0
+
+        # List view mirrors the same fields
+        listed = client.get("/projects").json()["projects"]
+        entry = next(p for p in listed if p["id"] == project)
+        assert entry["stats"]["auto_approved_count"] == 1
+        assert entry["stats"]["approved_duration_secs"] == 10.0

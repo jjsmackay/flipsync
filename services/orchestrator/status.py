@@ -1,7 +1,89 @@
-"""Project status recomputation — shared by jobs and routers."""
+"""Project status recomputation and auto-approve re-evaluation — shared by
+jobs and routers."""
+
+import sqlite3
 
 from db import get_conn, project_dir, utc_now
 from state_machines import compute_project_status
+
+# Auto-approve eligibility (spec/pipeline.md §Auto-approval), minus the two
+# project-level conditions (auto_approve_enabled, status='pending') which the
+# callers below apply. Parameters, in order:
+#   1. max(match_threshold, auto_approve_match_threshold)
+#   2. auto_approve_transcript_threshold
+# The IS NOT NULL guards keep three-valued logic honest so that NOT(<this>)
+# in the demotion query is TRUE (not NULL) for rows with missing confidences.
+_AUTO_APPROVE_CONDITIONS = """(
+    COALESCE(transcript_edited, transcript) IS NOT NULL
+    AND COALESCE(transcript_edited, transcript) != ''
+    AND match_confidence >= ?
+    AND transcript_confidence IS NOT NULL
+    AND transcript_confidence >= ?
+    AND (flags IS NULL OR flags='' OR flags='[]')
+    AND clipping_warning = 0
+)"""
+
+
+def _auto_approve_config(conn: sqlite3.Connection, project_id: str):
+    return conn.execute(
+        """SELECT auto_approve_enabled, auto_approve_match_threshold,
+                  auto_approve_transcript_threshold, match_threshold
+           FROM projects WHERE id=?""",
+        (project_id,),
+    ).fetchone()
+
+
+def auto_approve_promote(
+    conn: sqlite3.Connection,
+    project_id: str,
+    now: str,
+    segment_ids: list[str] | None = None,
+) -> int:
+    """Move eligible `pending` segments to `auto_approved`.
+
+    Optionally restricted to segment_ids (used when transcription results
+    land). Does NOT commit — the caller owns the transaction. Returns the
+    number of rows changed.
+    """
+    cfg = _auto_approve_config(conn, project_id)
+    if cfg is None or not cfg["auto_approve_enabled"]:
+        return 0
+    min_match = max(cfg["match_threshold"], cfg["auto_approve_match_threshold"])
+    sql = f"""
+        UPDATE segments SET status='auto_approved', updated_at=?
+        WHERE project_id=? AND status='pending' AND {_AUTO_APPROVE_CONDITIONS}
+    """
+    params: list = [now, project_id, min_match, cfg["auto_approve_transcript_threshold"]]
+    if segment_ids is not None:
+        if not segment_ids:
+            return 0
+        sql += f" AND id IN ({','.join('?' * len(segment_ids))})"
+        params.extend(segment_ids)
+    return conn.execute(sql, params).rowcount
+
+
+def auto_approve_demote(conn: sqlite3.Connection, project_id: str, now: str) -> int:
+    """Move `auto_approved` segments that no longer meet the eligibility rule
+    back to `pending`. Disabling auto-approve demotes all of them.
+
+    Does NOT commit — the caller owns the transaction. Returns rows changed.
+    """
+    cfg = _auto_approve_config(conn, project_id)
+    if cfg is None:
+        return 0
+    if not cfg["auto_approve_enabled"]:
+        return conn.execute(
+            "UPDATE segments SET status='pending', updated_at=? WHERE project_id=? AND status='auto_approved'",
+            (now, project_id),
+        ).rowcount
+    min_match = max(cfg["match_threshold"], cfg["auto_approve_match_threshold"])
+    return conn.execute(
+        f"""
+        UPDATE segments SET status='pending', updated_at=?
+        WHERE project_id=? AND status='auto_approved' AND NOT {_AUTO_APPROVE_CONDITIONS}
+        """,
+        (now, project_id, min_match, cfg["auto_approve_transcript_threshold"]),
+    ).rowcount
 
 
 def recompute_project_status(project_id: str) -> None:
