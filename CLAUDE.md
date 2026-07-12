@@ -237,7 +237,7 @@ Processing services should return the same flat format directly.
 ## Docker notes
 
 - All services share the `./data:/data` bind mount. That's how files flow between them.
-- Model caches are named Docker volumes (`demucs-models`, `pyannote-models`, `whisper-models`). They survive `docker compose down`.
+- Model caches are bind mounts under `/mnt/models/flipsync/` (`demucs`, `pyannote`, `whisper`) — the dedicated model-storage disk used by other GPU stacks on the deploy host, not named Docker volumes. They survive `docker compose down`.
 - Only the orchestrator (8000) and frontend (3000) expose ports to the host.
 - The cleanup service has no GPU reservation. FFmpeg runs on CPU.
 - `HF_TOKEN` env var is required for pyannote model download on first run. After that, cached.
