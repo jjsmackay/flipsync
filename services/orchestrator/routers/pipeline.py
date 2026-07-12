@@ -9,6 +9,7 @@ from db import project_dir, require_project, utc_now
 from errors import AppError
 from jobs import enqueue
 from state_machines import validate_source_transition
+from status import invalidate_export
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["pipeline"])
 
@@ -31,6 +32,15 @@ async def start_pipeline(project_id: str):
         raise AppError(
             409, "no_pending_sources",
             "No sources in step1_pending status. Upload sources or check source status.",
+        )
+
+    # Step 2 (diarisation) needs a reference clip. Fail fast at start rather
+    # than leaving sources stranded in step2_pending after step 1 succeeds.
+    project = conn.execute("SELECT reference_path FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not project["reference_path"]:
+        raise AppError(
+            409, "no_reference_clip",
+            "Upload a reference clip before starting the pipeline; diarisation needs it to match the target speaker.",
         )
 
     enqueued = []
@@ -75,15 +85,22 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
             "steps must be ['step1'], ['step2'], or ['step1', 'step2'].",
         )
 
-    # Check for approved segments that would be invalidated
+    # Check for approved segments that would be invalidated. Re-running either
+    # step deletes and recreates this source's segments, so both discard
+    # approvals; the message names the steps actually requested.
     approved_count = conn.execute(
         "SELECT COUNT(*) FROM segments WHERE source_id=? AND status='approved'",
         (source_id,),
     ).fetchone()[0]
     if approved_count > 0 and not body.confirm:
+        step_label = {
+            ("step1",): "step 1",
+            ("step2",): "step 2",
+            ("step1", "step2"): "steps 1 and 2",
+        }[tuple(body.steps)]
         raise AppError(
             409, "would_invalidate_approvals",
-            f"Re-running step 2 will discard {approved_count} approved segments from this source.",
+            f"Re-running {step_label} will discard {approved_count} approved segments from this source.",
             {"approved_count": approved_count},
         )
 
@@ -98,8 +115,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
                 f"Cannot reprocess step 1 from source status '{current_status}'.",
                 {"from": current_status, "to": "step1_pending"},
             )
-        # Delete existing segments for this source
-        conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
+        _delete_source_segments(conn, project_id, source_id)
         conn.execute(
             "UPDATE sources SET status='step1_pending', vocals_path=NULL, step1_error=NULL, step2_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
@@ -118,7 +134,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
                 f"Cannot reprocess step 2 from source status '{current_status}'.",
                 {"from": current_status, "to": "step2_pending"},
             )
-        conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
+        _delete_source_segments(conn, project_id, source_id)
         conn.execute(
             "UPDATE sources SET status='step2_pending', step2_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
@@ -127,14 +143,30 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         job_id = enqueue(project_id, "diarisation", source_id=source_id)
         enqueued.append({"id": job_id, "type": "diarisation", "source_id": source_id})
 
-    # Update project status to processing
+    # Update project status to processing and mark any prior export stale.
     conn.execute(
         "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
         (now, project_id),
     )
     conn.commit()
+    invalidate_export(project_id)
 
     return {"enqueued_jobs": enqueued}
+
+
+def _delete_source_segments(conn, project_id: str, source_id: str) -> None:
+    """Delete a source's segment rows and their on-disk WAVs (raw + export)."""
+    pdir = project_dir(project_id)
+    rows = conn.execute(
+        "SELECT raw_path, export_path FROM segments WHERE source_id=?", (source_id,)
+    ).fetchall()
+    for row in rows:
+        for rel in (row["raw_path"], row["export_path"]):
+            if rel:
+                f = pdir / rel
+                if f.exists():
+                    f.unlink()
+    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +260,27 @@ async def trigger_export(project_id: str):
         raise AppError(
             409, "no_approved_segments",
             "There are no approved segments to export.",
+        )
+
+    # Guard against a concurrent second export.
+    active_export = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND type='export' AND status IN ('queued','running')",
+        (project_id,),
+    ).fetchone()[0]
+    if active_export > 0:
+        raise AppError(
+            409, "export_in_progress",
+            "An export is already running for this project.",
+        )
+
+    # Export is only valid from review or exported (re-export). Any other state
+    # means the pipeline hasn't finished or a job is running.
+    status = conn.execute("SELECT status FROM projects WHERE id=?", (project_id,)).fetchone()["status"]
+    if status not in ("review", "exported"):
+        raise AppError(
+            409, "invalid_project_state",
+            f"Cannot export a project in status '{status}'. Finish processing and review first.",
+            {"status": status},
         )
 
     job_id = enqueue(project_id, "export", params={"segment_count": approved_count})

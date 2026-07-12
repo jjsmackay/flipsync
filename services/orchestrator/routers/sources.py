@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from db import project_dir, require_project, utc_now
 from errors import AppError
 from jobs import enqueue
-from status import recompute_project_status
+from status import invalidate_export
 
 router = APIRouter(prefix="/projects/{project_id}/sources", tags=["sources"])
 
@@ -54,6 +54,9 @@ async def upload_source(project_id: str, file: UploadFile = File(...)):
 
     # Enqueue extraction immediately
     enqueue(project_id, "extract_audio", source_id=source_id)
+
+    # A new source makes any prior export stale (the dataset has changed).
+    invalidate_export(project_id)
 
     return {"id": source_id, "filename": filename, "status": "extracting"}
 
@@ -110,6 +113,7 @@ async def delete_source(project_id: str, source_id: str, body: SourceDelete):
     conn.execute("DELETE FROM sources WHERE id=?", (source_id,))
     conn.commit()
 
-    recompute_project_status(project_id)
+    # Removing a source changes the dataset — any prior export is now stale.
+    invalidate_export(project_id)
 
     return {"deleted_segment_count": deleted_count, "deleted_approved_count": approved_count}

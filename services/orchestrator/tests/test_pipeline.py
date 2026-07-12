@@ -43,12 +43,23 @@ class TestPipelineStart:
         conn = db.get_conn(project)
         _insert_source(conn, project, "step1_pending")
         _insert_source(conn, project, "step1_pending")
+        conn.execute("UPDATE projects SET reference_path='reference.wav' WHERE id=?", (project,))
+        conn.commit()
 
         resp = client.post(f"/projects/{project}/pipeline/start")
         assert resp.status_code == 202
         jobs = resp.json()["enqueued_jobs"]
         assert len(jobs) == 2
         assert all(j["type"] == "vocal_separation" for j in jobs)
+
+    def test_start_without_reference_returns_409(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        _insert_source(conn, project, "step1_pending")
+
+        resp = client.post(f"/projects/{project}/pipeline/start")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "no_reference_clip"
 
     def test_start_nonexistent_project_returns_404(self, client):
         resp = client.post("/projects/bad-id/pipeline/start")
@@ -230,15 +241,29 @@ class TestExport:
 
     def test_export_enqueues_export_job(self, client, project):
         import db
+        from status import recompute_project_status
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "complete")
         _insert_segment(conn, project, source_id, status="approved")
+        recompute_project_status(project)  # complete source → 'review'
 
         resp = client.post(f"/projects/{project}/export")
         assert resp.status_code == 202
         body = resp.json()["enqueued_job"]
         assert body["type"] == "export"
         assert body["segment_count"] == 1
+
+    def test_export_invalid_project_state_returns_409(self, client, project):
+        """Exporting a project that hasn't reached review/exported is rejected."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "step1_running")
+        _insert_segment(conn, project, source_id, status="approved")
+        # Project left in 'new'/processing-ish state (never recomputed to review).
+
+        resp = client.post(f"/projects/{project}/export")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "invalid_project_state"
 
     def test_download_before_export_returns_404(self, client, project):
         resp = client.get(f"/projects/{project}/export/download")

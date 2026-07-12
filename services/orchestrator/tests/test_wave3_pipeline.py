@@ -684,12 +684,31 @@ class TestProjectStatusRecomputation:
         _insert_source(conn, project, "complete")
 
         (pdir / "export.tar.gz").write_bytes(b"\x00" * 100)
+        # A recorded exported_at (set on export completion) is required — a bare
+        # archive on disk no longer forces 'exported'.
+        conn.execute("UPDATE projects SET exported_at=? WHERE id=?", (_now(), project))
+        conn.commit()
 
         from status import recompute_project_status
         recompute_project_status(project)
 
         p = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()
         assert p["status"] == "exported"
+
+    def test_archive_without_exported_at_is_not_exported(self, client, project, isolated_data_dir):
+        """A leftover archive with no exported_at does not re-derive 'exported'."""
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        _insert_source(conn, project, "complete")
+
+        (pdir / "export.tar.gz").write_bytes(b"\x00" * 100)
+
+        from status import recompute_project_status
+        recompute_project_status(project)
+
+        p = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()
+        assert p["status"] == "review"
 
     def test_exported_project_goes_to_processing_on_reprocess(self, client, project, isolated_data_dir):
         """An exported project should transition to processing when a job is active."""

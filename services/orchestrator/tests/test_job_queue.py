@@ -216,13 +216,18 @@ class TestJobLifecycle:
         assert row["started_at"] is not None
         assert row["completed_at"] is not None
 
-    def test_service_job_fails_on_connection_error(self, isolated_data_dir):
-        """Real handlers fail gracefully when the external service is unreachable."""
+    def test_service_job_fails_on_connection_error(self, isolated_data_dir, monkeypatch):
+        """An unreachable service is retried with bounded backoff, then the job
+        fails gracefully once the retry budget is exhausted (O8)."""
         project_id = _make_project(isolated_data_dir)
         import jobs, db
         jobs._queues.clear()
         jobs._runners.clear()
         jobs._project_locks.clear()
+        # Shrink the retry budget so the test doesn't wait the full 5 minutes.
+        monkeypatch.setattr(jobs, "_SUBMIT_RETRY_BASE_SECS", 0.01)
+        monkeypatch.setattr(jobs, "_SUBMIT_RETRY_MAX_SECS", 0.02)
+        monkeypatch.setattr(jobs, "_SUBMIT_RETRY_TIMEOUT_SECS", 0.1)
 
         conn = db.get_conn(project_id)
         source_id = str(uuid.uuid4())

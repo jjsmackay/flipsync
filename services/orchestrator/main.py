@@ -2,10 +2,14 @@
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from errors import AppError, app_error_handler
 from jobs import recover_jobs
@@ -14,15 +18,29 @@ from service_client import SERVICE_URLS, check_health, close_client
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+
+
+def cors_origins() -> list[str]:
+    """Allowed CORS origins from CORS_ORIGINS (comma-separated), defaulting to
+    the localhost/127.0.0.1 frontend dev servers (SC8)."""
+    raw = os.environ.get("CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Recover jobs that were in-flight before a restart
     await recover_jobs()
 
-    # Start health polling for each processing service (non-blocking)
+    # Start health polling for each processing service (non-blocking). Keep a
+    # reference to each task so it is not garbage-collected mid-flight.
+    tasks: set[asyncio.Task] = set()
     for name in SERVICE_URLS:
-        asyncio.create_task(check_health(name))
+        task = asyncio.create_task(check_health(name))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+    app.state.background_tasks = tasks
 
     yield
 
@@ -33,10 +51,39 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="FlipSync Orchestrator", version="0.1.0", lifespan=lifespan)
 app.add_exception_handler(AppError, app_error_handler)
 
-# CORS — allow the frontend dev server
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return request-validation failures in the flat spec error format."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "validation_error",
+            "message": "Request validation failed.",
+            "detail": {"errors": jsonable_encoder(exc.errors())},
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """Return unexpected errors in the flat spec error format instead of the
+    default HTML/plain 500 body."""
+    logger.exception("Unhandled error: %s", exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "internal_error",
+            "message": "An unexpected error occurred.",
+            "detail": {},
+        },
+    )
+
+
+# CORS — configurable via CORS_ORIGINS env, defaults to the frontend dev servers
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
