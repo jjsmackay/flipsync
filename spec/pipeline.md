@@ -1,7 +1,7 @@
 # Pipeline
 
 **Status:** DRAFT  
-**Last updated:** 2026-04-03
+**Last updated:** 2026-07-13
 
 ---
 
@@ -172,9 +172,13 @@ If the result is a single utterance spanning the whole segment — or the segmen
 
 **Child boundaries.** Adjacent children split the inter-word silence between them evenly: each child's end and its successor's start sit at the midpoint of the gap between the last word of one utterance and the first word of the next. The first child starts at the parent's start; the last child ends at the parent's end. No audio is lost or duplicated.
 
+Whisper word timestamps can overshoot the audio, so every boundary is **clamped** to `[0, file duration]` and edges are forced non-decreasing — a child can never have `end <= start`. If clamping collapses a child to near-zero length (< 0.05 s), its text is merged into the neighbouring child rather than emitting a degenerate row.
+
 **Child WAVs.** The service slices child WAVs from the parent segment WAV and writes them to the same directory, using full UUID filenames it generates. Timestamps returned for children are absolute (parent `start_secs` + in-segment offsets).
 
-**Orchestrator handling.** When a completed segment arrives with `children`, the orchestrator — in one transaction — inserts one row per child (inheriting `source_id`, `speaker_label`, `match_confidence`, and status from the parent; transcript and confidence from the child; a `short_transcript` flag if the child is under 2 seconds) and deletes the parent row. The parent WAV file is deleted best-effort after the transaction commits. Approval state is never at risk: only unreviewed segments are eligible for re-segmentation.
+**Orchestrator handling.** When a completed segment arrives with `children`, the orchestrator first **re-checks eligibility at write time** — the results land minutes after eligibility was snapshotted at submit, and the user may have acted in between. The parent must still have status `pending`/`below_threshold`, `transcript IS NULL`, and `transcript_edited IS NULL`. If it does, the orchestrator — in one transaction — inserts one row per child (inheriting `source_id`, `speaker_label`, `match_confidence`, and status from the parent; transcript and confidence from the child; a `short_transcript` flag if the child is under 2 seconds) and deletes the parent row. The parent WAV file is deleted best-effort after the transaction commits. Any child with `end_secs <= start_secs` is defensively skipped.
+
+If the parent is **no longer eligible** — or every child was skipped — nothing is split and nothing is deleted: the children's texts are joined (single spaces) into the parent's `transcript`, `transcript_confidence` is set to the minimum child confidence, and the normal short-transcript flag and auto-approve evaluation apply as for a plain write. Either way the result is deduplicated on the parent id. Approval state is never at risk.
 
 ### Auto-approval
 
@@ -232,10 +236,10 @@ The service transcribes segments in batches of 16 by default, using GPU batching
 
 **Service:** `cleanup`  
 **Tool:** FFmpeg (subprocess)  
-**Input:** Approved segment WAV paths (statuses `approved` and `auto_approved`)  
+**Input:** Approved segment WAV paths (statuses `approved`, `auto_approved`, and `clipping_warning`)  
 **Output:** `export/{segment_id}.wav`
 
-This step runs only when the user triggers an export. It processes approved segments only — `approved` and `auto_approved` are treated identically here and in the manifest.
+This step runs only when the user triggers an export. It processes the export set — `approved` and `auto_approved` are treated identically here and in the manifest, and `clipping_warning` segments are included too (keep-unless-rejected: a segment flagged for clipping stays in the export, flag recorded, unless the user rejects it). Cleanup will re-flag clipping segments; they simply retain the `clipping_warning` status.
 
 ### Processing chain
 
@@ -309,7 +313,9 @@ The `text` field uses `COALESCE(transcript_edited, transcript)`. Segments with n
 
 The orchestrator then packages `export/` into a `.tar.gz` archive and makes it available for download. The archive includes the WAVs and `manifest.json` only — no intermediate files.
 
-Export is non-destructive. Re-exporting after changing approvals regenerates `export/` from scratch without affecting the database or `segments/raw/`.
+**Staging.** A new export is built in `export_tmp/` inside the project directory; the previous `export/`, manifest, and archive stay intact — and downloadable — until the replacement is complete. Only on success does the orchestrator atomically swap the staging directory into `export/`, rewrite the archive, and update `export_path`s and `exported_at` in one transaction. On any failure the staging directory is removed best-effort and the previous export is untouched. Stale staging directories are cleaned up at the start of the next export.
+
+Export is non-destructive. Re-exporting after changing approvals regenerates `export/` (via the staging swap above) without affecting the database or `segments/raw/`.
 
 ---
 

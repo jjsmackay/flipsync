@@ -1,7 +1,7 @@
 # Review UI
 
 **Status:** DRAFT  
-**Last updated:** 2026-04-03
+**Last updated:** 2026-07-13
 
 ---
 
@@ -50,7 +50,11 @@ Scout jobs belong to the Speaker stage and export jobs to the Export stage, so n
    - *Process*: active job progress with human labels; or a **Start processing** button (queued sources, nothing running); or **Continue processing** (reference set at the gate); or a "processing stopped" notice pointing at the failed-job alerts.
    - *Review*: "N segments ready to review" with a **Start reviewing →** link and a secondary **Transcribe segments** button.
    - *Export*: export confirmation/summary and download (export flow below).
-4. **Failed-job alerts** — only when present, own slot, error messages with retry/dismiss (sourced from `recent_failed_jobs`). Shown until dismissed or retried.
+4. **Failed-job alerts** — only when present, own slot, error messages with retry/dismiss (sourced from `recent_failed_jobs`). Shown until dismissed or retried. Retry is job-type-aware:
+   - `vocal_separation` / `diarisation` — retry goes through the same confirm flow as a manual reprocess: submit **without** `confirm`, and if the API returns 409 `would_invalidate_approvals`, surface the confirmation dialog. Never pre-confirm.
+   - `scout_speakers` — retry re-runs the scout for the same source (`POST /reference/scout`), not a source reprocess.
+   - `extract_audio` — no Retry button; extraction failure is terminal by design. The alert shows guidance instead: "Extraction failed — remove this video and re-upload it."
+   - `transcription_segment` — retry calls the per-segment rerun endpoint when the failed job carries a segment id; if it doesn't, no Retry is shown (never a silent no-op).
 5. **Videos** (sources) — filename, human status label, speaker coverage (— until diarisation completes), per-row ⋯ menu with **Re-run from vocal separation** (`steps: ["separation", "diarisation"]`) and **Re-run speaker matching** (`steps: ["diarisation"]`), plus an inline compact **+ Add video** upload button. Hidden while the project has no sources.
 6. **Segments** (stats) — compact grid: approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target (duration includes auto-approved). Hidden until segments exist.
 7. **Settings** — collapsed disclosure: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
@@ -182,7 +186,7 @@ Two scores displayed:
 - **Speaker match:** `0.91` with label "Speaker match" and colour coding (same thresholds as the list card)
 - **Transcript:** `0.88` with label "Transcript confidence" (only shown once transcription is complete)
 
-Both scores link to a tooltip explaining what they mean and how they're calculated.
+Both scores link to a tooltip explaining what they mean and how they're calculated. When the segment carries a `speaker_match_confidence` (the cluster-level score — see [Data Models](data-models.md)), it is shown as a secondary line ("Cluster score: 0.42") beneath the speaker match. Nothing bigger — it's a secondary signal.
 
 ### Source info
 
@@ -268,6 +272,8 @@ Source:      [ All sources ▾ ]
 ```
 
 The preview count updates live as the user adjusts filters. It calls `GET /segments` with a `count_only=true` parameter (returns just the total, no segment data). The Apply button calls `POST /segments/bulk`.
+
+The preview must count what the action will actually touch: the bulk endpoint intersects the filter with the statuses the action may transition from (per the segment transition rules — e.g. `approve` never touches `rejected` segments), so the UI intersects the selected status filter with the chosen action's allowed set **before** requesting the count. When the intersection is empty, Apply is disabled with a hint (e.g. "Approve doesn't apply to rejected segments") rather than promising zero-effect work.
 
 After a bulk operation, the segment list refreshes and the summary stats in the header update.
 

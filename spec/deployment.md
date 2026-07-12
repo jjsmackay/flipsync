@@ -1,7 +1,7 @@
 # Deployment
 
 **Status:** Current  
-**Last updated:** 2026-07-12
+**Last updated:** 2026-07-13
 
 ---
 
@@ -207,13 +207,14 @@ Total first-run model download: ~5 GB. Subsequent starts are fast.
 ## Stopping and restarting
 
 ```bash
-# Stop all services (preserves volumes and data)
+# Stop all services (containers only — project data and model caches survive)
 docker compose down
 
-# Stop and remove volumes
-# Model caches (/mnt/models/flipsync/*) and project data (./data) are bind
-# mounts, not named volumes, so this does NOT delete them — only stops
-# containers. To actually wipe caches, rm -rf the mount paths directly.
+# Stop and remove named volumes — THIS DELETES ALL PROJECT DATA on a default
+# deployment. Project data lives in the `data` named volume (flipsync_data),
+# which -v removes. Model caches are bind mounts under
+# ${MODELS_ROOT:-/mnt/models/flipsync} and survive; a DATA_ROOT bind mount
+# also survives. Do not run this unless you mean to wipe every project.
 docker compose down -v
 
 # Restart a single service
@@ -224,7 +225,7 @@ docker compose logs -f orchestrator
 docker compose logs -f vocal-separation
 ```
 
-Project data lives in `./data/` on the host. This directory is a bind mount, so it survives `docker compose down`. Back it up before doing anything destructive.
+Project data lives in the `data` named volume by default (`flipsync_data` once Compose prefixes the project name). It survives `docker compose down` — but **not** `docker compose down -v`, which deletes the volume and every project in it. If `DATA_ROOT` is set, project data is a bind mount at that host path instead and `down -v` leaves it alone. Either way, back it up before doing anything destructive: copy the `DATA_ROOT` directory, or for the named volume `docker run --rm -v flipsync_data:/data -v "$PWD":/backup alpine tar czf /backup/flipsync-data.tar.gz -C /data .`
 
 ---
 
@@ -238,6 +239,8 @@ docker compose up -d
 
 The orchestrator runs database migrations on startup. New migrations are applied automatically. No manual migration step required.
 
+**Upgrading from the old `./data` bind-mount default.** Earlier releases bind-mounted `./data` by default; the default is now the `data` named volume. A deployment that relied on the old default will come up with an empty volume after upgrading and its projects will appear to vanish. Nothing has been deleted — the old data is still on disk at `./data`. Before upgrading (or before the next `docker compose up`), set `DATA_ROOT` to that directory — an absolute path is recommended — and the deployment keeps its existing projects.
+
 If a release includes breaking changes to the data directory layout, the release notes will document a migration path. Breaking changes before v1.0 are possible; after v1.0 they will be rare and clearly signalled.
 
 ---
@@ -246,9 +249,7 @@ If a release includes breaking changes to the data directory layout, the release
 
 All three GPU services (vocal separation, diarisation, transcription) request the same GPU. Docker does not enforce exclusive GPU access — all three containers can hold the GPU simultaneously, and CUDA will context-switch between them.
 
-In practice this is fine for sequential pipeline execution: when vocal separation is running, diarisation and transcription are idle. The risk is if a user triggers a transcription job while vocal separation is still running on a large file — both will compete for VRAM.
-
-v1 does not enforce GPU job serialisation at the orchestrator level. If VRAM contention causes OOM errors in practice, the orchestrator will add a GPU job queue (one GPU job at a time) in a patch release. This is a known risk, not an oversight.
+The orchestrator serialises GPU-bound jobs (vocal separation, diarisation, transcription) host-wide: at most one GPU job runs across all projects at any time, so the services never compete for VRAM under normal operation. CPU jobs (audio extraction, export) are not gated. See [Architecture](architecture.md) §Job queue.
 
 ---
 
@@ -276,10 +277,10 @@ The override file mounts source directories and enables hot reload. Processing s
 
 ## Data directory layout
 
-The `./data/` directory on the host:
+Inside the shared `/data` volume (the `data` named volume by default, or the `DATA_ROOT` bind mount):
 
 ```
-data/
+/data/
 └── projects/
     └── {project_id}/
         ├── project.db           # SQLite database
