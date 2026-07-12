@@ -47,18 +47,21 @@ GPU is a hard requirement. Demucs and pyannote will not run acceptably on CPU.
 ## Quick start
 
 ```bash
-git clone https://github.com/your-org/flipsync.git
+git clone https://github.com/jjsmackay/flipsync.git
 cd flipsync
 
 cp .env.example .env
-# Add your HuggingFace token to .env — see docs/huggingface-setup.md
+# Add your HuggingFace token to .env — the file has step-by-step instructions,
+# including the gated pyannote repos you must accept first.
 
-docker compose up --build
+docker compose up -d
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-On first run Docker downloads the Demucs, pyannote, and Whisper models (~5 GB total). This happens once; subsequent starts are fast.
+Service images are pulled prebuilt from GitHub Container Registry (`ghcr.io/jjsmackay/flipsync/*`), so there's no local build step. On the first processing job, the Demucs, pyannote, and Whisper models download (~5 GB total) and cache to disk. This happens once; subsequent runs are fast.
+
+Ports and a few deployment options (custom hostnames behind a reverse proxy, model-cache location) are configurable via `.env` — see the comments there and [`spec/deployment.md`](spec/deployment.md).
 
 ---
 
@@ -70,9 +73,9 @@ Full specification in [`/spec`](spec/README.md). Start with [`spec/overview.md`]
 
 ## Status
 
-**Building in the open.** The spec is complete. Implementation is in progress. Not yet production-ready.
+**Building in the open.** The spec is complete and all five build waves are implemented — orchestrator, the four processing services, and the review UI. Current focus is end-to-end hardening and deployment shake-out, so treat it as pre-release rather than production-ready.
 
-If you're reading this early: the spec is the most useful thing here right now. Issues and spec feedback welcome.
+Issues and spec feedback welcome.
 
 ---
 

@@ -211,7 +211,7 @@ Frontend needs:
 
 - **Python:** `python3` only (no `python` or `pip` binary). Use `uv` for running/installing: `uv run --with <deps> python -m <cmd>`
 - **Node:** Available via nvm. Package manager is `pnpm` (enabled via `corepack enable pnpm`).
-- **Docker:** Available in rootless mode. `docker compose up --build` from repo root.
+- **Docker:** Available in rootless mode. `docker compose up -d` from repo root pulls prebuilt GHCR images (no local build step).
 - **Orchestrator tests:** `cd services/orchestrator && uv run --with fastapi --with uvicorn --with python-multipart --with aiofiles --with httpx --with pytest --with pytest-asyncio --with anyio python -m pytest tests/ -v`
 - **Vocal separation tests:** `cd services/vocal-separation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with anyio --with soundfile --with numpy python -m pytest tests/ -v`
 - **Diarisation tests:** `cd services/diarisation && uv run --with fastapi --with uvicorn --with httpx --with pytest --with pytest-asyncio --with soundfile --with numpy --with scipy python -m pytest tests/ -v`
@@ -232,7 +232,9 @@ Processing services should return the same flat format directly.
 - **Wave 3 (orchestrator integration):** Complete. Service client, pipeline orchestration, polling, OOM retry, threshold re-evaluation all wired.
 - **Wave 4 (Segments API + Export):** Complete. Segment listing with filters/sort/pagination, audio streaming, PATCH review actions with 409 transition enforcement, bulk actions, export job (cleanup → manifest.json → tar.gz) and download.
 - **Wave 5 (frontend):** Complete. Project list, dashboard, review queue, export flow, keyboard nav, timeline. Merged to main.
-- **Next:** All waves complete. Current work is review-fix hardening on branch `integrate/review-fixes` (2026-07-12 whole-project review).
+- **Review-fix hardening:** Complete. The 2026-07-12 whole-project review fixes (`integrate/review-fixes`) are merged to main.
+- **Deploy hardening:** Complete and merged to main — prebuilt GHCR images, configurable orchestrator/frontend ports, same-origin `/api` proxy (no CORS needed for the UI), model-cache bind mounts under `MODELS_ROOT`, pyannote.audio 4.0.7 upgrade, HF_TOKEN env docs.
+- **Next:** All waves and hardening merged. Outstanding: full end-to-end verification on real GPU hardware (diarisation + steps 2–5 not yet confirmed E2E).
 
 ## Docker notes
 

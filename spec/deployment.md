@@ -1,7 +1,7 @@
 # Deployment
 
-**Status:** DRAFT  
-**Last updated:** 2026-04-03
+**Status:** Current  
+**Last updated:** 2026-07-12
 
 ---
 
@@ -25,17 +25,16 @@
 
 ## Docker Compose
 
-Single `docker-compose.yml` at the repo root. All services on one internal network. Only the orchestrator port is exposed to the host.
+Single `docker-compose.yml` at the repo root. All services on one internal network. Two ports are published to the host: the frontend (`3000`) and the orchestrator (`8000`). The UI only needs the frontend port — it reaches the orchestrator via a same-origin `/api` path that the frontend container proxies internally, so the published orchestrator port is only for hitting the API directly.
+
+Service images are pulled prebuilt from GitHub Container Registry (`ghcr.io/jjsmackay/flipsync/*`) rather than built locally. The published copy below mirrors the repo-root `docker-compose.yml`; that file is authoritative if the two ever diverge.
 
 ```yaml
-version: "3.9"
-
 services:
-
   orchestrator:
-    build: ./services/orchestrator
+    image: ghcr.io/jjsmackay/flipsync/orchestrator:latest
     ports:
-      - "8000:8000"
+      - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
       - ./data:/data
     environment:
@@ -44,22 +43,21 @@ services:
       - DIARISATION_URL=http://diarisation:8002
       - TRANSCRIPTION_URL=http://transcription:8003
       - CLEANUP_URL=http://cleanup:8004
-      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       - vocal-separation
       - diarisation
       - transcription
       - cleanup
+    restart: unless-stopped
     networks:
       - flipsync
 
   vocal-separation:
-    build: ./services/vocal-separation
+    image: ghcr.io/jjsmackay/flipsync/vocal-separation:latest
     volumes:
       - ./data:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
-    environment:
-      - DEMUCS_MODEL=htdemucs
     deploy:
       resources:
         reservations:
@@ -67,11 +65,12 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    restart: unless-stopped
     networks:
       - flipsync
 
   diarisation:
-    build: ./services/diarisation
+    image: ghcr.io/jjsmackay/flipsync/diarisation:latest
     volumes:
       - ./data:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
@@ -84,16 +83,15 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    restart: unless-stopped
     networks:
       - flipsync
 
   transcription:
-    build: ./services/transcription
+    image: ghcr.io/jjsmackay/flipsync/transcription:latest
     volumes:
       - ./data:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
-    environment:
-      - WHISPER_MODEL=large-v2
     deploy:
       resources:
         reservations:
@@ -101,22 +99,28 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    restart: unless-stopped
     networks:
       - flipsync
 
   cleanup:
-    build: ./services/cleanup
+    image: ghcr.io/jjsmackay/flipsync/cleanup:latest
     volumes:
       - ./data:/data
+    restart: unless-stopped
     networks:
       - flipsync
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/jjsmackay/flipsync/frontend:latest
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-}
+      - ORCHESTRATOR_PROXY_TARGET=http://orchestrator:8000
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
     networks:
       - flipsync
 
@@ -133,35 +137,36 @@ networks:
 
 **The cleanup service has no GPU reservation.** FFmpeg runs on CPU. This is intentional and correct.
 
-**The frontend is a separate container** serving the built React app. In development, the Vite dev server runs instead. In production, it serves the built static files via a lightweight HTTP server (e.g. nginx or `serve`).
+**The frontend is a separate container** serving the built React app via a Vite preview server. That server also proxies `/api/*` to the orchestrator (`ORCHESTRATOR_PROXY_TARGET`), so the browser only ever talks to the frontend origin — the orchestrator's published port and CORS are not needed for normal UI use. `VITE_ALLOWED_HOSTS` adds hostnames the preview server will accept when the UI is reached through a reverse proxy or custom domain.
 
 ---
 
 ## Environment variables
 
-Create a `.env` file at the repo root before first run. This file is gitignored.
+Create a `.env` file at the repo root before first run: `cp .env.example .env`. This file is gitignored. `.env.example` is the canonical, commented reference — it documents every variable and the exact HuggingFace steps. Summary:
 
-```bash
-# Required
-HF_TOKEN=hf_...          # HuggingFace token for pyannote model download
-
-# Optional
-MODELS_ROOT=/mnt/models/flipsync   # host dir for model caches; default shown
-```
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `HF_TOKEN` | yes | — | HuggingFace token for pyannote model download (diarisation only) |
+| `MODELS_ROOT` | no | `/mnt/models/flipsync` | Host dir for the demucs/pyannote/whisper caches |
+| `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
+| `FRONTEND_PORT` | no | `3000` | Host port for the UI |
+| `VITE_ALLOWED_HOSTS` | no | — | Extra hostnames the frontend accepts (reverse proxy / custom domain) |
+| `CORS_ORIGINS` | no | `http://localhost:3000,http://127.0.0.1:3000` | Browser origins allowed to call the orchestrator directly |
 
 Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.
 
-**Orchestrator CORS.** The orchestrator reads `CORS_ORIGINS` — a comma-separated list of allowed browser origins. It defaults to `http://localhost:3000,http://127.0.0.1:3000` (the frontend dev and container origins), so it only needs setting when the frontend is served from a different host or port. Override it via the orchestrator's `environment:` block in `docker-compose.yml` rather than `.env`.
+**Orchestrator CORS.** `CORS_ORIGINS` only matters if something calls the orchestrator's published port from a browser directly. The UI itself calls the same-origin `/api` proxy, so it needs no CORS entry.
 
-The HuggingFace token is only needed on first run to download pyannote's speaker diarisation and embedding models. After the models are cached in `/mnt/models/flipsync/pyannote`, the token is no longer used. It must still be present in the environment or pyannote's library will fail to initialise — this is a pyannote limitation, not a FlipSync one.
+**HuggingFace token.** Only needed on first run to download pyannote's models. After they're cached under `${MODELS_ROOT}/pyannote`, the token is no longer used for downloads, but it must still be present in the environment or pyannote's library fails to initialise — a pyannote limitation, not a FlipSync one. The token's account must first accept the access conditions on all three gated repos the pipeline pulls:
 
-**To obtain a HuggingFace token:**
-1. Create an account at huggingface.co
-2. Go to Settings → Access Tokens → New token (read access is sufficient)
-3. Accept the model licence for `pyannote/speaker-diarization-3.1` at huggingface.co/pyannote/speaker-diarization-3.1
-4. Accept the model licence for `pyannote/segmentation-3.0`
+- `pyannote/speaker-diarization-3.1`
+- `pyannote/segmentation-3.0`
+- `pyannote/embedding`
 
-Both model licences must be accepted under the same account as the token. This is a one-time step.
+This is a one-time step. See `.env.example` for the click-through walkthrough.
+
+> On the Komodo-deployed stack, set these in the stack's Environment field, not a hand-edited `.env` on the host — Komodo overwrites `.env` on deploy.
 
 ---
 
@@ -169,22 +174,22 @@ Both model licences must be accepted under the same account as the token. This i
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/your-org/flipsync.git
+git clone https://github.com/jjsmackay/flipsync.git
 cd flipsync
 
 # 2. Create .env
 cp .env.example .env
 # Edit .env and add your HF_TOKEN
 
-# 3. Build and start
-docker compose up --build
+# 3. Pull images and start
+docker compose up -d
 
 # 4. Open the app
 # http://localhost:3000
 ```
 
 On first run:
-- Docker builds all service images (5–10 minutes depending on hardware and network)
+- Docker pulls the prebuilt service images from `ghcr.io/jjsmackay/flipsync/*` (a few minutes depending on network)
 - pyannote downloads its models on first job run (~2 GB, cached to `/mnt/models/flipsync/pyannote`)
 - Demucs downloads its model on first job run (~80 MB, cached to `/mnt/models/flipsync/demucs`)
 - Whisper downloads its model on first job run (large-v2 is ~3 GB, cached to `/mnt/models/flipsync/whisper`)
@@ -221,7 +226,8 @@ Project data lives in `./data/` on the host. This directory is a bind mount, so 
 
 ```bash
 git pull
-docker compose up --build
+docker compose pull
+docker compose up -d
 ```
 
 The orchestrator runs database migrations on startup. New migrations are applied automatically. No manual migration step required.
