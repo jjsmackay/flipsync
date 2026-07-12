@@ -247,8 +247,11 @@ def _export_with_cleanup(project, conn, pdir, seg_statuses):
 
     async def mock_submit(service, payload):
         if service == "cleanup":
+            from pathlib import Path
             for s in payload["segments"]:
-                out = pdir / "export" / f"{s['id']}.wav"
+                # Write where the payload directs (export_tmp/ staging since
+                # review-fix wave 2), exactly as the real cleanup service does.
+                out = Path(s["output_path"])
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes(b"\x00" * 20)
         return {"job_id": payload["job_id"]}

@@ -134,6 +134,10 @@ def _evict_finished_jobs():
     """
     finished = [jid for jid, job in _jobs.items() if job["status"] in ("complete", "failed")]
     excess = len(finished) - _MAX_FINISHED_JOBS
+    if excess <= 0:
+        # Guard: a negative excess would slice from the END of the list
+        # (finished[:-1] etc.), evicting almost every finished job.
+        return
     for jid in finished[:excess]:
         _jobs.pop(jid, None)
 
@@ -246,6 +250,15 @@ async def health():
 @app.post("/jobs", status_code=202)
 async def submit_job(req: JobRequest):
     job_id = req.job_id
+
+    if job_id in _jobs:
+        # Duplicate submit (e.g. an orchestrator retry after a timed-out but
+        # delivered POST) must not restart or overwrite the original job.
+        return _error_response(
+            "job_exists",
+            f"Job {job_id} already exists.",
+            status_code=409,
+        )
 
     _jobs[job_id] = {
         "job_id": job_id,

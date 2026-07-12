@@ -27,6 +27,7 @@ def _serialize_segment(row, project_id: str) -> dict:
         "end_secs": row["end_secs"],
         "duration_secs": row["duration_secs"],
         "match_confidence": row["match_confidence"],
+        "speaker_match_confidence": row["speaker_match_confidence"],
         "transcript": row["transcript"],
         "transcript_edited": row["transcript_edited"],
         "transcript_confidence": row["transcript_confidence"],

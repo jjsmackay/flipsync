@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FailedJob } from '../../types/api'
 import { jobLabel } from '../../utils/labels'
+import { retryPlan, retryGuidance } from '../../utils/retry'
 
 interface FailedJobsPanelProps {
   failedJobs: FailedJob[]
@@ -48,8 +49,11 @@ export function FailedJobsPanel({ failedJobs, onRetry, retryingJobId }: FailedJo
           {job.error && (
             <p className="text-xs text-red-600 dark:text-red-400 mt-1">{job.error}</p>
           )}
+          {retryGuidance(job.type) && (
+            <p className="text-xs text-red-700 dark:text-red-300 mt-1">{retryGuidance(job.type)}</p>
+          )}
           <div className="flex items-center gap-2 mt-2">
-            {onRetry && (
+            {onRetry && retryPlan(job) !== null && (
               <button
                 type="button"
                 onClick={() => onRetry(job)}

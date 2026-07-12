@@ -1,7 +1,7 @@
 # Architecture
 
 **Status:** DRAFT  
-**Last updated:** 2026-04-03
+**Last updated:** 2026-07-13
 
 ---
 
@@ -72,9 +72,11 @@ All services and the orchestrator run in the same Docker network. Services expos
 
 **Job queue:** The job queue is an in-memory queue backed by the `jobs` table in SQLite. On startup, the orchestrator loads any `queued` or `running` jobs from the database and resumes them. The queue is not a separate library — it is a simple FIFO list managed by the orchestrator. Jobs are executed one at a time per project to avoid GPU contention. GPU-bound jobs (vocal separation, diarisation, transcription) additionally serialise host-wide: at most one GPU job runs across ALL projects at any time, since every project shares the same GPU. CPU-bound jobs (audio extraction, export's FFmpeg phases) are not gated and may run alongside a GPU job. The `jobs` table is the persistence layer; the in-memory queue is the execution layer.
 
+Before a GPU job takes the host-wide GPU lock, the orchestrator waits for its target service to be ready: it polls the service's `GET /health` every 5 seconds, outside the lock, for up to `SERVICE_READY_TIMEOUT_SECS` (default 1800 — generous because diarisation and vocal separation block in startup while models download on first boot). Only once the service reports healthy is the lock acquired and the job submitted; if readiness times out, the job fails with `service_unavailable` without ever holding the lock, so a down service cannot stall every other project's GPU work. CPU jobs are unaffected. A hostname that fails DNS resolution skips the gate (treated as ready): an unresolvable service isn't deployed in this environment, and the submit path's bounded retry surfaces the real error instead of a 30-minute readiness wait.
+
 **Polling loop:** The orchestrator polls each active processing service every 2 seconds using `asyncio.create_task` background tasks spawned when a job is submitted. Each polling task runs until the job completes or fails, then updates the database and dequeues the next job. FastAPI's async lifecycle (`@app.on_event("startup")` or lifespan context) initialises the job runner. No external scheduler library is needed.
 
-**Service readiness:** On startup, the orchestrator should poll `GET /health` on each processing service until it returns 200 before accepting pipeline jobs. Use a generous timeout (up to 5 minutes) for first-run model downloads. If a service is unreachable when a job is submitted, the job should be queued and retried when the service becomes available.
+**Service readiness:** On startup, the orchestrator polls `GET /health` on each processing service before accepting pipeline jobs. Per-job readiness is handled by the pre-lock health wait described under the job queue above (`SERVICE_READY_TIMEOUT_SECS`); transient blips during submission are covered by the submit retry window, and a duplicate-submit after a timed-out-but-accepted POST is absorbed by the services' `job_exists` 409 (see [API Contracts](api-contracts.md) Part 2).
 
 **Database connections:** Each project has its own SQLite file. The orchestrator opens connections per-project, using `PRAGMA journal_mode=WAL` for concurrent reads during writes. Connections can be kept open for the process lifetime or pooled — the choice is an implementation detail. A project listing endpoint should use a lightweight index (see [Data Models](data-models.md) for options).
 

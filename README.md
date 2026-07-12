@@ -2,7 +2,7 @@
 
 Extract clean, speaker-specific dialogue audio from video files. Produce datasets ready for voice cloning.
 
-Drop in a video collection, upload a short reference clip of your target speaker, and walk away with labelled WAV files and a training manifest. No command line, no audio engineering knowledge required.
+Drop in a video collection, point FlipSync at your target speaker — upload a short reference clip, or scan a video and pick the speaker by ear — and walk away with labelled WAV files and a training manifest. No command line, no audio engineering knowledge required.
 
 ---
 
@@ -71,8 +71,8 @@ Once it's running, everything happens in the browser — no command line:
 
 1. **Create a project** — one target speaker per project.
 2. **Upload source videos** — audio is extracted automatically as each file lands.
-3. **Upload a reference clip** — 5+ seconds of clean speech from the target speaker; this is what matching scores against.
-4. **Run the pipeline** — click *Start*. The four steps run in sequence, one job at a time.
+3. **Set the speaker** — upload a reference clip (5+ seconds of clean speech), or scan a video for speakers and pick your target by ear; this is what matching scores against.
+4. **Run the pipeline** — click *Start processing*. The four steps run in sequence, one job at a time (the pipeline pauses for step 3 if you haven't set a speaker yet).
 5. **Review segments** — keyboard-driven approve / maybe / reject in the review queue, with filters, a timeline, and bulk operations for the easy cases.
 6. **Export** — download the labelled WAVs and `manifest.json`.
 

@@ -1,7 +1,33 @@
 import { useState, useEffect } from 'react'
 import { bulkSegmentAction, getSegmentsCount } from '../../api/client'
 import type { BulkFilter, BulkSegmentRequest, SegmentStatus } from '../../types/api'
-import { ALL_SEGMENT_STATUSES_CSV } from '../../constants'
+import { ALL_SEGMENT_STATUSES } from '../../constants'
+
+type BulkAction = BulkSegmentRequest['action']
+
+// Mirror of the orchestrator's BULK_ACTION_SOURCES (state_machines.py): the
+// segment statuses each bulk action is allowed to move FROM. The server
+// intersects the filter with these; mirroring them here keeps the preview
+// count equal to what Apply will actually affect.
+export const BULK_ACTION_SOURCES: Record<BulkAction, readonly SegmentStatus[]> = {
+  approve: ['pending', 'maybe', 'clipping_warning', 'auto_approved'],
+  reject: ['pending', 'maybe', 'clipping_warning', 'approved', 'auto_approved'],
+  maybe: ['pending', 'approved', 'auto_approved'],
+  pending: ['maybe', 'auto_approved', 'rejected'],
+}
+
+/**
+ * The statuses a bulk request will actually touch: the selected status filter
+ * ('' = Any = all statuses) intersected with the action's allowed sources.
+ */
+export function effectiveBulkStatuses(
+  action: BulkAction,
+  filterStatus: SegmentStatus | '',
+): SegmentStatus[] {
+  const allowed = BULK_ACTION_SOURCES[action]
+  const selected: readonly SegmentStatus[] = filterStatus ? [filterStatus] : ALL_SEGMENT_STATUSES
+  return selected.filter((s) => allowed.includes(s))
+}
 
 interface BulkOperationsProps {
   projectId: string
@@ -69,11 +95,16 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
   const [applyingPreset, setApplyingPreset] = useState<number | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
 
+  // Statuses this action can actually affect, given the selected status filter.
+  // Empty means the combination is a no-op (e.g. Approve over rejected segments).
+  const effectiveStatuses = effectiveBulkStatuses(action, filterStatus)
+
   function buildFilter(): BulkFilter {
     const f: BulkFilter = {}
-    // "Any" sends the full status list so the preview count matches what Apply
-    // affects — an empty status would fall back to the server's pending+maybe default (SC4).
-    f.status = filterStatus || ALL_SEGMENT_STATUSES_CSV
+    // Send the explicit intersected status list so the preview count matches what
+    // Apply affects — an empty status would fall back to the server's
+    // pending+maybe default (SC4), and un-intersected statuses would overstate.
+    f.status = effectiveStatuses.join(',')
     if (minConfidence !== '') f.min_confidence = parseFloat(minConfidence)
     if (minDuration !== '') f.min_duration = parseFloat(minDuration)
     if (maxDuration !== '') f.max_duration = parseFloat(maxDuration)
@@ -84,6 +115,13 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
   // Live preview: recount whenever the panel is open and any filter changes.
   useEffect(() => {
     if (!expanded) return
+    if (effectiveStatuses.length === 0) {
+      // Nothing this action can touch — skip the count round-trip.
+      setPreviewCount(0)
+      setPreviewing(false)
+      setBulkError(null)
+      return
+    }
     const filter = buildFilter()
     let cancelled = false
     setPreviewing(true)
@@ -110,7 +148,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       clearTimeout(timer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, projectId, filterStatus, minConfidence, minDuration, maxDuration, sourceId])
+  }, [expanded, projectId, action, filterStatus, minConfidence, minDuration, maxDuration, sourceId])
 
   async function handlePreset(index: number) {
     setApplyingPreset(index)
@@ -277,9 +315,15 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                     : '—'}
               </span>
 
+              {effectiveStatuses.length === 0 && filterStatus && (
+                <span className="text-xs text-amber-700 dark:text-amber-400">
+                  {action.charAt(0).toUpperCase() + action.slice(1)} doesn't apply to {filterStatus} segments
+                </span>
+              )}
+
               <button
                 onClick={handleApply}
-                disabled={applying || previewing || previewCount === null || previewCount === 0}
+                disabled={applying || previewing || previewCount === null || previewCount === 0 || effectiveStatuses.length === 0}
                 className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
               >
                 {applying ? 'Applying…' : 'Apply'}

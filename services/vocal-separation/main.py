@@ -325,6 +325,18 @@ def _evict_old_jobs() -> None:
 
 @app.post("/jobs", status_code=202)
 async def submit_job(req: JobRequest):
+    if req.job_id in _jobs:
+        # Duplicate submit (e.g. an orchestrator retry after a timed-out but
+        # delivered POST) must not restart or overwrite the original job.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "job_exists",
+                "message": f"Job {req.job_id} already exists.",
+                "detail": {},
+            },
+        )
+
     job: dict = {
         "job_id": req.job_id,
         "status": "running",
