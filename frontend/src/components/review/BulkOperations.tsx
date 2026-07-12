@@ -81,6 +81,7 @@ const STATUS_VALUES: SegmentStatus[] = [
 export function BulkOperations({ projectId, onApplied, sources }: BulkOperationsProps) {
   const [expanded, setExpanded] = useState(false)
   const [resultCount, setResultCount] = useState<number | null>(null)
+  const [skippedNoTranscript, setSkippedNoTranscript] = useState(0)
 
   // Custom form state
   const [action, setAction] = useState<BulkSegmentRequest['action']>('approve')
@@ -156,6 +157,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
     try {
       const result = await bulkSegmentAction(projectId, PRESETS[index].req)
       setResultCount(result.affected_count)
+      setSkippedNoTranscript(result.skipped_no_transcript ?? 0)
       onApplied()
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
@@ -172,6 +174,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       const req: BulkSegmentRequest = { action, filter: buildFilter() }
       const result = await bulkSegmentAction(projectId, req)
       setResultCount(result.affected_count)
+      setSkippedNoTranscript(result.skipped_no_transcript ?? 0)
       onApplied()
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
@@ -195,6 +198,11 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
           {resultCount !== null && (
             <div className="rounded bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-300 text-sm px-3 py-2">
               Applied — {resultCount} segment{resultCount !== 1 ? 's' : ''} affected.
+              {skippedNoTranscript > 0 && (
+                <span className="block text-amber-700 dark:text-amber-400 mt-0.5">
+                  {skippedNoTranscript} skipped — no transcript. Transcribe them before approving.
+                </span>
+              )}
             </div>
           )}
 

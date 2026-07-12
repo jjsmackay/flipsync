@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Segment, SegmentStatus } from '../../types/api'
-import { getSegmentAudioUrl, patchSegment } from '../../api/client'
+import { getSegmentAudioUrl, patchSegment, rerunSegmentTranscription } from '../../api/client'
 import { useAudio } from '../../hooks/useAudio'
 import { ConfidenceBadge } from '../ui/ConfidenceBadge'
 import { StatusBadge } from '../ui/StatusBadge'
@@ -52,7 +52,27 @@ export function SegmentDetail({
   const [editedTranscript, setEditedTranscript] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [retranscribing, setRetranscribing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  async function handleRetranscribe() {
+    setError(null)
+    setRetranscribing(true)
+    try {
+      await rerunSegmentTranscription(projectId, segment.id)
+      // The job runs asynchronously; the new transcript lands on the next
+      // queue refresh. Leave the button disabled to signal it's queued.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Re-transcribe failed')
+      setRetranscribing(false)
+    }
+  }
+
+  // Clear the "queued" state once the new transcript arrives (or on navigation
+  // to another segment).
+  useEffect(() => {
+    setRetranscribing(false)
+  }, [segment.id, segment.transcript])
 
   // Download the segment audio once, as a blob, and hand the same bytes to both the
   // audio player (via object URL) and the waveform/spectrogram (via the blob). The
@@ -313,6 +333,15 @@ export function SegmentDetail({
                   Undo edit
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => void handleRetranscribe()}
+                disabled={retranscribing}
+                title="Run transcription again for this segment (fills or replaces its transcript)."
+                className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {retranscribing ? 'Re-transcribing…' : 'Re-transcribe'}
+              </button>
               <button
                 type="button"
                 onClick={startEditing}

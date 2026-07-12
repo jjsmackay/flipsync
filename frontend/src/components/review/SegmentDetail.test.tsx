@@ -29,6 +29,7 @@ vi.mock('../../api/client', async () => {
     ...actual,
     getSegmentAudioUrl: vi.fn(() => '/api/audio-url'),
     patchSegment: vi.fn(),
+    rerunSegmentTranscription: vi.fn(() => Promise.resolve({})),
   }
 })
 
@@ -154,5 +155,20 @@ describe('SegmentDetail cluster score (D6)', () => {
 
     renderDetail(makeSegment())
     expect(screen.queryByText(/Cluster score/)).not.toBeInTheDocument()
+  })
+})
+
+describe('SegmentDetail re-transcribe', () => {
+  it('calls rerunSegmentTranscription for the segment when clicked', async () => {
+    const client = await import('../../api/client')
+    const spy = vi.mocked(client.rerunSegmentTranscription)
+    spy.mockClear()
+
+    renderDetail(makeSegment({ id: 'seg-42' }))
+    const btn = screen.getByRole('button', { name: /re-transcribe/i })
+    const { default: userEvent } = await import('@testing-library/user-event')
+    await userEvent.setup().click(btn)
+
+    expect(spy).toHaveBeenCalledWith('proj-1', 'seg-42')
   })
 })

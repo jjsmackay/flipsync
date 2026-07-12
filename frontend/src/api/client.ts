@@ -318,7 +318,7 @@ export function patchSegment(
 export function bulkSegmentAction(
   projectId: string,
   req: BulkSegmentRequest,
-): Promise<{ affected_count: number }> {
+): Promise<{ affected_count: number; skipped_no_transcript?: number }> {
   return request(`/projects/${projectId}/segments/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
