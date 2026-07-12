@@ -725,9 +725,12 @@ async def _handle_transcription_bulk(
     data_prefix = _data_prefix()
     placeholders = ",".join("?" * len(segment_ids))
     rows = conn.execute(
-        f"SELECT id, raw_path, start_secs, status, transcript FROM segments WHERE id IN ({placeholders})",
+        f"SELECT id, raw_path, start_secs, status, transcript, duration_secs FROM segments WHERE id IN ({placeholders})",
         segment_ids,
     ).fetchall()
+    # Preload durations for the short_transcript check — avoids an N+1
+    # SELECT per segment inside the poll loop's incremental write path.
+    durations = {r["id"]: r["duration_secs"] for r in rows}
     seg_list = [
         {
             "id": r["id"],
@@ -773,7 +776,8 @@ async def _handle_transcription_bulk(
 
         # Write completed segments incrementally
         _apply_transcription_results(
-            project_id, conn, result.get("completed_segments", []), written_ids
+            project_id, conn, result.get("completed_segments", []), written_ids,
+            durations=durations,
         )
 
     result = await service_client.poll_until_complete("transcription", job_id, on_progress=on_progress)
@@ -850,17 +854,30 @@ def _apply_transcription_results(
     conn,
     completed: list[dict],
     written_ids: set[str],
+    durations: dict[str, float] | None = None,
 ) -> None:
     """Shared write path for transcription results (bulk and single-segment).
 
     - Deduplicates cumulative ``completed_segments`` keyed on the PARENT
       segment id via the caller-owned ``written_ids`` set.
+    - Entries carrying a per-segment ``error`` leave the transcript NULL
+      (so future bulk/auto runs naturally retry) and record a
+      ``transcription_error: <msg>`` flag; a later successful transcript
+      clears the flag.
     - Unsplit entries update transcript/confidence in place (transcript_edited
       is never touched).
-    - Split entries (``children``) insert one row per child and delete the
+    - Split entries (``children``) re-check the parent's eligibility AT WRITE
+      TIME (status still pending/below_threshold, transcript and
+      transcript_edited still NULL — the snapshot taken at submit can be
+      minutes stale). Still eligible: insert one row per child and delete the
       parent row in the same transaction; the parent WAV is deleted
-      best-effort after commit.
-    - Adds a ``short_transcript`` flag for effective durations < 2.0 s.
+      best-effort after commit. No longer eligible (reviewed/edited mid-job),
+      or no child with a positive duration: keep the parent row and WAV and
+      write the joined child transcripts to the parent instead.
+    - Adds a ``short_transcript`` flag for effective durations < 2.0 s,
+      using the caller-preloaded ``durations`` map ({segment_id:
+      duration_secs}) when available to avoid an N+1 SELECT in the poll
+      loop; ids not in the map fall back to a single lookup.
     - Applies auto-approval to the segments written (spec/pipeline.md
       §Auto-approval).
 
@@ -874,23 +891,79 @@ def _apply_transcription_results(
     parent_wavs: list[Path] = []
     touched_ids: list[str] = []
 
+    def _write_transcript(seg_id: str, transcript, confidence) -> None:
+        """Plain in-place transcript write + flag/auto-approve bookkeeping."""
+        conn.execute(
+            """
+            UPDATE segments
+            SET transcript=?, transcript_confidence=?, updated_at=?
+            WHERE id=? AND project_id=?
+            """,
+            (transcript, confidence, now, seg_id, project_id),
+        )
+        _clear_transcription_error_flag(conn, seg_id)
+        duration = durations.get(seg_id) if durations else None
+        if duration is None:
+            row = conn.execute(
+                "SELECT duration_secs FROM segments WHERE id=?", (seg_id,)
+            ).fetchone()
+            duration = row["duration_secs"] if row is not None else None
+        if duration is not None and duration < 2.0:
+            _add_flag(conn, seg_id, "short_transcript")
+        touched_ids.append(seg_id)
+
     for cs in completed:
         seg_id = cs["id"]
         if seg_id in written_ids:
             continue
         written_ids.add(seg_id)
 
+        if cs.get("error"):
+            # Per-segment service failure: leave transcript NULL so every
+            # retranscription selector (transcript IS NULL) still picks the
+            # segment up, and surface the failure as a flag.
+            _set_transcription_error_flag(conn, seg_id, cs["error"])
+            continue
+
         children = cs.get("children")
         if children:
             parent = conn.execute(
-                """SELECT source_id, speaker_label, match_confidence, status, raw_path
+                """SELECT source_id, speaker_label, match_confidence, status,
+                          raw_path, transcript, transcript_edited
                    FROM segments WHERE id=? AND project_id=?""",
                 (seg_id, project_id),
             ).fetchone()
             if parent is None:
                 logger.warning("Transcription returned children for unknown segment %s", seg_id)
                 continue
-            for ch in children:
+            # Defensive: a child whose clamped bounds inverted or collapsed
+            # would be a negative/zero-duration row with a zero-frame WAV.
+            valid_children = [
+                ch for ch in children if ch["end_secs"] > ch["start_secs"]
+            ]
+            # Eligibility re-check at write time (mirrors the submit-time
+            # snapshot in _handle_transcription_bulk).
+            still_eligible = (
+                parent["status"] in ("pending", "below_threshold")
+                and parent["transcript"] is None
+                and parent["transcript_edited"] is None
+            )
+            if not still_eligible or not valid_children:
+                # Do not split, do not delete anything: fold the children
+                # back into a plain parent write.
+                texts = [
+                    t for t in ((ch.get("transcript") or "").strip() for ch in children) if t
+                ]
+                confs = [
+                    ch["transcript_confidence"]
+                    for ch in children
+                    if ch.get("transcript_confidence") is not None
+                ]
+                _write_transcript(
+                    seg_id, " ".join(texts), min(confs) if confs else None
+                )
+                continue
+            for ch in valid_children:
                 # duration_secs is a GENERATED column — never inserted.
                 # Children inherit attribution + status from the parent; the
                 # service supplies id, WAV, absolute timestamps and transcript.
@@ -918,20 +991,7 @@ def _apply_transcription_results(
             if parent["raw_path"]:
                 parent_wavs.append(pdir / parent["raw_path"])
         else:
-            conn.execute(
-                """
-                UPDATE segments
-                SET transcript=?, transcript_confidence=?, updated_at=?
-                WHERE id=? AND project_id=?
-                """,
-                (cs["transcript"], cs.get("transcript_confidence"), now, seg_id, project_id),
-            )
-            row = conn.execute(
-                "SELECT duration_secs FROM segments WHERE id=?", (seg_id,)
-            ).fetchone()
-            if row is not None and row["duration_secs"] is not None and row["duration_secs"] < 2.0:
-                _add_flag(conn, seg_id, "short_transcript")
-            touched_ids.append(seg_id)
+            _write_transcript(seg_id, cs["transcript"], cs.get("transcript_confidence"))
 
     if touched_ids:
         auto_approve_promote(conn, project_id, now, segment_ids=touched_ids)
@@ -945,6 +1005,38 @@ def _apply_transcription_results(
                 wav.unlink()
         except OSError as exc:
             logger.warning("Could not delete replaced parent WAV %s: %s", wav, exc)
+
+
+_TRANSCRIPTION_ERROR_PREFIX = "transcription_error: "
+
+
+def _set_transcription_error_flag(conn, segment_id: str, message: str) -> None:
+    """Record a per-segment transcription failure in the flags array.
+
+    Any existing ``transcription_error:`` flag is replaced (dedupe on
+    re-add), mirroring the ``cleanup_error: <msg>`` pattern.
+    """
+    row = conn.execute("SELECT flags FROM segments WHERE id=?", (segment_id,)).fetchone()
+    if row is None:
+        logger.warning("Transcription returned an error for unknown segment %s", segment_id)
+        return
+    flags = [
+        f for f in (json.loads(row["flags"]) if row["flags"] else [])
+        if not f.startswith(_TRANSCRIPTION_ERROR_PREFIX)
+    ]
+    flags.append(f"{_TRANSCRIPTION_ERROR_PREFIX}{message}")
+    conn.execute("UPDATE segments SET flags=? WHERE id=?", (json.dumps(flags), segment_id))
+
+
+def _clear_transcription_error_flag(conn, segment_id: str) -> None:
+    """Drop any stale ``transcription_error:`` flag after a successful write."""
+    row = conn.execute("SELECT flags FROM segments WHERE id=?", (segment_id,)).fetchone()
+    if row is None or not row["flags"]:
+        return
+    flags = json.loads(row["flags"])
+    kept = [f for f in flags if not f.startswith(_TRANSCRIPTION_ERROR_PREFIX)]
+    if len(kept) != len(flags):
+        conn.execute("UPDATE segments SET flags=? WHERE id=?", (json.dumps(kept), segment_id))
 
 
 # ---------------------------------------------------------------------------

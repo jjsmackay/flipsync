@@ -6,6 +6,7 @@ from typing import Optional
 
 from resegment import (
     compute_boundaries,
+    merge_degenerate_children,
     normalise_utterances,
     slice_children,
     split_into_utterances,
@@ -120,9 +121,11 @@ def transcribe_segment(
     if resegment and all_words:
         utterances = normalise_utterances(split_into_utterances(all_words))
         if len(utterances) >= 2:
-            return _split_segment(
+            split = _split_segment(
                 segment_id, wav_path, duration, start_secs, utterances
             )
+            if split is not None:
+                return split
 
     transcript = "".join(text_parts).strip()
     confidence = compute_confidence(all_words)
@@ -140,9 +143,17 @@ def _split_segment(
     duration: float,
     start_secs: float,
     utterances: list[list],
-) -> dict:
-    """Slice child WAVs for each utterance and build the children result."""
+) -> dict | None:
+    """Slice child WAVs for each utterance and build the children result.
+
+    Boundary clamping can merge degenerate children away (overshooting
+    whisper word timestamps); if fewer than two children survive, returns
+    ``None`` so the caller falls back to the unsplit shape.
+    """
     boundaries = compute_boundaries(utterances, duration)
+    utterances, boundaries = merge_degenerate_children(utterances, boundaries)
+    if len(utterances) < 2:
+        return None
     child_files = slice_children(wav_path, boundaries)
 
     children = []

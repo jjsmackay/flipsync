@@ -17,6 +17,10 @@ import wave
 
 # Inter-word silence at or above this splits utterances.
 GAP_SPLIT_SECS = 0.6
+# Children whose clamped span is shorter than this are merged into a
+# neighbour instead of being emitted (avoids zero-frame WAVs when whisper
+# word timestamps overshoot the file duration).
+MIN_CHILD_SECS = 0.05
 # Utterances longer than this are force-split at their largest internal gap.
 MAX_UTTERANCE_SECS = 15.0
 # Utterances shorter than this are merged into a neighbour when possible.
@@ -125,12 +129,63 @@ def compute_boundaries(
     Adjacent children meet at the midpoint of the inter-word gap between
     them. The first child starts at 0.0; the last ends at the file duration.
     No audio is lost or duplicated.
+
+    Whisper word timestamps can overshoot the actual file duration (or, in
+    pathological cases, precede 0.0), which would invert a (start, end)
+    pair. Every edge is therefore clamped to [0.0, file_duration] and forced
+    non-decreasing; a collapsed (zero-length) pair is possible and is merged
+    away by ``merge_degenerate_children``.
     """
     edges = [0.0]
     for prev, nxt in zip(utterances, utterances[1:]):
-        edges.append((prev[-1].end + nxt[0].start) / 2.0)
-    edges.append(file_duration)
+        mid = (prev[-1].end + nxt[0].start) / 2.0
+        mid = min(file_duration, max(0.0, mid))
+        edges.append(max(mid, edges[-1]))
+    edges.append(max(file_duration, edges[-1]))
     return list(zip(edges, edges[1:]))
+
+
+def merge_degenerate_children(
+    utterances: list[list],
+    boundaries: list[tuple[float, float]],
+    min_secs: float = MIN_CHILD_SECS,
+) -> tuple[list[list], list[tuple[float, float]]]:
+    """Merge zero/near-zero-length children into a neighbour.
+
+    Boundary clamping in ``compute_boundaries`` can collapse a child to a
+    span shorter than ``min_secs``. Such a child's words are merged into the
+    previous child (or the next one, if it is the first), so its text is
+    kept without emitting a degenerate WAV. Returns the merged
+    ``(utterances, boundaries)`` pair, still index-aligned and contiguous.
+    """
+    utts_out: list[list] = []
+    bounds_out: list[tuple[float, float]] = []
+    pending_utt: list = []
+    pending_start = 0.0
+
+    for utt, (start, end) in zip(utterances, boundaries):
+        if pending_utt:
+            # A degenerate leading child folds into this one.
+            utt = pending_utt + utt
+            start = pending_start
+            pending_utt = []
+        if end - start < min_secs:
+            if bounds_out:
+                utts_out[-1] = utts_out[-1] + utt
+                bounds_out[-1] = (bounds_out[-1][0], end)
+            else:
+                pending_utt = utt
+                pending_start = start
+        else:
+            utts_out.append(utt)
+            bounds_out.append((start, end))
+
+    if pending_utt:
+        # Everything was degenerate — emit a single child spanning the lot.
+        utts_out.append(pending_utt)
+        bounds_out.append((pending_start, boundaries[-1][1]))
+
+    return utts_out, bounds_out
 
 
 def slice_children(
