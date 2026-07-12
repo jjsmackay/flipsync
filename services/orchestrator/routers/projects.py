@@ -6,7 +6,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, project_exists, utc_now
 from errors import AppError
@@ -116,6 +116,8 @@ def _project_detail(project_id: str) -> dict:
             "auto_approve_enabled": bool(p["auto_approve_enabled"]),
             "auto_approve_match_threshold": p["auto_approve_match_threshold"],
             "auto_approve_transcript_threshold": p["auto_approve_transcript_threshold"],
+            "whisper_batch_size": p["whisper_batch_size"],
+            "whisper_compute_type": p["whisper_compute_type"],
         },
         "stats": _project_stats(project_id),
         "active_jobs": _active_jobs(project_id),
@@ -128,6 +130,19 @@ def _project_detail(project_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# faster-whisper compute types we allow. 'default' lets the transcription
+# service pick per device (float16 on GPU, int8 on CPU); the others let a
+# VRAM-constrained GPU trade precision for memory.
+WHISPER_COMPUTE_TYPES = {"default", "float16", "int8_float16", "int8"}
+_WHISPER_BATCH = Field(default=16, ge=1, le=64)
+
+
+def _validate_compute_type(v: Optional[str]) -> Optional[str]:
+    if v is not None and v not in WHISPER_COMPUTE_TYPES:
+        raise ValueError(f"whisper_compute_type must be one of {sorted(WHISPER_COMPUTE_TYPES)}")
+    return v
+
+
 class ProjectCreate(BaseModel):
     name: str
     whisper_model: str = "large-v2"
@@ -137,6 +152,10 @@ class ProjectCreate(BaseModel):
     auto_approve_enabled: bool = True
     auto_approve_match_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     auto_approve_transcript_threshold: float = Field(default=0.90, ge=0.0, le=1.0)
+    whisper_batch_size: int = _WHISPER_BATCH
+    whisper_compute_type: str = "default"
+
+    _check_compute = field_validator("whisper_compute_type")(_validate_compute_type)
 
 
 class ProjectPatch(BaseModel):
@@ -148,6 +167,10 @@ class ProjectPatch(BaseModel):
     auto_approve_enabled: Optional[bool] = None
     auto_approve_match_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     auto_approve_transcript_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    whisper_batch_size: Optional[int] = Field(default=None, ge=1, le=64)
+    whisper_compute_type: Optional[str] = None
+
+    _check_compute = field_validator("whisper_compute_type")(_validate_compute_type)
 
 
 class ProjectDelete(BaseModel):
@@ -205,13 +228,15 @@ async def create_project(body: ProjectCreate):
         """
         INSERT INTO projects (id, name, created_at, updated_at, status,
             whisper_model, language, match_threshold, target_duration_secs,
-            auto_approve_enabled, auto_approve_match_threshold, auto_approve_transcript_threshold)
-        VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?)
+            auto_approve_enabled, auto_approve_match_threshold, auto_approve_transcript_threshold,
+            whisper_batch_size, whisper_compute_type)
+        VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (project_id, body.name, now, now, body.whisper_model,
          body.language, body.match_threshold, body.target_duration_secs,
          int(body.auto_approve_enabled), body.auto_approve_match_threshold,
-         body.auto_approve_transcript_threshold),
+         body.auto_approve_transcript_threshold,
+         body.whisper_batch_size, body.whisper_compute_type),
     )
     conn.commit()
     return {"id": project_id, "name": body.name, "status": "new"}
@@ -253,6 +278,10 @@ async def patch_project(project_id: str, body: ProjectPatch):
         updates["auto_approve_match_threshold"] = body.auto_approve_match_threshold
     if "auto_approve_transcript_threshold" in provided and body.auto_approve_transcript_threshold is not None:
         updates["auto_approve_transcript_threshold"] = body.auto_approve_transcript_threshold
+    if "whisper_batch_size" in provided and body.whisper_batch_size is not None:
+        updates["whisper_batch_size"] = body.whisper_batch_size
+    if "whisper_compute_type" in provided and body.whisper_compute_type is not None:
+        updates["whisper_compute_type"] = body.whisper_compute_type
 
     # Changing match_threshold or any auto-approve field triggers a synchronous
     # segment status re-evaluation (spec/api-contracts.md PATCH /projects).

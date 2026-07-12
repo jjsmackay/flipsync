@@ -48,12 +48,18 @@ class SegmentRef(BaseModel):
         return self
 
 
+VALID_COMPUTE_TYPES = {"default", "float16", "int8_float16", "int8"}
+
+
 class JobRequest(BaseModel):
     job_id: str
     segments: list[SegmentRef]
     model: str = "large-v2"
     language: Optional[str] = None
     batch_size: int = 16
+    # 'default' keeps the device-derived precision (float16 GPU / int8 CPU); the
+    # others let the orchestrator trade precision for VRAM on a constrained GPU.
+    compute_type: str = "default"
 
     @field_validator("model")
     @classmethod
@@ -69,6 +75,15 @@ class JobRequest(BaseModel):
     def _validate_batch_size(cls, v: int) -> int:
         if v < 1:
             raise ValueError("batch_size must be a positive integer.")
+        return v
+
+    @field_validator("compute_type")
+    @classmethod
+    def _validate_compute_type(cls, v: str) -> str:
+        if v not in VALID_COMPUTE_TYPES:
+            raise ValueError(
+                f"Invalid compute_type '{v}'. Must be one of: {sorted(VALID_COMPUTE_TYPES)}."
+            )
         return v
 
 
@@ -118,6 +133,7 @@ async def _run_transcription(
     model_size: str,
     language: Optional[str],
     batch_size: int,
+    compute_type: str = "default",
 ) -> None:
     """Background task: load model, process segments in batches, update job state."""
     loop = asyncio.get_running_loop()
@@ -125,7 +141,9 @@ async def _run_transcription(
     try:
         # Load (or retrieve cached) model in executor to avoid blocking event loop.
         # batch_size drives CTranslate2 worker count for concurrent transcription.
-        model = await loop.run_in_executor(None, load_model, model_size, batch_size)
+        model = await loop.run_in_executor(
+            None, load_model, model_size, batch_size, compute_type
+        )
 
         total = len(segments)
 
@@ -227,6 +245,7 @@ async def submit_job(req: JobRequest):
             req.model,
             req.language,
             req.batch_size,
+            req.compute_type,
         )
     )
     _background_tasks.add(task)

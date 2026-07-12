@@ -57,7 +57,11 @@ export interface ProjectConfig {
   auto_approve_enabled: boolean
   auto_approve_match_threshold: number
   auto_approve_transcript_threshold: number
+  whisper_batch_size: number
+  whisper_compute_type: string
 }
+
+export const WHISPER_COMPUTE_TYPES = ['default', 'float16', 'int8_float16', 'int8'] as const
 
 export interface SourceCoverage {
   source_id: string
@@ -196,6 +200,8 @@ export interface PatchProjectRequest {
   auto_approve_enabled?: boolean
   auto_approve_match_threshold?: number
   auto_approve_transcript_threshold?: number
+  whisper_batch_size?: number
+  whisper_compute_type?: string
 }
 
 export interface PatchSegmentRequest {

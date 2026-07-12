@@ -47,7 +47,9 @@ CREATE TABLE projects (
     target_duration_secs REAL NOT NULL DEFAULT 1800.0, -- progress bar target; default 30 minutes
     auto_approve_enabled             INTEGER NOT NULL DEFAULT 1,    -- boolean
     auto_approve_match_threshold     REAL NOT NULL DEFAULT 0.85,
-    auto_approve_transcript_threshold REAL NOT NULL DEFAULT 0.90
+    auto_approve_transcript_threshold REAL NOT NULL DEFAULT 0.90,
+    whisper_batch_size    INTEGER NOT NULL DEFAULT 16,             -- segments transcribed concurrently on GPU (OOM lever)
+    whisper_compute_type  TEXT NOT NULL DEFAULT 'default'          -- 'default' | 'float16' | 'int8_float16' | 'int8' (VRAM lever)
 );
 ```
 

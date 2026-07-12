@@ -883,7 +883,11 @@ async def _handle_transcription_bulk(
         _recompute_project_status(project_id)
         return
 
-    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
+    project = conn.execute(
+        "SELECT whisper_model, language, whisper_batch_size, whisper_compute_type "
+        "FROM projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
 
     # Build segment list with wav_paths (bulk query). Untranscribed
     # pending/below_threshold segments are eligible for sentence-aligned
@@ -915,13 +919,17 @@ async def _handle_transcription_bulk(
 
     model = params.get("model") or project["whisper_model"]
     language = params.get("language", project["language"])
+    # batch_size falls back to project config; a params override lets an OOM
+    # retry drop it further without changing the project setting.
+    batch_size = params.get("batch_size") or project["whisper_batch_size"]
 
     payload = {
         "job_id": job_id,
         "segments": seg_list,
         "model": model,
         "language": language,
-        "batch_size": 16,
+        "batch_size": batch_size,
+        "compute_type": project["whisper_compute_type"],
     }
 
     try:
@@ -979,7 +987,10 @@ async def _handle_transcription_segment(
         _recompute_project_status(project_id)
         return
 
-    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
+    project = conn.execute(
+        "SELECT whisper_model, language, whisper_compute_type FROM projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
     data_prefix = _data_prefix()
 
     payload = {
@@ -991,6 +1002,7 @@ async def _handle_transcription_segment(
         "model": project["whisper_model"],
         "language": project["language"],
         "batch_size": 1,
+        "compute_type": project["whisper_compute_type"],
     }
 
     try:

@@ -13,7 +13,7 @@ from resegment import (
 )
 
 # Lazy import to avoid crashing at startup if faster-whisper isn't installed
-_model_cache: dict = {"model": None, "model_size": None}
+_model_cache: dict = {"model": None, "model_size": None, "compute_type": None}
 
 VALID_MODELS = {"tiny", "base", "small", "medium", "large-v2", "large-v3"}
 SHORT_SEGMENT_THRESHOLD_SECS = 0.5
@@ -31,35 +31,48 @@ def get_wav_duration(wav_path: str) -> float:
         return frames / float(rate)
 
 
-def load_model(model_size: str, num_workers: int = 1):
-    """Load (or return cached) WhisperModel. Replaces cache if model_size changed.
+def load_model(model_size: str, num_workers: int = 1, compute_type: str = "default"):
+    """Load (or return cached) WhisperModel. Reloads if model_size OR compute_type changed.
 
     ``num_workers`` sets how many transcriptions CTranslate2 can run in parallel
     (see ``process_batch``). The model is cached across jobs keyed on
-    ``model_size`` only, so the first job's ``batch_size`` fixes ``num_workers``
-    for the process lifetime; later jobs still bound their own concurrency via
-    the batch thread pool, so a smaller ``batch_size`` for OOM recovery works
-    regardless of the cached value.
+    ``(model_size, compute_type)``; the first job's ``batch_size`` fixes
+    ``num_workers`` for the process lifetime, but later jobs still bound their
+    own concurrency via the batch thread pool, so a smaller ``batch_size`` for
+    OOM recovery works regardless of the cached value.
+
+    ``compute_type`` of ``"default"`` keeps the device-derived choice (float16 on
+    GPU, int8 on CPU); any other value (e.g. ``int8_float16``) is passed straight
+    to CTranslate2 to trade precision for VRAM on a constrained GPU.
     """
     global _model_cache
 
-    if _model_cache["model"] is not None and _model_cache["model_size"] == model_size:
+    if (
+        _model_cache["model"] is not None
+        and _model_cache["model_size"] == model_size
+        and _model_cache["compute_type"] == compute_type
+    ):
         return _model_cache["model"]
 
     from faster_whisper import WhisperModel
     from ctranslate2 import get_cuda_device_count
 
     device = "cuda" if get_cuda_device_count() > 0 else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
+    resolved_compute_type = (
+        ("float16" if device == "cuda" else "int8")
+        if compute_type == "default"
+        else compute_type
+    )
 
     model = WhisperModel(
         model_size,
         device=device,
-        compute_type=compute_type,
+        compute_type=resolved_compute_type,
         num_workers=max(1, num_workers),
     )
     _model_cache["model"] = model
     _model_cache["model_size"] = model_size
+    _model_cache["compute_type"] = compute_type
     return model
 
 

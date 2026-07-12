@@ -76,6 +76,32 @@ def _children_entry(parent_id, project, bounds=None):
 JOINED = "I told you not to come back here. And yet."
 
 
+class TestWhisperTuningPayload:
+    def test_bulk_payload_carries_config_batch_size_and_compute_type(
+        self, client, project, isolated_data_dir
+    ):
+        import db
+        conn = db.get_conn(project)
+        client.patch(f"/projects/{project}", json={
+            "whisper_batch_size": 4, "whisper_compute_type": "int8_float16",
+        })
+        source_id = _insert_source(conn, project, "complete")
+        seg = _insert_segment(conn, project, source_id, status="pending", confidence=0.7)
+        _create_segment_wav(db.project_dir(project), seg)
+
+        capture = []
+        _run_bulk(
+            project, [seg],
+            [{"completed_segments": [
+                {"id": seg, "transcript": "x", "transcript_confidence": 0.9}
+            ]}],
+            submit_capture=capture,
+        )
+
+        assert capture[0]["batch_size"] == 4
+        assert capture[0]["compute_type"] == "int8_float16"
+
+
 # ========================================================================
 # A1 — write-time eligibility re-check for children results
 # ========================================================================

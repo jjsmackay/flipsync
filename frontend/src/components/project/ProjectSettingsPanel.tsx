@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ProjectConfig } from '../../types/api'
+import { WHISPER_COMPUTE_TYPES } from '../../types/api'
 import { patchProject, ApiError } from '../../api/client'
 
 interface ProjectSettingsPanelProps {
@@ -19,6 +20,8 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
   const [autoApproveTranscriptThreshold, setAutoApproveTranscriptThreshold] = useState(
     config.auto_approve_transcript_threshold,
   )
+  const [batchSize, setBatchSize] = useState(config.whisper_batch_size)
+  const [computeType, setComputeType] = useState(config.whisper_compute_type)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -27,7 +30,9 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
     matchThreshold !== config.match_threshold ||
     autoApproveEnabled !== config.auto_approve_enabled ||
     autoApproveMatchThreshold !== config.auto_approve_match_threshold ||
-    autoApproveTranscriptThreshold !== config.auto_approve_transcript_threshold
+    autoApproveTranscriptThreshold !== config.auto_approve_transcript_threshold ||
+    batchSize !== config.whisper_batch_size ||
+    computeType !== config.whisper_compute_type
 
   async function handleSave() {
     setSaving(true)
@@ -39,6 +44,8 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
         auto_approve_enabled: autoApproveEnabled,
         auto_approve_match_threshold: autoApproveMatchThreshold,
         auto_approve_transcript_threshold: autoApproveTranscriptThreshold,
+        whisper_batch_size: batchSize,
+        whisper_compute_type: computeType,
       })
       onSaved()
       setSaved(true)
@@ -54,6 +61,8 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
     setAutoApproveEnabled(config.auto_approve_enabled)
     setAutoApproveMatchThreshold(config.auto_approve_match_threshold)
     setAutoApproveTranscriptThreshold(config.auto_approve_transcript_threshold)
+    setBatchSize(config.whisper_batch_size)
+    setComputeType(config.whisper_compute_type)
     setError(null)
     setSaved(false)
   }
@@ -138,6 +147,48 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
           />
         </div>
       </div>
+
+      <hr className="border-gray-100 dark:border-gray-800" />
+
+      {/* Whisper transcription tuning — GPU/VRAM levers. */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Transcription batch size
+            <span className="ml-2 font-mono text-blue-600">{batchSize}</span>
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={64}
+            value={batchSize}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10)
+              setBatchSize(Number.isNaN(v) ? 1 : Math.min(64, Math.max(1, v)))
+              setSaved(false)
+            }}
+            className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 text-sm dark:bg-gray-900 dark:text-gray-100"
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Compute precision
+          </label>
+          <select
+            value={computeType}
+            onChange={(e) => { setComputeType(e.target.value); setSaved(false) }}
+            className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 text-sm dark:bg-gray-900 dark:text-gray-100"
+          >
+            {WHISPER_COMPUTE_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 -mt-2">
+        Lower the batch size, or pick a lighter precision (e.g. <span className="font-mono">int8_float16</span>),
+        if transcription runs out of GPU memory. <span className="font-mono">default</span> uses float16 on GPU.
+      </p>
 
       {error && (
         <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">

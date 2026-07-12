@@ -55,6 +55,8 @@ function makeProject(overrides: Partial<ProjectDetail> = {}): ProjectDetail {
       auto_approve_enabled: true,
       auto_approve_match_threshold: 0.85,
       auto_approve_transcript_threshold: 0.9,
+      whisper_batch_size: 16,
+      whisper_compute_type: 'default',
     },
     active_jobs: [],
     recent_failed_jobs: [],

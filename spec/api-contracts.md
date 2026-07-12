@@ -156,7 +156,7 @@ Full project state, including per-source status and summary stats.
 
 #### `PATCH /projects/{project_id}`
 
-Update project config. Only `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, and `auto_approve_transcript_threshold` are patchable. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
+Update project config. Only `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, `auto_approve_transcript_threshold`, `whisper_batch_size` (1–64), and `whisper_compute_type` (`default` | `float16` | `int8_float16` | `int8`) are patchable. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
 
 1. **Auto-approve demotion:** segments with status `auto_approved` that no longer meet the auto-approve eligibility rule (see [Pipeline](pipeline.md) §Auto-approval) are moved to `pending`.
 2. **Auto-approve promotion:** segments with status `pending` that meet the eligibility rule are moved to `auto_approved`.
@@ -912,7 +912,8 @@ The `mode` field (`"scout"` | `"match"`) is present on every completion response
   ],
   "model": "large-v2",
   "language": null,
-  "batch_size": 16
+  "batch_size": 16,
+  "compute_type": "default"
 }
 ```
 
@@ -925,6 +926,7 @@ The `mode` field (`"scout"` | `"match"`) is present on every completion response
 | `model` | string | yes | faster-whisper model size: `tiny`, `base`, `small`, `medium`, `large-v2` (default), `large-v3` |
 | `language` | string or null | no | ISO 639-1 language code (e.g. `en`, `fr`, `ja`). If null, faster-whisper auto-detects per segment. |
 | `batch_size` | int | no | Number of segments to transcribe concurrently on GPU. Default 16. Reduce if GPU OOMs during transcription. |
+| `compute_type` | string | no | CTranslate2 precision: `default` (float16 on GPU, int8 on CPU), `float16`, `int8_float16`, or `int8`. Default `default`. A lighter type cuts VRAM on a constrained GPU. |
 
 Transcription always runs with word-level timestamps enabled; they are consumed internally for re-segmentation and not returned per word.
 

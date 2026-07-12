@@ -108,6 +108,41 @@ class TestApproveRequiresTranscript:
         assert conn.execute("SELECT status FROM segments WHERE id=?", (bare,)).fetchone()["status"] == "pending"
 
 
+class TestWhisperTuningConfig:
+    def test_defaults_present_in_config(self, client):
+        pid = client.post("/projects", json={"name": "P"}).json()["id"]
+        cfg = client.get(f"/projects/{pid}").json()["config"]
+        assert cfg["whisper_batch_size"] == 16
+        assert cfg["whisper_compute_type"] == "default"
+
+    def test_create_with_overrides(self, client):
+        pid = client.post("/projects", json={
+            "name": "P", "whisper_batch_size": 4, "whisper_compute_type": "int8_float16",
+        }).json()["id"]
+        cfg = client.get(f"/projects/{pid}").json()["config"]
+        assert cfg["whisper_batch_size"] == 4
+        assert cfg["whisper_compute_type"] == "int8_float16"
+
+    def test_patch_updates_values(self, client):
+        pid = client.post("/projects", json={"name": "P"}).json()["id"]
+        resp = client.patch(f"/projects/{pid}", json={
+            "whisper_batch_size": 2, "whisper_compute_type": "int8",
+        })
+        assert resp.status_code == 200
+        cfg = client.get(f"/projects/{pid}").json()["config"]
+        assert cfg["whisper_batch_size"] == 2
+        assert cfg["whisper_compute_type"] == "int8"
+
+    def test_invalid_compute_type_rejected(self, client):
+        pid = client.post("/projects", json={"name": "P"}).json()["id"]
+        resp = client.patch(f"/projects/{pid}", json={"whisper_compute_type": "float64"})
+        assert resp.status_code == 422
+
+    def test_batch_size_must_be_positive(self, client):
+        resp = client.post("/projects", json={"name": "P", "whisper_batch_size": 0})
+        assert resp.status_code == 422
+
+
 def _run_job(project_id, job_id):
     """Execute one job synchronously with the background runner suppressed."""
     import asyncio
