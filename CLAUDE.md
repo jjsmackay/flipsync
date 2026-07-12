@@ -236,7 +236,8 @@ Processing services should return the same flat format directly.
 - **Wave 5 (frontend):** Complete. Project list, dashboard, review queue, export flow, keyboard nav, timeline. Merged to main.
 - **Review-fix hardening:** Complete. The 2026-07-12 whole-project review fixes (`integrate/review-fixes`) are merged to main.
 - **Deploy hardening:** Complete and merged to main — prebuilt GHCR images, configurable orchestrator/frontend ports, same-origin `/api` proxy (no CORS needed for the UI), model-cache bind mounts under `MODELS_ROOT`, pyannote.audio 4.0.7 upgrade, HF_TOKEN env docs.
-- **Next:** All waves and hardening merged. Outstanding: full end-to-end verification on real GPU hardware (diarisation + steps 2–5 not yet confirmed E2E).
+- **Conceptual fixes wave 1:** Complete, merged to main — sentence-aligned re-segmentation (transcription service splits untranscribed segments into 1–15 s sentence children; orchestrator replaces parent rows transactionally) and auto-approve banding (`auto_approved` status, per-project thresholds, PATCH re-evaluation, uncertainty sort, dashboard settings panel).
+- **Next:** Review follow-ups in flight (per-segment match scoring, rejected→pending undo, global GPU semaphore). Outstanding: full end-to-end verification on real GPU hardware (diarisation + steps 2–5 not yet confirmed E2E).
 
 ## Docker notes
 
