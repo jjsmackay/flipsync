@@ -49,10 +49,17 @@ class TestGpuJobTypes:
             "scout_speakers",
             "transcription_bulk",
             "transcription_segment",
+            "finetune",
+            "preview",
         }
-        # CPU jobs must never be gated.
+        # CPU jobs must never be gated (dataset_build uses the CPU-only
+        # cleanup service).
         assert "extract_audio" not in jobs.GPU_JOB_TYPES
         assert "export" not in jobs.GPU_JOB_TYPES
+        assert "dataset_build" not in jobs.GPU_JOB_TYPES
+        # XTTS jobs gate on the xtts service (readiness wait target).
+        assert jobs.GPU_JOB_SERVICES["finetune"] == "xtts"
+        assert jobs.GPU_JOB_SERVICES["preview"] == "xtts"
         # Every GPU type has a registered handler (guards against typos).
         assert jobs.GPU_JOB_TYPES <= set(jobs.HANDLERS)
 

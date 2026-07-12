@@ -32,9 +32,18 @@ _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 # GPU-bound job types additionally serialise host-wide: at most one GPU job
 # runs across ALL projects at any time (all projects share the same GPU;
 # concurrent GPU jobs contend for VRAM and OOM). CPU jobs (extract_audio,
-# export — FFmpeg subprocess / CPU-only cleanup service) are not gated.
+# export, dataset_build — FFmpeg subprocess / CPU-only cleanup service) are
+# not gated.
 GPU_JOB_TYPES = frozenset(
-    {"vocal_separation", "diarisation", "scout_speakers", "transcription_bulk", "transcription_segment"}
+    {
+        "vocal_separation",
+        "diarisation",
+        "scout_speakers",
+        "transcription_bulk",
+        "transcription_segment",
+        "finetune",
+        "preview",
+    }
 )
 
 # Which processing service each GPU job type talks to. Must mirror the
@@ -45,7 +54,17 @@ GPU_JOB_SERVICES: dict[str, str] = {
     "scout_speakers": "diarisation",
     "transcription_bulk": "transcription",
     "transcription_segment": "transcription",
+    "finetune": "xtts",
+    "preview": "xtts",
 }
+
+# Voice jobs (v1.5 XTTS work) are excluded from the active-jobs count that
+# drives project-status recomputation: a running dataset build, fine-tune or
+# preview must not flip the project out of 'review'/'exported' (which would
+# block export). They still appear in active_jobs API responses, still block
+# project deletion, and still serialise via the per-project FIFO and the
+# host-wide GPU lock.
+VOICE_JOB_TYPES = frozenset({"dataset_build", "finetune", "preview"})
 
 # The global GPU lock is created lazily per event loop: an asyncio.Lock binds
 # to the loop it is first awaited on, and tests run each case in a fresh loop
@@ -1232,7 +1251,8 @@ def _clear_transcription_error_flag(conn, segment_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Shared cleanup step (used by export and dataset_build)
+# Dataset cleanup step (dataset_build only — export has its own inline staged
+# copy in _handle_export)
 # ---------------------------------------------------------------------------
 
 
@@ -1253,16 +1273,17 @@ async def _run_cleanup(
     """Submit a cleanup job for the given segments and poll until complete.
 
     Each segment row must expose ``id`` and ``raw_path``. Cleaned WAVs are
-    written to ``export/{id}.wav`` on the shared volume. Returns the service's
-    per-segment ``results`` list. Raises CleanupError on submit failure or a
-    job-level cleanup failure.
+    written to ``cleaned/{id}.wav`` on the shared volume — the dataset cache,
+    deliberately separate from export/ so exports and dataset builds never
+    clobber each other's files. Returns the service's per-segment ``results``
+    list. Raises CleanupError on submit failure or a job-level cleanup failure.
     """
     data_prefix = _data_prefix()
     cleanup_segments = [
         {
             "id": seg["id"],
             "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
-            "output_path": f"{data_prefix}/projects/{project_id}/export/{seg['id']}.wav",
+            "output_path": f"{data_prefix}/projects/{project_id}/cleaned/{seg['id']}.wav",
         }
         for seg in segments
     ]
@@ -1295,52 +1316,28 @@ async def _run_cleanup(
     return result.get("results", [])
 
 
-def _apply_cleanup_results(conn, results: list[dict]) -> None:
-    """Apply cleanup per-segment results to the database (commits on completion).
+def _apply_dataset_cleanup_results(conn, results: list[dict]) -> None:
+    """Record dataset-cleanup outputs (commits on completion).
 
-    - FFmpeg error → ``auto_rejected`` status + ``cleanup_error`` flag
-    - silent-after-trim → ``auto_rejected`` status
-    - clipping → ``clipping_warning`` status + column + ``export_path``
-    - success → ``export_path`` recorded
+    Dataset semantics only — a training action must NEVER mutate segment
+    review status (that churn belongs to export, which has its own inline
+    result handling in _handle_export):
+
+    - success AND clipping → ``cleaned_path`` recorded (clipped audio IS
+      included in datasets)
+    - FFmpeg error or silent-after-trim → the row is left completely alone;
+      ``cleaned_path`` stays NULL and the segment simply drops out of the
+      dataset.
     """
     now = _now()
     for seg_result in results:
         seg_id = seg_result["id"]
-
-        if seg_result.get("error"):
-            # FFmpeg error — auto_reject with cleanup_error flag
-            conn.execute(
-                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
-                (now, seg_id),
-            )
-            _add_flag(conn, seg_id, f"cleanup_error: {seg_result['error']}")
-
-        elif seg_result.get("auto_rejected"):
-            # Silent after trim
-            conn.execute(
-                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
-                (now, seg_id),
-            )
-
-        elif seg_result.get("clipping_warning"):
-            # Clipping detected — the cleaned WAV is still exported (with the
-            # flag recorded in the manifest); set the column, the status, AND
-            # export_path so the segment appears in the manifest.
-            conn.execute(
-                """
-                UPDATE segments
-                SET status='clipping_warning', clipping_warning=1, export_path=?, updated_at=?
-                WHERE id=?
-                """,
-                (f"export/{seg_id}.wav", now, seg_id),
-            )
-
-        else:
-            # Success — record export_path
-            conn.execute(
-                "UPDATE segments SET export_path=?, updated_at=? WHERE id=?",
-                (f"export/{seg_id}.wav", now, seg_id),
-            )
+        if seg_result.get("error") or seg_result.get("auto_rejected"):
+            continue
+        conn.execute(
+            "UPDATE segments SET cleaned_path=?, updated_at=? WHERE id=?",
+            (f"cleaned/{seg_id}.wav", now, seg_id),
+        )
 
     conn.commit()
 
@@ -1350,7 +1347,11 @@ def _select_dataset_segments(
 ) -> tuple[list, dict]:
     """Select segments for a dataset build, applying training filters.
 
-    ``approved`` mode selects ``status='approved'``; ``auto`` mode selects
+    ``approved`` mode selects ``status IN ('approved', 'auto_approved')`` —
+    auto_approved is treated as approved everywhere else (export set,
+    approved_duration_secs), so the dataset gate must match. Segments in
+    ``clipping_warning`` status stay excluded from datasets (training
+    quality), unlike export. ``auto`` mode selects
     ``match_confidence >= min_confidence`` (default 0.85) with status not
     ``rejected``/``auto_rejected``. Training filters then drop segments outside
     the [1.0, 11.0] s range and any carrying a ``cleanup_error`` flag.
@@ -1374,7 +1375,7 @@ def _select_dataset_segments(
             """
             SELECT seg.*, src.filename AS source_filename
             FROM segments seg JOIN sources src ON src.id = seg.source_id
-            WHERE seg.status = 'approved'
+            WHERE seg.status IN ('approved', 'auto_approved')
             """,
         ).fetchall()
 
@@ -1702,7 +1703,9 @@ async def _handle_dataset_build(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
     """Build a fine-tune dataset for a model: select segments, clean any lacking
-    cleaned audio, write models/{model_id}/dataset.json (absolute audio paths)."""
+    cleaned dataset audio (cleaned/{id}.wav, tracked by segments.cleaned_path),
+    write models/{model_id}/dataset.json (absolute audio paths). Never touches
+    export/ or segment review statuses."""
     conn = get_conn(project_id)
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     model_id = params.get("model_id")
@@ -1726,8 +1729,8 @@ async def _handle_dataset_build(
         _recompute_project_status(project_id)
         return
 
-    # Clean only segments that lack cleaned audio; cleanup occupies 0-80%.
-    to_clean = [r for r in kept if r["export_path"] is None]
+    # Clean only segments that lack cleaned dataset audio; cleanup occupies 0-80%.
+    to_clean = [r for r in kept if r["cleaned_path"] is None]
 
     def on_progress(result):
         progress = result.get("progress", 0)
@@ -1742,12 +1745,13 @@ async def _handle_dataset_build(
             _fail_job(project_id, job_id, str(exc))
             _recompute_project_status(project_id)
             return
-        _apply_cleanup_results(conn, results)
+        _apply_dataset_cleanup_results(conn, results)
 
     _update_progress(project_id, job_id, 80)
 
-    # Re-read the kept set: some may have been auto_rejected during cleanup;
-    # keep only those with cleaned audio available (absolute export path).
+    # Re-read the kept set: keep only segments whose cleanup produced audio
+    # (cleaned_path set). Cleanup failures leave rows untouched — they simply
+    # drop out of the dataset; review statuses never change.
     kept_ids = [r["id"] for r in kept]
     placeholders = ",".join("?" * len(kept_ids))
     rows = conn.execute(
@@ -1758,7 +1762,7 @@ async def _handle_dataset_build(
         """,
         kept_ids,
     ).fetchall()
-    final = [r for r in rows if r["status"] != "auto_rejected" and r["export_path"] is not None]
+    final = [r for r in rows if r["cleaned_path"] is not None]
 
     # Write the dataset manifest (export-manifest schema, absolute audio paths).
     data_prefix = _data_prefix()
@@ -1776,7 +1780,7 @@ async def _handle_dataset_build(
         total_duration += dur
         manifest_segments.append({
             "id": r["id"],
-            "audio_file": f"{data_prefix}/projects/{project_id}/{r['export_path']}",
+            "audio_file": f"{data_prefix}/projects/{project_id}/{r['cleaned_path']}",
             "text": text,
             "source": r["source_filename"],
             "start_secs": r["start_secs"],
@@ -1844,8 +1848,30 @@ async def _handle_finetune(
     hyper = params.get("params", {}) or {}
 
     model = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
-    if model is None or model["dataset_manifest_path"] is None or model["status"] != "pending":
-        _fail_job(project_id, job_id, "dataset build did not complete")
+    if model is None:
+        _fail_job(project_id, job_id, "model row not found")
+        _recompute_project_status(project_id)
+        return
+    if model["dataset_manifest_path"] is None or model["status"] != "pending":
+        if model["status"] == "training":
+            # Startup recovery re-queued a finetune that was interrupted
+            # mid-run: the row is still 'training' from the dead run.
+            msg = "fine-tune interrupted (orchestrator restart)"
+        elif model["dataset_manifest_path"] is None:
+            msg = "dataset build did not complete"
+        else:
+            msg = f"model is not ready to train (status '{model['status']}')"
+        # A model left at 'pending'/'training' would be wedged forever:
+        # POST /models 409s while one is in progress, DELETE 409s on these
+        # statuses, and there is no cancel endpoint. Mark it failed so the
+        # user can delete it and start a new fine-tune (no resume machinery).
+        if model["status"] in ("pending", "training"):
+            conn.execute(
+                "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
+                (msg, _now(), model_id),
+            )
+            conn.commit()
+        _fail_job(project_id, job_id, msg)
         _recompute_project_status(project_id)
         return
 
@@ -1957,7 +1983,8 @@ def _resolve_conditioning(
     - ``reference_clip`` → the project reference clip (single element)
     - ``segments_raw`` → top-N by match_confidence, status not rejected/
       auto_rejected, duration 2-12 s → raw_path
-    - ``segments_cleaned`` → same query + export_path present → export_path
+    - ``segments_cleaned`` → same query + cleaned audio present, preferring
+      the dataset cache (cleaned_path) and falling back to export_path
     - ``None`` → best available: cleaned, then raw, then reference
     """
     data_prefix = _data_prefix()
@@ -1972,11 +1999,17 @@ def _resolve_conditioning(
         return None
 
     def try_segments(cleaned: bool):
-        col = "export_path" if cleaned else "raw_path"
-        extra = "AND seg.export_path IS NOT NULL" if cleaned else ""
+        if cleaned:
+            # Prefer the dataset cache; fall back to the export WAV when no
+            # dataset build has cleaned this segment yet.
+            col = "COALESCE(seg.cleaned_path, seg.export_path)"
+            extra = "AND (seg.cleaned_path IS NOT NULL OR seg.export_path IS NOT NULL)"
+        else:
+            col = "seg.raw_path"
+            extra = ""
         rows = conn.execute(
             f"""
-            SELECT seg.{col} AS p FROM segments seg
+            SELECT {col} AS p FROM segments seg
             WHERE seg.status NOT IN ('rejected', 'auto_rejected')
               AND seg.duration_secs BETWEEN 2 AND 12
               {extra}

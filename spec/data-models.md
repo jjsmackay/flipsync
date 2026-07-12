@@ -106,7 +106,8 @@ CREATE TABLE segments (
     project_id              TEXT NOT NULL REFERENCES projects(id),
     source_id               TEXT NOT NULL REFERENCES sources(id),
     raw_path                TEXT NOT NULL,      -- segments/raw/{id}.wav
-    export_path             TEXT,               -- export/{id}.wav, set after cleanup
+    export_path             TEXT,               -- export/{id}.wav, set after export cleanup
+    cleaned_path            TEXT,               -- cleaned/{id}.wav, dataset cleanup cache (migration 009)
 
     -- Diarisation
     start_secs              REAL NOT NULL,
@@ -199,7 +200,7 @@ CREATE TABLE models (
 
 **Dataset manifest** (`models/{id}/dataset.json`): same schema as the export manifest, with two differences — `audio_file` values are absolute paths (the inter-service interface), and a `selection` block records `{ mode, min_confidence, dropped: { too_short, too_long, flagged } }` so every model documents exactly what it was trained on.
 
-**Dataset build** is a shared internal step: select segments (by review status or confidence floor), run cleanup on any lacking cleaned audio, write the manifest. Export reuses it (mode `approved`) and then archives; the archive contains exactly the files listed in its manifest.
+**Dataset build** selects segments (`approved` mode = status `approved` or `auto_approved`; `auto` mode = confidence floor, status not `rejected`/`auto_rejected`), runs cleanup for any segment lacking cleaned dataset audio, then writes the manifest. Segments in `clipping_warning` status are excluded from `approved`-mode datasets (training quality), unlike export. Cleaned dataset WAVs live in the project's `cleaned/` directory (`cleaned/{id}.wav`), tracked by `segments.cleaned_path` — a cache fully decoupled from `export/` and `export_path`, so re-exports never delete dataset audio and dataset builds never pollute the live export set. Dataset cleanup **never mutates segment review status**: on success or clipping the WAV is recorded in `cleaned_path` (clipped audio is included in datasets); on an FFmpeg error or silent-after-trim the row is left untouched and the segment simply drops out of the dataset. Export is a separate path with its own staged cleanup into `export/`.
 
 ---
 
@@ -490,3 +491,4 @@ Migration log:
 | 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
 | 007 | `007_scout_pool.sql` | Rebuilds `speaker_candidates`: replaces `montage_path` with `pool_json` (curatable per-turn scout pool). Candidate rows are transient, so the table is dropped and recreated |
 | 008 | `008_xtts_models.sql` | v1.5: adds the `models` table and the `jobs.progress_detail` column. Both additive |
+| 009 | `009_cleaned_path.sql` | v1.5: `segments.cleaned_path TEXT NULL` — dataset cleanup cache (`cleaned/{id}.wav`), decoupling dataset builds from `export/`/`export_path` |

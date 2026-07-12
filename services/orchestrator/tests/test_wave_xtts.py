@@ -37,16 +37,17 @@ def _insert_source(conn, project_id, status="complete"):
 
 def _insert_seg(conn, project_id, source_id, status="approved", confidence=0.9,
                 start=0.0, end=10.0, transcript="hello world", export_path=None,
-                flags=None):
+                cleaned_path=None, flags=None):
     seg_id = str(uuid.uuid4())
     now = _now()
     conn.execute(
         """INSERT INTO segments
-           (id, project_id, source_id, raw_path, export_path, start_secs, end_secs,
-            speaker_label, match_confidence, status, transcript, flags, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (id, project_id, source_id, raw_path, export_path, cleaned_path, start_secs,
+            end_secs, speaker_label, match_confidence, status, transcript, flags,
+            created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (seg_id, project_id, source_id, f"segments/raw/{seg_id}.wav", export_path,
-         start, end, "SPEAKER_00", confidence, status, transcript,
+         cleaned_path, start, end, "SPEAKER_00", confidence, status, transcript,
          json.dumps(flags) if flags else None, now, now),
     )
     conn.commit()
@@ -57,10 +58,12 @@ def _insert_many(conn, project_id, source_id, count, dur=10.0, status="approved"
                  confidence=0.9, cleaned=False):
     ids = []
     for i in range(count):
-        ep = f"export/x{i}.wav" if cleaned else None
+        # "Cleaned" for dataset purposes means the cleaned/ cache (cleaned_path),
+        # not export_path — dataset builds are decoupled from export/.
+        cp = f"cleaned/x{i}.wav" if cleaned else None
         ids.append(_insert_seg(conn, project_id, source_id, status=status,
                                confidence=confidence, start=i * 20.0, end=i * 20.0 + dur,
-                               export_path=ep))
+                               cleaned_path=cp))
     return ids
 
 
@@ -169,6 +172,30 @@ class TestDatasetSelection:
         assert [r["id"] for r in kept] == [a]
         assert dropped == {"too_short": 0, "too_long": 0, "flagged": 0}
 
+    def test_approved_mode_includes_auto_approved(self, client, project):
+        """auto_approved is treated as approved everywhere else (export set,
+        approved_duration_secs) — the dataset gate must match."""
+        import db, jobs
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        a = _insert_seg(conn, project, src, status="approved")
+        aa = _insert_seg(conn, project, src, status="auto_approved", start=20, end=30)
+
+        kept, _ = jobs._select_dataset_segments(conn, "approved", None)
+        assert {r["id"] for r in kept} == {a, aa}
+
+    def test_approved_mode_excludes_clipping_warning(self, client, project):
+        """Unlike export, clipping_warning-status segments stay out of the
+        training set (training quality)."""
+        import db, jobs
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        a = _insert_seg(conn, project, src, status="approved")
+        _insert_seg(conn, project, src, status="clipping_warning", start=20, end=30)
+
+        kept, _ = jobs._select_dataset_segments(conn, "approved", None)
+        assert [r["id"] for r in kept] == [a]
+
     def test_auto_mode_confidence_floor_and_status(self, client, project):
         import db, jobs
         conn = db.get_conn(project)
@@ -249,9 +276,12 @@ class TestDatasetBuildHandler:
                              params={"model_id": model_id, "mode": "approved",
                                      "min_confidence": None})
 
-        # Only the 15 uncleaned segments were sent to cleanup.
+        # Only the 15 uncleaned segments were sent to cleanup, into cleaned/
+        # (never export/ — dataset builds must not pollute the export set).
         assert len(captured["payload"]["segments"]) == 15
         assert {s["id"] for s in captured["payload"]["segments"]} == set(missing)
+        assert all("/cleaned/" in s["output_path"] for s in captured["payload"]["segments"])
+        assert all("/export/" not in s["output_path"] for s in captured["payload"]["segments"])
 
         manifest = json.loads((pdir / "models" / model_id / "dataset.json").read_text())
         assert manifest["speaker"] == "target"
@@ -270,10 +300,10 @@ class TestDatasetBuildHandler:
         pdir = db.project_dir(project)
         src = _insert_source(conn, project)
         _insert_many(conn, project, src, 31, dur=10.0, cleaned=True)  # 310s valid, cleaned
-        _insert_seg(conn, project, src, status="approved", start=0, end=0.5, export_path="export/s.wav")
-        _insert_seg(conn, project, src, status="approved", start=0, end=15, export_path="export/l.wav")
+        _insert_seg(conn, project, src, status="approved", start=0, end=0.5, cleaned_path="cleaned/s.wav")
+        _insert_seg(conn, project, src, status="approved", start=0, end=15, cleaned_path="cleaned/l.wav")
         _insert_seg(conn, project, src, status="approved", start=0, end=5,
-                    export_path="export/f.wav", flags=["cleanup_error: x"])
+                    cleaned_path="cleaned/f.wav", flags=["cleanup_error: x"])
         model_id = _insert_model(conn, project)
 
         with patch("service_client.submit_job", new=AsyncMock()), \
@@ -477,16 +507,27 @@ class TestConditioningResolution:
         assert src == "segments_raw"
         assert len(paths) == 2  # only the two valid pending segments
 
-    def test_segments_cleaned_requires_export_path(self, client, project):
+    def test_segments_cleaned_falls_back_to_export_path(self, client, project):
         import db, jobs
         conn = db.get_conn(project)
         s = _insert_source(conn, project)
-        _insert_seg(conn, project, s, status="approved", confidence=0.9, start=0, end=5)  # no export
+        _insert_seg(conn, project, s, status="approved", confidence=0.9, start=0, end=5)  # no cleaned audio
         _insert_seg(conn, project, s, status="approved", confidence=0.8, start=0, end=5,
                     export_path="export/c.wav")
         src, paths = jobs._resolve_conditioning(conn, self._prow(conn, project), project, "segments_cleaned", 5)
         assert src == "segments_cleaned"
         assert len(paths) == 1 and paths[0].endswith("export/c.wav")
+
+    def test_segments_cleaned_prefers_cleaned_path(self, client, project):
+        import db, jobs
+        conn = db.get_conn(project)
+        s = _insert_source(conn, project)
+        # Both paths present → the dataset cache (cleaned_path) wins.
+        _insert_seg(conn, project, s, status="approved", confidence=0.9, start=0, end=5,
+                    export_path="export/c.wav", cleaned_path="cleaned/c.wav")
+        src, paths = jobs._resolve_conditioning(conn, self._prow(conn, project), project, "segments_cleaned", 5)
+        assert src == "segments_cleaned"
+        assert len(paths) == 1 and paths[0].endswith("cleaned/c.wav")
 
     def test_fallback_prefers_cleaned_then_raw_then_reference(self, client, project, isolated_data_dir):
         import db, jobs
@@ -804,7 +845,7 @@ class TestReviewFixes:
         for i in range(31):
             _insert_seg(conn, project, src, transcript=None,
                         start=i * 20.0, end=i * 20.0 + 10.0,
-                        export_path=f"export/x{i}.wav")
+                        cleaned_path=f"cleaned/x{i}.wav")
         model_id = _insert_model(conn, project)
 
         with patch("service_client.submit_job", new=AsyncMock()) as mock_submit, \
@@ -820,3 +861,244 @@ class TestReviewFixes:
         m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
         assert m["status"] == "failed"
         assert "no usable segments" in m["error"]
+
+
+# ========================================================================
+# Integration fixes — migration 009 + cleaned_path lifecycle
+# ========================================================================
+
+
+class TestMigration009:
+    def test_cleaned_path_column_exists(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(segments)").fetchall()]
+        assert "cleaned_path" in cols
+
+
+class TestCleanedPathLifecycle:
+    def test_dataset_cleanup_sets_cleaned_path_never_status(
+        self, client, project, isolated_data_dir
+    ):
+        """Dataset cleanup records cleaned_path on success AND clipping, and
+        leaves rows completely alone on error / silent-after-trim — review
+        statuses never change from a training action."""
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        _insert_many(conn, project, src, 31, dur=10.0, cleaned=True)  # 310s floor
+        ok = _insert_seg(conn, project, src, status="approved", start=1000, end=1010)
+        clipped = _insert_seg(conn, project, src, status="approved", start=1020, end=1030)
+        errored = _insert_seg(conn, project, src, status="approved", start=1040, end=1050)
+        silent = _insert_seg(conn, project, src, status="approved", start=1060, end=1070)
+        model_id = _insert_model(conn, project)
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "results": [
+                {"id": ok, "output_path": "x", "clipping_warning": False,
+                 "auto_rejected": False, "error": None},
+                {"id": clipped, "output_path": "x", "clipping_warning": True,
+                 "auto_rejected": False, "error": None},
+                {"id": errored, "output_path": None, "clipping_warning": False,
+                 "auto_rejected": False, "error": "ffmpeg exploded"},
+                {"id": silent, "output_path": None, "clipping_warning": False,
+                 "auto_rejected": True, "error": None},
+            ]}
+
+        with patch("service_client.submit_job",
+                   new=AsyncMock(side_effect=lambda s, p: {"job_id": p["job_id"]})), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            job_id = _enqueue_and_run(project, "dataset_build",
+                                      params={"model_id": model_id, "mode": "approved",
+                                              "min_confidence": None})
+
+        rows = {r["id"]: r for r in conn.execute(
+            "SELECT id, status, cleaned_path, export_path, flags, clipping_warning "
+            "FROM segments WHERE id IN (?,?,?,?)", (ok, clipped, errored, silent)
+        ).fetchall()}
+        # Success and clipping → cleaned_path set (clipped audio IS in datasets).
+        assert rows[ok]["cleaned_path"] == f"cleaned/{ok}.wav"
+        assert rows[clipped]["cleaned_path"] == f"cleaned/{clipped}.wav"
+        # Error / silent → row untouched: no cleaned_path, no flags.
+        assert rows[errored]["cleaned_path"] is None
+        assert rows[errored]["flags"] is None
+        assert rows[silent]["cleaned_path"] is None
+        # No status or export-set mutation from a training action.
+        for r in rows.values():
+            assert r["status"] == "approved"
+            assert r["export_path"] is None
+            assert r["clipping_warning"] == 0
+
+        # Manifest: 31 pre-cleaned + ok + clipped; failed ones just drop out.
+        pdir = db.project_dir(project)
+        manifest = json.loads((pdir / "models" / model_id / "dataset.json").read_text())
+        ids = {s["id"] for s in manifest["segments"]}
+        assert ok in ids and clipped in ids
+        assert errored not in ids and silent not in ids
+        assert len(manifest["segments"]) == 33
+        assert all("/cleaned/" in s["audio_file"] for s in manifest["segments"])
+        job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "complete"
+
+    def test_export_does_not_clear_cleaned_path(self, client, project, isolated_data_dir):
+        """Staged export nulls export_path project-wide and replaces export/,
+        but the dataset cache (cleaned_path / cleaned/) is untouched."""
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        seg = _insert_seg(conn, project, src, status="approved",
+                          cleaned_path="cleaned/keep.wav", export_path="export/old.wav")
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "results": [
+                {"id": seg, "output_path": "x", "clipping_warning": False,
+                 "auto_rejected": False, "error": None},
+            ]}
+
+        with patch("service_client.submit_job",
+                   new=AsyncMock(side_effect=lambda s, p: {"job_id": p["job_id"]})), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            job_id = _enqueue_and_run(project, "export", params={})
+
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "complete", job["error"]
+        row = conn.execute(
+            "SELECT cleaned_path, export_path FROM segments WHERE id=?", (seg,)
+        ).fetchone()
+        assert row["cleaned_path"] == "cleaned/keep.wav"
+        assert row["export_path"] == f"export/{seg}.wav"
+
+
+# ========================================================================
+# Integration fixes — interrupted fine-tune recovery (no wedged model rows)
+# ========================================================================
+
+
+class TestFinetuneRecoveryWedge:
+    def test_interrupted_finetune_marks_model_failed(self, client, project, isolated_data_dir):
+        """recover_jobs re-queues an interrupted finetune; the model row is
+        still 'training' from the dead run. The re-run must fail the model row
+        (not just the job) so it isn't wedged forever — POST /models 409s
+        while pending/training, DELETE 409s, and there is no cancel."""
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="training")
+
+        submit = AsyncMock()
+        with patch("service_client.submit_job", new=submit), \
+             patch("service_client.poll_until_complete", new=AsyncMock()):
+            job_id = _enqueue_and_run(project, "finetune",
+                                      params={"model_id": model_id, "params": {}})
+
+        submit.assert_not_called()
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        assert "interrupted" in job["error"]
+        m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "failed"
+        assert "fine-tune interrupted (orchestrator restart)" == m["error"]
+        # The model is no longer wedged: it can now be deleted...
+        assert client.delete(f"/projects/{project}/models/{model_id}").status_code == 204
+
+    def test_pending_model_without_manifest_marks_model_failed(
+        self, client, project, isolated_data_dir
+    ):
+        """A finetune reaching a 'pending' model with no manifest means the
+        dataset build never completed — fail the row too, with the accurate
+        message."""
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="pending", manifest=None)
+
+        with patch("service_client.submit_job", new=AsyncMock()), \
+             patch("service_client.poll_until_complete", new=AsyncMock()):
+            job_id = _enqueue_and_run(project, "finetune",
+                                      params={"model_id": model_id, "params": {}})
+
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        assert "dataset build did not complete" in job["error"]
+        m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "failed"
+        assert "dataset build did not complete" in m["error"]
+
+    def test_already_failed_model_left_alone(self, client, project, isolated_data_dir):
+        """Guard-trip on a model already 'failed' (dataset build failed and
+        recorded its own error) must not overwrite that error."""
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="failed", manifest=None)
+        conn.execute("UPDATE models SET error='insufficient dataset' WHERE id=?", (model_id,))
+        conn.commit()
+
+        with patch("service_client.submit_job", new=AsyncMock()), \
+             patch("service_client.poll_until_complete", new=AsyncMock()):
+            _enqueue_and_run(project, "finetune",
+                             params={"model_id": model_id, "params": {}})
+
+        m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "failed"
+        assert m["error"] == "insufficient dataset"
+
+
+# ========================================================================
+# Integration fixes — voice jobs and project status
+# ========================================================================
+
+
+class TestVoiceJobsProjectStatus:
+    def _insert_job(self, conn, project_id, job_type, status="running"):
+        jid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO jobs (id, project_id, type, status, params, created_at) VALUES (?,?,?,?,?,?)",
+            (jid, project_id, job_type, status, "{}", _now()),
+        )
+        conn.commit()
+        return jid
+
+    def test_voice_job_types_registry(self):
+        import jobs
+        assert jobs.VOICE_JOB_TYPES == {"dataset_build", "finetune", "preview"}
+        assert jobs.VOICE_JOB_TYPES <= set(jobs.HANDLERS)
+
+    def test_running_voice_jobs_do_not_flip_project_to_processing(self, client, project):
+        import db
+        from status import recompute_project_status
+        conn = db.get_conn(project)
+        _insert_source(conn, project, status="complete")
+
+        for jtype in ("dataset_build", "finetune", "preview"):
+            self._insert_job(conn, project, jtype)
+        recompute_project_status(project)
+        row = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()
+        assert row["status"] == "review"
+
+        # Control: a pipeline job still flips the project to processing.
+        self._insert_job(conn, project, "vocal_separation")
+        recompute_project_status(project)
+        row = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()
+        assert row["status"] == "processing"
+
+    def test_active_jobs_api_still_includes_voice_jobs(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        jid = self._insert_job(conn, project, "finetune")
+        detail = client.get(f"/projects/{project}").json()
+        assert jid in [j["id"] for j in detail["active_jobs"]]
+
+    def test_export_can_be_enqueued_while_finetune_runs(self, client, project, isolated_data_dir):
+        import db
+        from status import recompute_project_status
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project, status="complete")
+        _insert_seg(conn, project, src, status="approved")
+        self._insert_job(conn, project, "finetune")
+        recompute_project_status(project)
+
+        with patch("service_client.submit_job",
+                   new=AsyncMock(side_effect=lambda s, p: {"job_id": p["job_id"]})), \
+             patch("service_client.poll_until_complete",
+                   new=AsyncMock(return_value={"status": "failed", "error": "x"})):
+            resp = client.post(f"/projects/{project}/export")
+        assert resp.status_code == 202
+        assert resp.json()["enqueued_job"]["type"] == "export"
