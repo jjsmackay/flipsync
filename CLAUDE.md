@@ -230,8 +230,9 @@ Processing services should return the same flat format directly.
 - **Wave 1 (orchestrator core):** Complete.
 - **Wave 2 (processing services):** Complete. All four services (vocal-separation, diarisation, transcription, cleanup) implemented with tests.
 - **Wave 3 (orchestrator integration):** Complete. Service client, pipeline orchestration, polling, OOM retry, threshold re-evaluation all wired.
+- **Wave 4 (Segments API + Export):** Complete. Segment listing with filters/sort/pagination, audio streaming, PATCH review actions with 409 transition enforcement, bulk actions, export job (cleanup → manifest.json → tar.gz) and download.
 - **Wave 5 (frontend):** Complete. Project list, dashboard, review queue, export flow, keyboard nav, timeline. Merged to main.
-- **Next:** Wave 4 (Segments API + Export).
+- **Next:** All waves complete. Current work is review-fix hardening on branch `integrate/review-fixes` (2026-07-12 whole-project review).
 
 ## Docker notes
 
