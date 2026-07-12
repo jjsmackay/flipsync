@@ -12,6 +12,7 @@ import { NextActionCard } from '../components/project/NextActionCard'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
+import { VoiceSection } from '../components/voice/VoiceSection'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -221,6 +222,11 @@ export function ProjectDashboardPage() {
           />
         )}
       </section>
+
+      {/* Voice (XTTS-v2) */}
+      <Section title="Voice">
+        <VoiceSection project={project} refetch={() => void refetch()} />
+      </Section>
 
       {/* Reprocess confirmation */}
       {reprocessConfirm && (

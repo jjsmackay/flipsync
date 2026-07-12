@@ -81,11 +81,23 @@ export interface ProjectDetailStats extends ProjectStats {
   source_coverage: SourceCoverage[]
 }
 
+export interface TrainingProgress {
+  phase: string
+  epoch: number
+  total_epochs: number
+  step: number
+  total_steps: number
+  train_loss: number | null
+  eval_loss: number | null
+  eta_secs: number | null
+}
+
 export interface JobSummary {
   id: string
   type: string
   status: string
   progress: number | null
+  progress_detail?: TrainingProgress | null
 }
 
 export interface FailedJob {
@@ -222,6 +234,64 @@ export interface BulkFilter {
 export interface BulkSegmentRequest {
   action: 'approve' | 'reject' | 'maybe' | 'pending'
   filter: BulkFilter
+}
+
+// ---- Models (v1.5) ----
+
+export type ModelStatus = 'pending' | 'training' | 'ready' | 'failed' | 'cancelled'
+
+export interface ModelParams {
+  epochs: number
+  batch_size: number
+  grad_accum: number
+  learning_rate: number
+}
+
+export interface Model {
+  id: string
+  project_id: string
+  status: ModelStatus
+  dataset_mode: 'approved' | 'auto'
+  min_confidence: number | null
+  segment_count: number | null
+  dataset_duration_secs: number | null
+  dataset_manifest_path: string | null
+  checkpoint_dir: string | null
+  params: ModelParams | null
+  eval_loss: number | null
+  error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateModelRequest {
+  dataset?: {
+    mode: 'approved' | 'auto'
+    min_confidence?: number | null
+  }
+  params?: Partial<ModelParams>
+}
+
+// ---- Previews (v1.5) ----
+
+export interface PreviewConditioning {
+  source?: 'reference_clip' | 'segments_raw' | 'segments_cleaned'
+  segment_count?: number
+}
+
+export interface Preview {
+  id: string
+  status: string
+  text: string
+  model_id: string | null
+  conditioning: PreviewConditioning | null
+  created_at: string
+}
+
+export interface CreatePreviewRequest {
+  text: string
+  model_id: string | null
+  conditioning?: PreviewConditioning
 }
 
 export interface GetSegmentsParams {

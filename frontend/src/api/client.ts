@@ -11,6 +11,10 @@ import type {
   Segment,
   Job,
   ScoutStatus,
+  Model,
+  CreateModelRequest,
+  Preview,
+  CreatePreviewRequest,
 } from '../types/api'
 
 // When VITE_API_URL is unset (the default in the shipped compose), API calls go
@@ -342,4 +346,48 @@ export function triggerExport(projectId: string): Promise<{ enqueued_job: Enqueu
 
 export function getExportDownloadUrl(projectId: string): string {
   return `${BASE_URL}/projects/${projectId}/export/download`
+}
+
+// ---- Models (v1.5) ----
+
+export function createModel(
+  projectId: string,
+  body: CreateModelRequest,
+): Promise<{ model: Model; enqueued_jobs: EnqueuedJob[] }> {
+  return request(`/projects/${projectId}/models`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function getModels(projectId: string): Promise<{ models: Model[] }> {
+  return request(`/projects/${projectId}/models`)
+}
+
+export function deleteModel(projectId: string, modelId: string): Promise<void> {
+  return request(`/projects/${projectId}/models/${modelId}`, {
+    method: 'DELETE',
+  })
+}
+
+// ---- Previews (v1.5) ----
+
+export function createPreview(
+  projectId: string,
+  body: CreatePreviewRequest,
+): Promise<{ enqueued_job: EnqueuedJob }> {
+  return request(`/projects/${projectId}/previews`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function getPreviews(projectId: string): Promise<{ previews: Preview[] }> {
+  return request(`/projects/${projectId}/previews`)
+}
+
+export function getPreviewAudioUrl(projectId: string, previewId: string): string {
+  return `${BASE_URL}/projects/${projectId}/previews/${previewId}/audio`
 }

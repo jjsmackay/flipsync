@@ -37,6 +37,9 @@ export const JOB_LABELS: Record<string, string> = {
   transcription_segment: 'Transcribing segment',
   cleanup: 'Cleaning up audio',
   export: 'Exporting dataset',
+  dataset_build: 'Building dataset',
+  finetune: 'Fine-tuning voice',
+  preview: 'Synthesising preview',
 }
 
 export function jobLabel(type: string): string {
