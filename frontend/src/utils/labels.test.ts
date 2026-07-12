@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   SOURCE_STATUS_LABELS,
   PROJECT_STATUS_LABELS,
+  MODEL_STATUS_LABELS,
   JOB_LABELS,
   jobLabel,
+  modelStatusLabel,
   statusLabel,
 } from './labels'
 
@@ -30,6 +32,8 @@ const PROJECT_STATUSES = [
   'exported',
 ] as const
 
+const MODEL_STATUSES = ['pending', 'training', 'ready', 'failed', 'cancelled'] as const
+
 const JOB_TYPES = [
   'extract_audio',
   'vocal_separation',
@@ -53,6 +57,21 @@ describe('labels', () => {
     }
   })
 
+  it('covers every model status', () => {
+    for (const s of MODEL_STATUSES) {
+      expect(MODEL_STATUS_LABELS[s], s).toBeTruthy()
+      expect(modelStatusLabel(s), s).toBe(MODEL_STATUS_LABELS[s])
+    }
+  })
+
+  it('scopes model statuses away from the generic chain (collision-prone names)', () => {
+    // 'pending' and 'ready' mean different things for segments/projects — the
+    // model labels must not leak into statusLabel.
+    expect(modelStatusLabel('pending')).toBe('Queued')
+    expect(statusLabel('pending')).toBe('pending')
+    expect(statusLabel('ready')).toBe('Ready')
+  })
+
   it('covers every job type', () => {
     for (const t of JOB_TYPES) {
       expect(JOB_LABELS[t], t).toBeTruthy()
@@ -63,6 +82,7 @@ describe('labels', () => {
     const allLabels = [
       ...Object.values(SOURCE_STATUS_LABELS),
       ...Object.values(PROJECT_STATUS_LABELS),
+      ...Object.values(MODEL_STATUS_LABELS),
       ...Object.values(JOB_LABELS),
     ]
     for (const label of allLabels) {

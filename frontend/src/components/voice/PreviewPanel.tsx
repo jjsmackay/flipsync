@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import type { Model, PreviewConditioning, CreatePreviewRequest } from '../../types/api'
-import { createPreview, getPreviews, getPreviewAudioUrl, ApiError } from '../../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '../../types/api'
+import { createPreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
+import { usePolling } from '../../hooks/usePolling'
 
 interface PreviewPanelProps {
   projectId: string
@@ -9,6 +10,10 @@ interface PreviewPanelProps {
 
 const TEXT_MAX = 500
 const POLL_MS = 3000
+// Bounded polling lifetime: a hung preview job (or an id that never appears in the
+// limit-20 previews list) must not spin the poll forever. Synthesis takes seconds;
+// ten minutes is generous even behind a queued GPU job.
+const PREVIEW_TIMEOUT_MS = 10 * 60_000
 
 type ConditioningOption = 'auto' | 'reference_clip' | 'segments_raw' | 'segments_cleaned'
 
@@ -42,17 +47,11 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  // The preview id we are waiting on; null when nothing is pending.
+  const [previewId, setPreviewId] = useState<string | null>(null)
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const mountedRef = useRef(true)
-
-  function clearPolling() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current)
-      intervalRef.current = null
-    }
-  }
 
   function revokeUrl() {
     if (objectUrlRef.current) {
@@ -65,13 +64,12 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
     mountedRef.current = true
     return () => {
       mountedRef.current = false
-      clearPolling()
       revokeUrl()
     }
   }, [])
 
-  async function loadAudio(previewId: string) {
-    const res = await fetch(getPreviewAudioUrl(projectId, previewId))
+  async function loadAudio(id: string) {
+    const res = await fetch(getPreviewAudioUrl(projectId, id))
     // A non-2xx here returns the JSON error body — never hand that to the audio element.
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const blob = await res.blob()
@@ -83,18 +81,75 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
     setPhase('ready')
   }
 
+  /** The previews list carries no error detail for failed jobs; the failed job row on
+   *  the project does — fetch it once to show the real message. */
+  async function surfaceFailure(id: string) {
+    let message = 'Synthesis failed.'
+    try {
+      const project = await getProject(projectId)
+      const jobError = project.recent_failed_jobs.find((j) => j.id === id)?.error
+      if (jobError) message = `Synthesis failed: ${jobError}`
+    } catch {
+      /* keep the generic message */
+    }
+    if (!mountedRef.current) return
+    setError(message)
+    setPhase('error')
+  }
+
+  const fetchPreviews = useCallback(() => getPreviews(projectId), [projectId])
+
+  const handlePreviews = useCallback(
+    ({ previews }: { previews: Preview[] }) => {
+      if (!previewId) return
+      const preview = previews.find((p) => p.id === previewId)
+      if (!preview) return
+      if (preview.status === 'complete') {
+        setPreviewId(null)
+        loadAudio(previewId).catch((err: unknown) => {
+          if (!mountedRef.current) return
+          setError(err instanceof Error ? err.message : 'Failed to load generated audio.')
+          setPhase('error')
+        })
+      } else if (preview.status === 'failed') {
+        setPreviewId(null)
+        void surfaceFailure(previewId)
+      }
+    },
+    [previewId, projectId],
+  )
+
+  // usePolling supplies the in-flight guard (a slow response can't stack requests)
+  // and stops as soon as the phase leaves 'generating' or the id is resolved.
+  usePolling(fetchPreviews, {
+    intervalMs: POLL_MS,
+    enabled: phase === 'generating' && previewId !== null,
+    onData: handlePreviews,
+  })
+
+  // Bounded lifetime: give up after PREVIEW_TIMEOUT_MS of generating.
+  useEffect(() => {
+    if (phase !== 'generating') return
+    const timer = setTimeout(() => {
+      setPreviewId(null)
+      setError('Preview timed out — check failed jobs.')
+      setPhase('error')
+    }, PREVIEW_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [phase])
+
   async function handleGenerate() {
-    clearPolling()
     revokeUrl()
     setObjectUrl(null)
     setError(null)
+    setPreviewId(null)
     setPhase('generating')
 
     const body: CreatePreviewRequest = { text, model_id: modelId, conditioning }
-    let previewId: string
     try {
       const res = await createPreview(projectId, body)
-      previewId = res.enqueued_job.id
+      if (!mountedRef.current) return
+      setPreviewId(res.enqueued_job.id)
     } catch (err) {
       if (!mountedRef.current) return
       if (err instanceof ApiError) {
@@ -103,35 +158,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
         setError(err instanceof Error ? err.message : 'Failed to start synthesis.')
       }
       setPhase('error')
-      return
     }
-
-    intervalRef.current = setInterval(() => {
-      void (async () => {
-        try {
-          const { previews } = await getPreviews(projectId)
-          if (!mountedRef.current) return
-          const preview = previews.find((p) => p.id === previewId)
-          if (!preview) return
-          if (preview.status === 'complete') {
-            clearPolling()
-            try {
-              await loadAudio(previewId)
-            } catch (err) {
-              if (!mountedRef.current) return
-              setError(err instanceof Error ? err.message : 'Failed to load generated audio.')
-              setPhase('error')
-            }
-          } else if (preview.status === 'failed') {
-            clearPolling()
-            setError('Synthesis failed.')
-            setPhase('error')
-          }
-        } catch {
-          /* transient poll error — keep polling */
-        }
-      })()
-    }, POLL_MS)
   }
 
   return (
@@ -145,8 +172,10 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
       >
         {phase === 'generating' ? 'Generating…' : 'Generate'}
       </button>
-      {disabled && disabledReason && <p className="text-xs text-gray-500">{disabledReason}</p>}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {disabled && disabledReason && (
+        <p className="text-xs text-gray-500 dark:text-gray-400">{disabledReason}</p>
+      )}
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
       {objectUrl && (
         <audio controls src={objectUrl} className="w-full">
           Your browser does not support audio playback.
@@ -178,7 +207,7 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
         <div>
           <textarea
             value={text}
@@ -186,18 +215,18 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             maxLength={TEXT_MAX}
             rows={3}
             placeholder="Text to synthesise…"
-            className="w-full rounded border border-gray-300 px-3 py-2 text-sm resize-y"
+            className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-3 py-2 text-sm resize-y"
           />
-          <div className="flex justify-end text-xs text-gray-400 mt-1">
+          <div className="flex justify-end text-xs text-gray-400 dark:text-gray-500 mt-1">
             {text.length} / {TEXT_MAX}
           </div>
         </div>
-        <label className="flex items-center gap-2 text-sm text-gray-700">
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
           <span className="w-32">Conditioning</span>
           <select
             value={source}
             onChange={(e) => setSource(e.target.value as ConditioningOption)}
-            className="rounded border border-gray-300 px-2 py-1 text-sm"
+            className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
           >
             {(Object.keys(CONDITIONING_LABELS) as ConditioningOption[]).map((opt) => (
               <option key={opt} value={opt}>
@@ -206,14 +235,14 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             ))}
           </select>
         </label>
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-gray-500 dark:text-gray-400">
           Generate the same text against the base model and a fine-tuned model to compare by ear.
         </p>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
-          <p className="text-sm font-semibold text-gray-700">Zero-shot (base model)</p>
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Zero-shot (base model)</p>
           <PreviewColumn
             projectId={projectId}
             text={trimmed}
@@ -224,14 +253,14 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
           />
         </div>
 
-        <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
           <label className="flex items-center gap-2 text-sm">
-            <span className="font-semibold text-gray-700">Fine-tuned</span>
+            <span className="font-semibold text-gray-700 dark:text-gray-300">Fine-tuned</span>
             <select
               value={selectedModelId ?? ''}
               onChange={(e) => setSelectedModelId(e.target.value || null)}
               disabled={noModel}
-              className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm text-gray-700 disabled:bg-gray-50"
+              className="flex-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-2 py-1 text-sm text-gray-700 dark:text-gray-300 disabled:bg-gray-50 dark:disabled:bg-gray-800"
             >
               {noModel ? (
                 <option value="">No ready models</option>

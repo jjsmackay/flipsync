@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ProjectDetail, Model, CreateModelRequest, JobSummary } from '../../types/api'
 import { createModel, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
+import { jobLabel } from '../../utils/labels'
 import { ProgressBar } from '../ui/ProgressBar'
 
 interface TrainPanelProps {
@@ -20,13 +21,6 @@ const DEFAULT_MIN_CONFIDENCE = 0.85
 
 type TrainMode = 'approved' | 'auto'
 
-/** m:ss, matching the gating-reason wording ("4:37 of 5:00 minimum"). */
-function mmss(secs: number): string {
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
-}
-
 const ERROR_MESSAGES: Record<string, string> = {
   insufficient_dataset: 'Not enough usable audio to train (300 s minimum after filtering).',
   finetune_in_progress: 'A model for this project is already training. Wait for it to finish.',
@@ -37,16 +31,16 @@ function TrainingProgressCard({ job }: { job: JobSummary }) {
   const detail = job.type === 'finetune' ? job.progress_detail : null
 
   return (
-    <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+    <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-semibold text-blue-800">
-          {job.type === 'finetune' ? 'Fine-tuning' : 'Building dataset'}
+        <span className="text-sm font-semibold text-blue-800 dark:text-blue-300">
+          {jobLabel(job.type)}
         </span>
-        <span className="text-xs text-blue-500 capitalize">{detail?.phase ?? job.status}</span>
+        <span className="text-xs text-blue-500 dark:text-blue-400 capitalize">{detail?.phase ?? job.status}</span>
       </div>
       <ProgressBar value={job.progress ?? 0} color="blue" />
       {detail && (
-        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-blue-800 sm:grid-cols-4">
+        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-blue-800 dark:text-blue-300 sm:grid-cols-4">
           <div>
             <dt className="opacity-60">Epoch</dt>
             <dd className="font-medium">{detail.epoch} / {detail.total_epochs}</dd>
@@ -94,6 +88,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
   const reviewedBlocked = approvedDuration < TRAIN_MIN_SECS
   const belowTarget = approvedDuration < TRAIN_TARGET_SECS
   const startDisabled = submitting || (mode === 'approved' && reviewedBlocked)
+  const minimumReason = `${formatDuration(approvedDuration)} of ${formatDuration(TRAIN_MIN_SECS)} minimum approved audio.`
 
   async function handleTrain() {
     setError(null)
@@ -123,16 +118,16 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
     return activeJob ? (
       <TrainingProgressCard job={activeJob} />
     ) : (
-      <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-800">
+      <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4 text-sm text-blue-800 dark:text-blue-300">
         Training queued…
       </div>
     )
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
       <div>
-        <p className="text-sm font-medium text-gray-700 mb-2">Approved audio for training</p>
+        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Approved audio for training</p>
         <ProgressBar
           value={progressValue}
           label={`${formatDuration(approvedDuration)} / ${formatDuration(TRAIN_TARGET_SECS)}`}
@@ -141,18 +136,24 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
       </div>
 
       {!confirming ? (
-        <button
-          type="button"
-          onClick={() => setConfirming(true)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          Train voice model
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            disabled={reviewedBlocked}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Train voice model
+          </button>
+          {reviewedBlocked && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{minimumReason}</p>
+          )}
+        </>
       ) : (
-        <div className="space-y-3 border-t border-gray-100 pt-3">
+        <div className="space-y-3 border-t border-gray-100 dark:border-gray-700 pt-3">
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium text-gray-700 mb-1">Training data</legend>
-            <label className="flex items-start gap-2 text-sm text-gray-700">
+            <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Training data</legend>
+            <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
                 type="radio"
                 name="train-mode"
@@ -162,12 +163,12 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
               />
               <span>
                 <span className="font-medium">Reviewed</span>
-                <span className="block text-xs text-gray-500">
+                <span className="block text-xs text-gray-500 dark:text-gray-400">
                   Only segments you have approved.
                 </span>
               </span>
             </label>
-            <label className="flex items-start gap-2 text-sm text-gray-700">
+            <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
                 type="radio"
                 name="train-mode"
@@ -177,7 +178,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
               />
               <span>
                 <span className="font-medium">Train without review</span>
-                <span className="block text-xs text-amber-600">
+                <span className="block text-xs text-amber-600 dark:text-amber-400">
                   Trades quality for speed — uses unreviewed high-confidence segments.
                   Wrong transcripts degrade the model.
                 </span>
@@ -186,7 +187,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
           </fieldset>
 
           {mode === 'auto' && (
-            <label className="flex items-center gap-2 text-sm text-gray-700">
+            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <span className="w-32">Confidence floor</span>
               <input
                 type="number"
@@ -195,13 +196,13 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
                 step={0.01}
                 value={minConfidence}
                 onChange={(e) => setMinConfidence(Number(e.target.value))}
-                className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
+                className="w-24 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
               />
             </label>
           )}
 
           {mode === 'approved' && belowTarget && !reviewedBlocked && (
-            <p className="text-xs text-amber-600">
+            <p className="text-xs text-amber-600 dark:text-amber-400">
               Below the {formatDuration(TRAIN_TARGET_SECS)} recommended minimum — the model may
               be low quality.
             </p>
@@ -214,7 +215,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
                 setConfirming(false)
                 setError(null)
               }}
-              className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              className="px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50"
             >
               Cancel
             </button>
@@ -222,11 +223,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
               type="button"
               onClick={() => void handleTrain()}
               disabled={startDisabled}
-              title={
-                mode === 'approved' && reviewedBlocked
-                  ? `${mmss(approvedDuration)} of ${mmss(TRAIN_MIN_SECS)} minimum approved audio`
-                  : undefined
-              }
+              title={mode === 'approved' && reviewedBlocked ? minimumReason : undefined}
               className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submitting ? 'Starting…' : 'Start training'}
@@ -234,12 +231,10 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
           </div>
 
           {mode === 'approved' && reviewedBlocked && (
-            <p className="text-xs text-gray-500">
-              {mmss(approvedDuration)} of {mmss(TRAIN_MIN_SECS)} minimum approved audio.
-            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">{minimumReason}</p>
           )}
 
-          {error && <p className="text-xs text-red-600">{error}</p>}
+          {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
         </div>
       )}
     </div>

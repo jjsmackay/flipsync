@@ -11,10 +11,12 @@ interface VoiceSectionProps {
   refetch: () => void
 }
 
+// Deliberately one size down from the page's Section headings (text-sm) —
+// same weight/tone/tracking so it reads as the tier below, not a variant.
 function SubSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-2">
-      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{title}</h3>
+      <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">{title}</h3>
       {children}
     </div>
   )

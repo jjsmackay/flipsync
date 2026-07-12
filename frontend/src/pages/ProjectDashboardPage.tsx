@@ -205,6 +205,14 @@ export function ProjectDashboardPage() {
         </Section>
       )}
 
+      {/* Voice (XTTS-v2) — same gate as Segments; deliberately outside the
+          NextActionCard guided flow, which stays pipeline-focused */}
+      {hasSegments && (
+        <Section title="Voice">
+          <VoiceSection project={project} refetch={() => void refetch()} />
+        </Section>
+      )}
+
       {/* Settings — collapsed by default */}
       <section ref={settingsRef}>
         <button
@@ -222,11 +230,6 @@ export function ProjectDashboardPage() {
           />
         )}
       </section>
-
-      {/* Voice (XTTS-v2) */}
-      <Section title="Voice">
-        <VoiceSection project={project} refetch={() => void refetch()} />
-      </Section>
 
       {/* Reprocess confirmation */}
       {reprocessConfirm && (

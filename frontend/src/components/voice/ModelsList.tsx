@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import type { Model, ModelStatus } from '../../types/api'
+import type { Model } from '../../types/api'
 import { deleteModel, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
+import { StatusBadge } from '../ui/StatusBadge'
 
 interface ModelsListProps {
   projectId: string
@@ -10,22 +11,6 @@ interface ModelsListProps {
   error: string | null
   /** Reload models after a delete. */
   onChanged: () => void
-}
-
-const STATUS_STYLES: Record<ModelStatus, string> = {
-  pending: 'bg-gray-100 text-gray-700',
-  training: 'bg-blue-100 text-blue-700',
-  ready: 'bg-green-100 text-green-700',
-  failed: 'bg-red-100 text-red-700',
-  cancelled: 'bg-gray-200 text-gray-500',
-}
-
-function ModelStatusBadge({ status }: { status: ModelStatus }) {
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[status]}`}>
-      {status}
-    </span>
-  )
 }
 
 function formatCreated(iso: string): string {
@@ -57,44 +42,47 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
   }
 
   if (loading && models.length === 0) {
-    return <p className="text-sm text-gray-500">Loading models…</p>
+    return <p className="text-sm text-gray-500 dark:text-gray-400">Loading models…</p>
   }
 
   if (error) {
-    return <p className="text-sm text-red-600">{error}</p>
+    return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
   }
 
   if (models.length === 0) {
-    return <p className="text-sm text-gray-500">No models trained yet.</p>
+    return <p className="text-sm text-gray-500 dark:text-gray-400">No models trained yet.</p>
   }
 
   return (
     <div className="space-y-2">
-      {deleteError && <p className="text-xs text-red-600">{deleteError}</p>}
+      {deleteError && <p className="text-xs text-red-600 dark:text-red-400">{deleteError}</p>}
       {models.map((model) => {
         const training = model.status === 'pending' || model.status === 'training'
         return (
-          <div key={model.id} className="rounded-lg border border-gray-200 bg-white p-4">
+          <div
+            key={model.id}
+            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+          >
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0 space-y-1">
                 <div className="flex items-center gap-2">
-                  <ModelStatusBadge status={model.status} />
-                  <span className="text-sm text-gray-700">
+                  <StatusBadge status={model.status} kind="model" />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
                     {model.dataset_mode === 'auto'
                       ? `Auto (≥ ${model.min_confidence ?? '—'})`
                       : 'Reviewed'}
                   </span>
                 </div>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
                   {model.dataset_duration_secs != null
                     ? formatDuration(model.dataset_duration_secs)
                     : '—'}{' '}
                   · {model.segment_count ?? '—'} segments
                   {model.eval_loss != null && ` · eval loss ${model.eval_loss.toFixed(4)}`}
                 </p>
-                <p className="text-xs text-gray-400">{formatCreated(model.created_at)}</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500">{formatCreated(model.created_at)}</p>
                 {model.status === 'failed' && model.error && (
-                  <p className="text-xs text-red-600">{model.error}</p>
+                  <p className="text-xs text-red-600 dark:text-red-400">{model.error}</p>
                 )}
               </div>
 
@@ -104,7 +92,7 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
                     <button
                       type="button"
                       onClick={() => setConfirmId(null)}
-                      className="text-xs px-2 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                      className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
                     >
                       Cancel
                     </button>
@@ -123,7 +111,7 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
                     onClick={() => setConfirmId(model.id)}
                     disabled={training}
                     title={training ? 'Cannot delete while training' : undefined}
-                    className="text-xs px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="text-xs px-2 py-1 rounded border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     Delete
                   </button>
