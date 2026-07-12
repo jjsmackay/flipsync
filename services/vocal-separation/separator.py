@@ -156,7 +156,6 @@ def _process_chunked(
     total_samples = audio.shape[1]
     chunk_samples = int(chunk_secs * sample_rate)
     overlap_samples = int(CHUNK_OVERLAP_SECS * sample_rate)
-    step_samples = chunk_samples - overlap_samples
 
     # Calculate chunks
     chunks = compute_chunks(total_samples, chunk_samples, overlap_samples)
@@ -283,9 +282,12 @@ def stitch_chunks(chunks: list, overlap_samples: int):
 
 
 def preload_models(model_names: list[str]) -> None:
-    """Preload models at startup to avoid first-job latency."""
+    """Preload models at startup to avoid first-job latency.
+
+    Failures are NOT swallowed: if a model cannot be loaded (e.g. a torch
+    version that breaks Demucs checkpoint unpickling), the exception
+    propagates so the caller can surface it loudly and mark the service
+    unhealthy rather than silently accepting jobs that will all fail.
+    """
     for name in model_names:
-        try:
-            _load_model(name)
-        except Exception as exc:
-            logger.warning("Failed to preload model %s: %s", name, exc)
+        _load_model(name)

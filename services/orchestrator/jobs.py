@@ -14,6 +14,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
+
 from db import get_conn, project_dir, utc_now as _now
 import service_client
 from status import recompute_project_status as _recompute_project_status
@@ -28,6 +30,38 @@ _queues: dict[str, asyncio.Queue] = defaultdict(asyncio.Queue)
 
 # Background runner tasks: project_id -> Task
 _runners: dict[str, asyncio.Task] = {}
+
+# Seconds an idle project runner waits for new work before exiting.
+_IDLE_TIMEOUT_SECS = 60
+
+# Bounded backoff for submitting a job to a processing service that is not yet
+# reachable (e.g. still downloading models on first boot). Overridable in tests.
+_SUBMIT_RETRY_BASE_SECS = 1.0
+_SUBMIT_RETRY_MAX_SECS = 30.0
+_SUBMIT_RETRY_TIMEOUT_SECS = 300.0
+
+
+async def _submit_with_retry(service_name: str, payload: dict) -> dict:
+    """Submit a job, retrying with bounded exponential backoff while the service
+    is unreachable (connection/timeout errors). A reachable service returning an
+    HTTP error status propagates immediately — only transport failures retry."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _SUBMIT_RETRY_TIMEOUT_SECS
+    delay = _SUBMIT_RETRY_BASE_SECS
+    while True:
+        try:
+            return await service_client.submit_job(service_name, payload)
+        except httpx.HTTPStatusError:
+            raise
+        except (httpx.TransportError, ConnectionError, OSError) as exc:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise
+            logger.warning(
+                "Service %s unreachable (%s); retrying in %.0fs", service_name, exc, min(delay, remaining)
+            )
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, _SUBMIT_RETRY_MAX_SECS)
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +123,14 @@ async def _run_project_queue(project_id: str) -> None:
     """Drain the queue for a single project, running one job at a time."""
     while True:
         try:
-            job_id = await asyncio.wait_for(_queues[project_id].get(), timeout=60)
+            job_id = await asyncio.wait_for(_queues[project_id].get(), timeout=_IDLE_TIMEOUT_SECS)
         except asyncio.TimeoutError:
+            # A job may have been enqueued in the window where wait_for was
+            # cancelling its get(); that item sits in the queue while enqueue's
+            # _ensure_runner saw this (not-yet-done) task and skipped starting a
+            # new runner. Re-check before exiting so it can't be stranded.
+            if not _queues[project_id].empty():
+                continue
             break
 
         async with _project_locks[project_id]:
@@ -142,6 +182,9 @@ def _fail_job(project_id: str, job_id: str, error: str) -> None:
         (error, _now(), job_id),
     )
     conn.commit()
+    # Every failure path recomputes project status so a failed job can't leave
+    # the project stuck in 'processing'.
+    _recompute_project_status(project_id)
 
 
 def _update_progress(project_id: str, job_id: str, progress: int) -> None:
@@ -274,7 +317,7 @@ async def _handle_vocal_separation(
     }
 
     try:
-        await service_client.submit_job("vocal_separation", payload)
+        await _submit_with_retry("vocal_separation", payload)
     except Exception as exc:
         conn.execute(
             "UPDATE sources SET status='step1_failed', step1_error=?, updated_at=? WHERE id=?",
@@ -306,7 +349,7 @@ async def _handle_vocal_separation(
                 "chunk_secs": retry_chunk,
             }
             try:
-                await service_client.submit_job("vocal_separation", retry_payload)
+                await _submit_with_retry("vocal_separation", retry_payload)
                 result = await service_client.poll_until_complete("vocal_separation", retry_job_id, on_progress=on_progress)
             except Exception as exc:
                 result = {"status": "failed", "error": str(exc)}
@@ -339,11 +382,22 @@ async def _handle_vocal_separation(
 
 
 def _auto_enqueue_diarisation(project_id: str, source_id: str) -> None:
-    """After vocal separation succeeds, auto-enqueue diarisation for this source."""
+    """After vocal separation succeeds, auto-enqueue diarisation for this source.
+
+    Without a reference clip diarisation cannot run; rather than silently
+    leaving the source in step2_pending forever, surface it as a step2 failure.
+    """
     conn = get_conn(project_id)
     project = conn.execute("SELECT reference_path FROM projects WHERE id=?", (project_id,)).fetchone()
     if project and project["reference_path"]:
         enqueue(project_id, "diarisation", source_id=source_id)
+    else:
+        conn.execute(
+            "UPDATE sources SET status='step2_failed', step2_error='no_reference_clip', updated_at=? WHERE id=?",
+            (_now(), source_id),
+        )
+        conn.commit()
+        _recompute_project_status(project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -366,13 +420,12 @@ async def _handle_diarisation(
 
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     if not project["reference_path"]:
-        _fail_job(project_id, job_id, "no_reference_clip")
         conn.execute(
             "UPDATE sources SET status='step2_failed', step2_error='no_reference_clip', updated_at=? WHERE id=?",
             (_now(), source_id),
         )
         conn.commit()
-        _recompute_project_status(project_id)
+        _fail_job(project_id, job_id, "no_reference_clip")
         return
 
     # Transition source to step2_running
@@ -396,7 +449,7 @@ async def _handle_diarisation(
     }
 
     try:
-        await service_client.submit_job("diarisation", payload)
+        await _submit_with_retry("diarisation", payload)
     except Exception as exc:
         conn.execute(
             "UPDATE sources SET status='step2_failed', step2_error=?, updated_at=? WHERE id=?",
@@ -425,9 +478,12 @@ async def _handle_diarisation(
         _recompute_project_status(project_id)
         return
 
-    # Write segments to DB
+    # Write segments to DB. Clear any pre-existing segments for this source
+    # first so a re-run (e.g. crash recovery) is idempotent and cannot hit a
+    # primary-key conflict or leave duplicate segments behind.
     match_threshold = project["match_threshold"]
     now = _now()
+    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
     segments = result.get("segments", [])
     for seg in segments:
         seg_status = "pending" if seg["match_confidence"] >= match_threshold else "below_threshold"
@@ -547,7 +603,7 @@ async def _handle_transcription_bulk(
     }
 
     try:
-        await service_client.submit_job("transcription", payload)
+        await _submit_with_retry("transcription", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
         _recompute_project_status(project_id)
@@ -636,7 +692,7 @@ async def _handle_transcription_segment(
     }
 
     try:
-        await service_client.submit_job("transcription", payload)
+        await _submit_with_retry("transcription", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
         _recompute_project_status(project_id)
@@ -701,7 +757,17 @@ async def _handle_export(
     pdir = project_dir(project_id)
     data_prefix = _data_prefix()
     export_dir = pdir / "export"
+
+    # Re-export regenerates export/ from scratch: clear any previous WAVs and
+    # manifest, and reset export_path so the manifest reflects only this run
+    # (no orphan WAVs from a since-rejected segment).
+    if export_dir.exists():
+        for f in export_dir.iterdir():
+            if f.is_file():
+                f.unlink()
     export_dir.mkdir(exist_ok=True)
+    conn.execute("UPDATE segments SET export_path=NULL WHERE project_id=?", (project_id,))
+    conn.commit()
 
     # Build cleanup payload
     cleanup_segments = []
@@ -730,7 +796,7 @@ async def _handle_export(
     }
 
     try:
-        await service_client.submit_job("cleanup", cleanup_payload)
+        await _submit_with_retry("cleanup", cleanup_payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"cleanup_submit_failed: {exc}")
         _recompute_project_status(project_id)
@@ -769,14 +835,16 @@ async def _handle_export(
             )
 
         elif seg_result.get("clipping_warning"):
-            # Clipping detected — set both the column AND the status
+            # Clipping detected — the cleaned WAV is still exported (with the
+            # flag recorded in the manifest); set the column, the status, AND
+            # export_path so the segment appears in the manifest.
             conn.execute(
                 """
                 UPDATE segments
-                SET status='clipping_warning', clipping_warning=1, updated_at=?
+                SET status='clipping_warning', clipping_warning=1, export_path=?, updated_at=?
                 WHERE id=?
                 """,
-                (now, seg_id),
+                (f"export/{seg_id}.wav", now, seg_id),
             )
 
         else:
@@ -788,24 +856,27 @@ async def _handle_export(
 
     conn.commit()
 
-    # Write manifest.json from DB
-    _write_manifest(project_id, project, pdir)
-
-    # Package tar.gz
-    _package_archive(pdir)
+    # Write manifest.json from DB, then package exactly the manifest's WAVs.
+    audio_files = _write_manifest(project_id, project, pdir)
+    _package_archive(pdir, audio_files)
 
     _complete_job(project_id, job_id)
 
-    # Mark project as exported
+    # Mark project as exported and record when, so a later approval/source change
+    # can invalidate it (see status.invalidate_export).
     conn.execute(
-        "UPDATE projects SET status='exported', updated_at=? WHERE id=?",
-        (_now(), project_id),
+        "UPDATE projects SET status='exported', exported_at=?, updated_at=? WHERE id=?",
+        (_now(), _now(), project_id),
     )
     conn.commit()
 
 
-def _write_manifest(project_id: str, project: Any, pdir: Path) -> None:
-    """Write export/manifest.json from the database."""
+def _write_manifest(project_id: str, project: Any, pdir: Path) -> list[str]:
+    """Write export/manifest.json from the database.
+
+    Returns the list of audio filenames referenced by the manifest so the
+    archive can be built to contain exactly those WAVs plus manifest.json.
+    """
     conn = get_conn(project_id)
 
     # Get segments that were successfully cleaned (have export_path and are still approved)
@@ -813,7 +884,7 @@ def _write_manifest(project_id: str, project: Any, pdir: Path) -> None:
         """
         SELECT seg.id, seg.export_path, COALESCE(seg.transcript_edited, seg.transcript) AS text,
                src.filename AS source_filename, seg.start_secs, seg.end_secs, seg.duration_secs,
-               seg.match_confidence, seg.transcript_confidence
+               seg.match_confidence, seg.transcript_confidence, seg.clipping_warning
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
         WHERE seg.project_id=? AND seg.export_path IS NOT NULL
@@ -823,6 +894,7 @@ def _write_manifest(project_id: str, project: Any, pdir: Path) -> None:
     ).fetchall()
 
     manifest_segments = []
+    audio_files: list[str] = []
     total_duration = 0.0
     for r in rows:
         transcript = r["text"]
@@ -842,7 +914,9 @@ def _write_manifest(project_id: str, project: Any, pdir: Path) -> None:
             "duration_secs": dur,
             "match_confidence": r["match_confidence"],
             "transcript_confidence": r["transcript_confidence"],
+            "clipping_warning": bool(r["clipping_warning"]),
         })
+        audio_files.append(f"{r['id']}.wav")
 
     manifest = {
         "version": "1",
@@ -858,16 +932,26 @@ def _write_manifest(project_id: str, project: Any, pdir: Path) -> None:
 
     manifest_path = pdir / "export" / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
+    return audio_files
 
 
-def _package_archive(pdir: Path) -> None:
-    """Package export/ directory into export.tar.gz at the project root."""
+def _package_archive(pdir: Path, audio_files: list[str]) -> None:
+    """Package manifest.json plus exactly the manifest's WAVs into export.tar.gz.
+
+    Building from the manifest (rather than globbing export/) guarantees the
+    archive never contains orphan WAVs from a previous export.
+    """
     export_dir = pdir / "export"
     archive_path = pdir / "export.tar.gz"
 
     with tarfile.open(archive_path, "w:gz") as tar:
-        for f in export_dir.iterdir():
-            tar.add(str(f), arcname=f.name)
+        manifest = export_dir / "manifest.json"
+        if manifest.exists():
+            tar.add(str(manifest), arcname="manifest.json")
+        for name in audio_files:
+            f = export_dir / name
+            if f.exists():
+                tar.add(str(f), arcname=name)
 
 
 # ---------------------------------------------------------------------------
@@ -910,24 +994,44 @@ HANDLERS: dict[str, Callable] = {
 
 async def recover_jobs() -> None:
     """On startup, re-queue any jobs that were queued or running when the
-    process last died."""
+    process last died.
+
+    Each stuck job is superseded by a fresh job row with a new job_id rather
+    than resubmitted under its old id. This avoids the 409 a processing service
+    returns for a duplicate job_id, and — combined with diarisation's
+    delete-before-insert — avoids segment primary-key conflicts on re-run.
+    """
     from db import list_project_ids, get_conn
 
     for project_id in list_project_ids():
         conn = get_conn(project_id)
         stuck = conn.execute(
-            "SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','running') ORDER BY created_at",
+            "SELECT id, source_id, type, params FROM jobs WHERE project_id=? AND status IN ('queued','running') ORDER BY created_at",
             (project_id,),
         ).fetchall()
-        # Reset 'running' → 'queued' so they re-execute
-        conn.execute(
-            "UPDATE jobs SET status='queued', started_at=NULL WHERE project_id=? AND status='running'",
-            (project_id,),
-        )
-        conn.commit()
+
+        new_ids: list[str] = []
         for row in stuck:
-            _queues[project_id].put_nowait(row["id"])
-        if stuck:
+            new_id = str(uuid.uuid4())
+            now = _now()
+            conn.execute(
+                """
+                INSERT INTO jobs (id, project_id, source_id, type, status, params, created_at)
+                VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                """,
+                (new_id, project_id, row["source_id"], row["type"], row["params"], now),
+            )
+            conn.execute(
+                "UPDATE jobs SET status='cancelled', error='superseded_by_recovery', completed_at=? WHERE id=?",
+                (now, row["id"]),
+            )
+            new_ids.append(new_id)
+        conn.commit()
+
+        for new_id in new_ids:
+            _queues[project_id].put_nowait(new_id)
+        if new_ids:
             _ensure_runner(project_id)
+            _recompute_project_status(project_id)
 
 

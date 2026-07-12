@@ -91,6 +91,18 @@ def test_submit_job_missing_field(client):
     assert resp.status_code == 422
 
 
+def test_validation_error_flat_format(client):
+    """422 validation errors use the standard flat error envelope."""
+    resp = client.post("/jobs", json={"job_id": str(uuid.uuid4())})
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["error"] == "validation_error"
+    assert "message" in data
+    assert "detail" in data
+    # Must NOT be FastAPI's default {"detail": [...]} shape
+    assert not isinstance(data["detail"], list)
+
+
 # ---------------------------------------------------------------------------
 # Test: GET /jobs/{job_id} — unknown job returns not_found
 # ---------------------------------------------------------------------------
@@ -185,6 +197,114 @@ def _make_mock_diarization():
         (mock_turn_0b, None, "SPEAKER_00"),
     ]
     return diarization
+
+
+# ---------------------------------------------------------------------------
+# Test: health reports not-ready until models are preloaded
+# ---------------------------------------------------------------------------
+
+
+def test_health_not_ready(client):
+    import main
+
+    main._models_ready = False
+    try:
+        resp = client.get("/health")
+        assert resp.status_code == 503
+        data = resp.json()
+        assert data["error"] == "models_not_ready"
+        assert "detail" in data
+    finally:
+        main._models_ready = True
+
+
+# ---------------------------------------------------------------------------
+# Test: failure paths surface distinct error codes + messages in the poll
+# ---------------------------------------------------------------------------
+
+
+def _seed_running_job(main_mod, job_id):
+    main_mod._jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "progress": 0,
+        "segments": None,
+        "coverage_ratio": None,
+        "error": None,
+        "message": None,
+    }
+
+
+def test_run_job_huggingface_token_missing():
+    import main
+    from diariser import HuggingFaceTokenMissing
+
+    job_id = str(uuid.uuid4())
+    _seed_running_job(main, job_id)
+
+    with patch("main._load_models", side_effect=HuggingFaceTokenMissing("HF_TOKEN required")):
+        main._run_job(job_id, MagicMock())
+
+    job = main._jobs[job_id]
+    assert job["status"] == "failed"
+    assert job["error"] == "huggingface_token_missing"
+    assert "HF_TOKEN" in job["message"]
+
+
+def test_run_job_model_download_failed():
+    import main
+    from diariser import ModelDownloadFailed
+
+    job_id = str(uuid.uuid4())
+    _seed_running_job(main, job_id)
+
+    with patch("main._load_models"), patch(
+        "diariser.run_diarisation", side_effect=ModelDownloadFailed("network down")
+    ):
+        main._run_job(job_id, MagicMock())
+
+    job = main._jobs[job_id]
+    assert job["status"] == "failed"
+    assert job["error"] == "model_download_failed"
+    assert "network down" in job["message"]
+
+
+def test_run_job_generic_failure_has_message():
+    import main
+
+    job_id = str(uuid.uuid4())
+    _seed_running_job(main, job_id)
+
+    with patch("main._load_models"), patch(
+        "diariser.run_diarisation", side_effect=ValueError("boom in pyannote")
+    ):
+        main._run_job(job_id, MagicMock())
+
+    job = main._jobs[job_id]
+    assert job["status"] == "failed"
+    assert job["error"] == "diarisation_failed"
+    assert "boom in pyannote" in job["message"]
+
+
+# ---------------------------------------------------------------------------
+# Test: finished-job store is bounded; running jobs are retained
+# ---------------------------------------------------------------------------
+
+
+def test_finished_job_store_bounded():
+    import main
+
+    main._jobs.clear()
+    running_id = "still-running"
+    main._jobs[running_id] = {"job_id": running_id, "status": "running"}
+    for i in range(main._MAX_FINISHED_JOBS + 5):
+        main._jobs[f"done-{i}"] = {"job_id": f"done-{i}", "status": "complete"}
+
+    main._evict_finished_jobs()
+
+    finished = [j for j in main._jobs.values() if j["status"] in ("complete", "failed")]
+    assert len(finished) == main._MAX_FINISHED_JOBS
+    assert running_id in main._jobs  # running jobs never evicted
 
 
 def test_full_pipeline_with_mocks(sample_wav_path, reference_wav_path, output_dir):

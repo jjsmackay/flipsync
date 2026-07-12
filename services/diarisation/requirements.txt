@@ -2,7 +2,9 @@ fastapi==0.115.0
 uvicorn==0.30.6
 pyannote.audio==3.3.2
 scipy
-torch
-torchaudio
+# torch pinned <2.6: pyannote 3.3.2 loads Lightning checkpoints via torch.load,
+# which defaults to weights_only=True on torch>=2.6 and breaks the load.
+torch<2.6
+torchaudio<2.6
 soundfile
 numpy

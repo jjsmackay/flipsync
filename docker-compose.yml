@@ -40,7 +40,7 @@ services:
     build: ./services/diarisation
     volumes:
       - ./data:/data
-      - pyannote-models:/root/.cache/huggingface
+      - pyannote-models:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
     deploy:

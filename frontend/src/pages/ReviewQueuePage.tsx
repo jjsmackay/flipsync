@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useFilterState } from '../hooks/useFilterState'
 import { useProjectPolling } from '../hooks/useProjectPolling'
-import { getSegments, patchSegment } from '../api/client'
+import { getSegments, patchSegment, ApiError } from '../api/client'
 import type { Segment, SegmentStatus, PaginatedSegments } from '../types/api'
+import { ALL_SEGMENT_STATUSES_CSV } from '../constants'
 import { FilterBar } from '../components/review/FilterBar'
 import { SegmentCard } from '../components/review/SegmentCard'
 import { SegmentDetail } from '../components/review/SegmentDetail'
@@ -21,21 +22,29 @@ export function ReviewQueuePage() {
   const [shortcutsEnabled, setShortcutsEnabled] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
   const [showSpectrogram, setShowSpectrogram] = useState(false)
+  const [autoPlay, setAutoPlay] = useState(false)
   const [segments, setSegments] = useState<Segment[]>([])
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0, per_page: 50 })
   const [segmentsLoading, setSegmentsLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [timelineSegments, setTimelineSegments] = useState<Segment[]>([])
   const [refreshKey, setRefreshKey] = useState(0)
 
   // Project data (for ExportButton, sources list)
   const { project, refetch: refetchProject } = useProjectPolling(projectId!)
 
-
-  // Fetch segments when filter or refreshKey changes
+  // Fetch segments when filter or refreshKey changes (abort-guarded so a slow response
+  // can't overwrite a newer one).
   useEffect(() => {
     if (!projectId) return
+    const controller = new AbortController()
+    let active = true
     setSegmentsLoading(true)
-    getSegments(projectId, toApiParams())
+    setFetchError(null)
+    getSegments(projectId, toApiParams(), controller.signal)
       .then((result: PaginatedSegments) => {
+        if (!active) return
         setSegments(result.segments)
         setPagination(result.pagination)
         setSelectedId(prev => {
@@ -43,9 +52,60 @@ export function ReviewQueuePage() {
           return result.segments[0]?.id ?? null
         })
       })
-      .finally(() => setSegmentsLoading(false))
+      .catch((err) => {
+        if (!active || controller.signal.aborted) return
+        setFetchError(err instanceof Error ? err.message : 'Failed to load segments')
+      })
+      .finally(() => {
+        if (active) setSegmentsLoading(false)
+      })
+    return () => {
+      active = false
+      controller.abort()
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, filter.status, filter.source_id, filter.min_confidence, filter.min_duration, filter.sort, filter.order, filter.page, refreshKey])
+
+  // Fetch ALL segments for the current source (every status), for the timeline — so the
+  // axis and bars reflect the whole source rather than just the current review page.
+  useEffect(() => {
+    if (!projectId) return
+    let cancelled = false
+    async function loadAll() {
+      const all: Segment[] = []
+      let page = 1
+      let pages = 1
+      do {
+        const res = await getSegments(projectId!, {
+          status: ALL_SEGMENT_STATUSES_CSV,
+          source_id: filter.source_id || undefined,
+          sort: 'start_secs',
+          order: 'asc',
+          page,
+          per_page: 200,
+        })
+        if (cancelled) return
+        all.push(...res.segments)
+        pages = res.pagination.pages
+        page++
+      } while (page <= pages)
+      if (!cancelled) setTimelineSegments(all)
+    }
+    loadAll().catch(() => {
+      if (!cancelled) setTimelineSegments([])
+    })
+    return () => {
+      cancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, filter.source_id, refreshKey])
+
+  // Auto-clear transient action errors.
+  useEffect(() => {
+    if (!actionError) return
+    const t = setTimeout(() => setActionError(null), 4000)
+    return () => clearTimeout(t)
+  }, [actionError])
 
   const selectedSegment = segments.find(s => s.id === selectedId) ?? null
   const selectedIndex = segments.findIndex(s => s.id === selectedId)
@@ -109,11 +169,16 @@ export function ReviewQueuePage() {
   }, [shortcutsEnabled, selectedSegment, selectedIndex, segments, filter.page, pagination.pages])
 
   async function applyAction(segment: Segment, status: SegmentStatus) {
+    // Advance optimistically for a snappy keyboard flow, but surface failures so a
+    // rejected transition (e.g. 409) doesn't look like a dead key.
     try {
       await patchSegment(projectId!, segment.id, { status })
       setSegments(prev => prev.map(s => s.id === segment.id ? { ...s, status } : s))
       selectNext()
-    } catch { /* silent — SegmentDetail shows errors */ }
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Action failed'
+      setActionError(msg)
+    }
   }
 
   function handleStatusChange(id: string, status: SegmentStatus) {
@@ -121,12 +186,28 @@ export function ReviewQueuePage() {
     selectNext()
   }
 
-  function handleTranscriptChange(id: string, transcript: string) {
+  function handleTranscriptChange(id: string, transcript: string | null) {
     setSegments(prev => prev.map(s => s.id === id ? { ...s, transcript_edited: transcript } : s))
   }
 
   const sources = project?.stats.source_coverage ?? []
-  const timelineSpan = segments.reduce((max, s) => Math.max(max, s.end_secs), 0)
+  // Axis spans the source: use the furthest segment end across all fetched segments.
+  const timelineSpan = timelineSegments.reduce((max, s) => Math.max(max, s.end_secs), 0)
+
+  const activeTranscription = project?.active_jobs.find(
+    j => j.type === 'transcription_bulk' || j.type === 'transcription',
+  )
+  const lowCoverage = sources.some(s => s.low_coverage_warning)
+
+  // "All reviewed" completion state: the work queue (pending/maybe) is empty but the
+  // project does have segments.
+  const isWorkQueue = filter.status.includes('pending') || filter.status.includes('maybe')
+  const showCompletion =
+    !segmentsLoading &&
+    !fetchError &&
+    segments.length === 0 &&
+    isWorkQueue &&
+    (project?.stats.total_segments ?? 0) > 0
 
   return (
     <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
@@ -144,10 +225,32 @@ export function ReviewQueuePage() {
         <span className="text-gray-300">|</span>
         <span className="text-sm text-gray-500">{pagination.total} segments</span>
         <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoPlay}
+              onChange={e => setAutoPlay(e.target.checked)}
+              className="accent-indigo-600"
+            />
+            Auto-play
+          </label>
           <button onClick={() => setShowHelp(h => !h)} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">? Shortcuts</button>
-          {project && <ExportButton project={project} />}
+          {project && <ExportButton project={project} onStarted={() => void refetchProject()} />}
         </div>
       </div>
+
+      {/* Banners */}
+      {activeTranscription && (
+        <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700 shrink-0">
+          Transcription in progress
+          {activeTranscription.progress !== null ? ` — ${Math.round(activeTranscription.progress)}% complete` : '…'}
+        </div>
+      )}
+      {lowCoverage && (
+        <div className="px-4 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 shrink-0">
+          Some source files have low target speaker coverage. Check the dashboard for details. Your dataset may be thinner than expected.
+        </div>
+      )}
 
       {/* Filter bar */}
       <div className="px-4 py-2 shrink-0">
@@ -155,9 +258,9 @@ export function ReviewQueuePage() {
       </div>
 
       {/* Timeline */}
-      {segments.length > 0 && (
+      {timelineSegments.length > 0 && timelineSpan > 0 && (
         <div className="px-4 pb-2 shrink-0">
-          <Timeline segments={segments} totalDuration={timelineSpan} selectedSegmentId={selectedId} onSegmentSelect={id => setSelectedId(id)} />
+          <Timeline segments={timelineSegments} totalDuration={timelineSpan} selectedSegmentId={selectedId} onSegmentSelect={id => setSelectedId(id)} />
         </div>
       )}
 
@@ -176,8 +279,33 @@ export function ReviewQueuePage() {
             {segmentsLoading && segments.length === 0 && (
               <div className="text-center py-8 text-gray-400 text-sm">Loading…</div>
             )}
-            {!segmentsLoading && segments.length === 0 && (
-              <div className="text-center py-8 text-gray-400 text-sm">No segments match your filters.</div>
+            {fetchError && (
+              <div className="m-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+                {fetchError}
+              </div>
+            )}
+            {!segmentsLoading && !fetchError && segments.length === 0 && (
+              showCompletion && project ? (
+                <div className="px-4 py-8 text-sm text-gray-500 text-center space-y-2">
+                  <p className="font-medium text-gray-700">You've reviewed all segments in this filter.</p>
+                  <p>
+                    {project.stats.approved_count} approved, {project.stats.rejected_count} rejected,{' '}
+                    {project.stats.maybe_count} in Maybe.
+                  </p>
+                  {project.stats.maybe_count > 0 && (
+                    <button
+                      onClick={() => setFilter({ status: 'maybe' })}
+                      className="text-indigo-600 hover:text-indigo-800 underline"
+                    >
+                      View the Maybe pile
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-400 text-sm px-4">
+                  No segments match the current filters. Try widening the confidence threshold or changing the status filter.
+                </div>
+              )
             )}
             {segments.map(segment => (
               <SegmentCard
@@ -220,6 +348,7 @@ export function ReviewQueuePage() {
               onFocusChange={setShortcutsEnabled}
               showSpectrogram={showSpectrogram}
               onSpectrogramToggle={() => setShowSpectrogram(s => !s)}
+              autoPlay={autoPlay}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-gray-400">
@@ -228,6 +357,13 @@ export function ReviewQueuePage() {
           )}
         </div>
       </div>
+
+      {/* Transient action error toast */}
+      {actionError && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white text-sm px-4 py-2 rounded shadow-lg">
+          {actionError}
+        </div>
+      )}
 
       {showHelp && <KeyboardHelp onClose={() => setShowHelp(false)} />}
     </div>

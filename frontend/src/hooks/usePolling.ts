@@ -27,6 +27,7 @@ export function usePolling<T>(
   const fetchFnRef = useRef(fetchFn)
   const onDataRef = useRef(onData)
   const isMountedRef = useRef(true)
+  const inFlightRef = useRef(false)
 
   useEffect(() => {
     fetchFnRef.current = fetchFn
@@ -44,6 +45,10 @@ export function usePolling<T>(
   }, [])
 
   const execute = useCallback(async () => {
+    // Skip if a previous poll is still in flight, so a slow response can't stack up
+    // overlapping requests behind the interval timer.
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     setIsLoading(true)
     try {
       const result = await fetchFnRef.current()
@@ -55,6 +60,7 @@ export function usePolling<T>(
       if (!isMountedRef.current) return
       setError(err instanceof Error ? err : new Error(String(err)))
     } finally {
+      inFlightRef.current = false
       if (isMountedRef.current) {
         setIsLoading(false)
       }

@@ -1,4 +1,5 @@
 interface ProgressBarProps {
+  /** Percentage in the range 0–100 (the canonical unit the orchestrator sends). */
   value: number
   label?: string
   className?: string
@@ -12,7 +13,7 @@ const COLORS = {
 }
 
 export function ProgressBar({ value, label, className = '', color = 'green' }: ProgressBarProps) {
-  const pct = Math.min(1, Math.max(0, value)) * 100
+  const pct = Math.min(100, Math.max(0, value))
 
   return (
     <div className={`w-full ${className}`}>

@@ -37,7 +37,8 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
       const req: CreateProjectRequest = {
         name: name.trim(),
         whisper_model: whisperModel,
-        language,
+        // "auto" is a UI-only sentinel; the API expects null for auto-detect.
+        language: language === 'auto' ? null : language,
         match_threshold: matchThreshold,
         target_duration_secs: Math.round(targetHours * 3600),
       }

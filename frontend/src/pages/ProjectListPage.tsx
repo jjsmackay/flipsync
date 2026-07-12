@@ -123,11 +123,10 @@ function ProjectCard({ project, onDeleted }: ProjectCardProps) {
 export function ProjectListPage() {
   const navigate = useNavigate()
   const [showModal, setShowModal] = useState(false)
-  const [refreshKey, setRefreshKey] = useState(0)
 
-  const fetchFn = useCallback(() => getProjects(), [refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const fetchFn = useCallback(() => getProjects(), [])
 
-  const { data, error, isLoading } = usePolling(fetchFn, { intervalMs: 10000 })
+  const { data, error, isLoading, refetch } = usePolling(fetchFn, { intervalMs: 10000 })
 
   function handleCreated(id: string) {
     setShowModal(false)
@@ -135,7 +134,8 @@ export function ProjectListPage() {
   }
 
   function handleDeleted() {
-    setRefreshKey((k) => k + 1)
+    // Refetch immediately so the deleted card disappears without waiting for the poll.
+    void refetch()
   }
 
   const projects = data?.projects ?? []

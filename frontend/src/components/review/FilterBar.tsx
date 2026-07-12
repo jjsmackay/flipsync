@@ -1,5 +1,6 @@
 import type { FilterState } from '../../hooks/useFilterState'
 import type { SourceCoverage } from '../../types/api'
+import { ALL_SEGMENT_STATUSES_CSV } from '../../constants'
 
 interface FilterBarProps {
   filter: FilterState
@@ -8,7 +9,9 @@ interface FilterBarProps {
 }
 
 const STATUS_OPTIONS = [
-  { value: '', label: 'All' },
+  // "All" must be an explicit status list, not an empty value — otherwise the server
+  // falls back to its pending+maybe default (SC4).
+  { value: ALL_SEGMENT_STATUSES_CSV, label: 'All' },
   { value: 'pending,maybe', label: 'Pending + Maybe' },
   { value: 'pending', label: 'Pending' },
   { value: 'maybe', label: 'Maybe' },

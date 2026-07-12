@@ -1,6 +1,7 @@
 interface ConfidenceBadgeProps {
   value: number
   label?: string
+  title?: string
 }
 
 function confidenceStyle(v: number): string {
@@ -9,10 +10,11 @@ function confidenceStyle(v: number): string {
   return 'text-red-700 bg-red-50'
 }
 
-export function ConfidenceBadge({ value, label }: ConfidenceBadgeProps) {
+export function ConfidenceBadge({ value, label, title }: ConfidenceBadgeProps) {
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono font-medium ${confidenceStyle(value)}`}
+      title={title}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono font-medium ${confidenceStyle(value)} ${title ? 'cursor-help' : ''}`}
     >
       {label && <span className="font-sans text-xs opacity-70">{label}</span>}
       {(value * 100).toFixed(0)}%

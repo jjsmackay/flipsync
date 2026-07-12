@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { bulkSegmentAction, getSegmentsCount } from '../../api/client'
 import type { BulkFilter, BulkSegmentRequest, SegmentStatus } from '../../types/api'
+import { ALL_SEGMENT_STATUSES_CSV } from '../../constants'
 
 interface BulkOperationsProps {
   projectId: string
@@ -54,53 +55,83 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
   const [action, setAction] = useState<BulkSegmentRequest['action']>('approve')
   const [filterStatus, setFilterStatus] = useState<SegmentStatus | ''>('')
   const [minConfidence, setMinConfidence] = useState<string>('')
+  const [minDuration, setMinDuration] = useState<string>('')
   const [maxDuration, setMaxDuration] = useState<string>('')
   const [sourceId, setSourceId] = useState<string>('')
   const [previewCount, setPreviewCount] = useState<number | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [applying, setApplying] = useState(false)
   const [applyingPreset, setApplyingPreset] = useState<number | null>(null)
+  const [bulkError, setBulkError] = useState<string | null>(null)
 
   function buildFilter(): BulkFilter {
     const f: BulkFilter = {}
-    if (filterStatus) f.status = filterStatus
+    // "Any" sends the full status list so the preview count matches what Apply
+    // affects — an empty status would fall back to the server's pending+maybe default (SC4).
+    f.status = filterStatus || ALL_SEGMENT_STATUSES_CSV
     if (minConfidence !== '') f.min_confidence = parseFloat(minConfidence)
+    if (minDuration !== '') f.min_duration = parseFloat(minDuration)
     if (maxDuration !== '') f.max_duration = parseFloat(maxDuration)
     if (sourceId) f.source_id = sourceId
     return f
   }
 
+  // Live preview: recount whenever the panel is open and any filter changes.
+  useEffect(() => {
+    if (!expanded) return
+    const filter = buildFilter()
+    let cancelled = false
+    setPreviewing(true)
+    const timer = setTimeout(() => {
+      getSegmentsCount(projectId, filter)
+        .then((result) => {
+          if (!cancelled) {
+            setPreviewCount(result.total)
+            setBulkError(null)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setPreviewCount(null)
+            setBulkError(err instanceof Error ? err.message : 'Preview failed')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setPreviewing(false)
+        })
+    }, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, projectId, filterStatus, minConfidence, minDuration, maxDuration, sourceId])
+
   async function handlePreset(index: number) {
     setApplyingPreset(index)
+    setBulkError(null)
     try {
       const result = await bulkSegmentAction(projectId, PRESETS[index].req)
       setResultCount(result.affected_count)
       onApplied()
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
     } finally {
       setApplyingPreset(null)
-    }
-  }
-
-  async function handlePreview() {
-    setPreviewing(true)
-    try {
-      const filter = buildFilter()
-      const result = await getSegmentsCount(projectId, filter)
-      setPreviewCount(result.total)
-    } finally {
-      setPreviewing(false)
     }
   }
 
   async function handleApply() {
     if (previewCount === null || previewCount === 0) return
     setApplying(true)
+    setBulkError(null)
     try {
       const req: BulkSegmentRequest = { action, filter: buildFilter() }
       const result = await bulkSegmentAction(projectId, req)
       setResultCount(result.affected_count)
-      setPreviewCount(null)
       onApplied()
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
     } finally {
       setApplying(false)
     }
@@ -151,10 +182,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                 <label className="block text-xs text-slate-600 mb-1">Action</label>
                 <select
                   value={action}
-                  onChange={e => {
-                    setAction(e.target.value as BulkSegmentRequest['action'])
-                    setPreviewCount(null)
-                  }}
+                  onChange={e => setAction(e.target.value as BulkSegmentRequest['action'])}
                   className="w-full text-sm border border-slate-300 rounded px-2 py-1"
                 >
                   <option value="approve">Approve</option>
@@ -168,10 +196,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                 <label className="block text-xs text-slate-600 mb-1">Status filter</label>
                 <select
                   value={filterStatus}
-                  onChange={e => {
-                    setFilterStatus(e.target.value as SegmentStatus | '')
-                    setPreviewCount(null)
-                  }}
+                  onChange={e => setFilterStatus(e.target.value as SegmentStatus | '')}
                   className="w-full text-sm border border-slate-300 rounded px-2 py-1"
                 >
                   <option value="">Any</option>
@@ -189,11 +214,21 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   max={1}
                   step={0.05}
                   value={minConfidence}
-                  onChange={e => {
-                    setMinConfidence(e.target.value)
-                    setPreviewCount(null)
-                  }}
+                  onChange={e => setMinConfidence(e.target.value)}
                   placeholder="e.g. 0.85"
+                  className="w-full text-sm border border-slate-300 rounded px-2 py-1"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-600 mb-1">Min duration (s)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={minDuration}
+                  onChange={e => setMinDuration(e.target.value)}
+                  placeholder="e.g. 2.0"
                   className="w-full text-sm border border-slate-300 rounded px-2 py-1"
                 />
               </div>
@@ -205,10 +240,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   min={0}
                   step={0.5}
                   value={maxDuration}
-                  onChange={e => {
-                    setMaxDuration(e.target.value)
-                    setPreviewCount(null)
-                  }}
+                  onChange={e => setMaxDuration(e.target.value)}
                   placeholder="e.g. 2.0"
                   className="w-full text-sm border border-slate-300 rounded px-2 py-1"
                 />
@@ -219,10 +251,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   <label className="block text-xs text-slate-600 mb-1">Source</label>
                   <select
                     value={sourceId}
-                    onChange={e => {
-                      setSourceId(e.target.value)
-                      setPreviewCount(null)
-                    }}
+                    onChange={e => setSourceId(e.target.value)}
                     className="w-full text-sm border border-slate-300 rounded px-2 py-1"
                   >
                     <option value="">All sources</option>
@@ -234,23 +263,29 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
               )}
             </div>
 
-            <div className="flex items-center gap-2 mt-3">
-              <button
-                onClick={handlePreview}
-                disabled={previewing}
-                className="text-sm px-3 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {previewing ? 'Loading…' : previewCount !== null ? `Preview (${previewCount})` : 'Preview'}
-              </button>
+            <div className="flex items-center gap-3 mt-3">
+              <span className="text-sm text-slate-600">
+                {previewing
+                  ? 'Counting…'
+                  : previewCount !== null
+                    ? `Affects ${previewCount} segment${previewCount !== 1 ? 's' : ''}`
+                    : '—'}
+              </span>
 
               <button
                 onClick={handleApply}
-                disabled={applying || previewCount === null || previewCount === 0}
-                className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={applying || previewing || previewCount === null || previewCount === 0}
+                className="text-sm px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
               >
                 {applying ? 'Applying…' : 'Apply'}
               </button>
             </div>
+
+            {bulkError && (
+              <p className="mt-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">
+                {bulkError}
+              </p>
+            )}
           </div>
         </div>
       )}

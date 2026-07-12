@@ -1,11 +1,8 @@
 fastapi==0.115.0
 uvicorn==0.30.6
 demucs==4.0.1
-torch
-torchaudio
+# torch must stay <2.6: demucs 4.0.1 loads its checkpoints via torch.load,
+# which defaults to weights_only=True from 2.6 and breaks pickled model objects.
+torch<2.6
+torchaudio<2.6
 numpy
-httpx
-pytest
-pytest-asyncio
-anyio
-soundfile

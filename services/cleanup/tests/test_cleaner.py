@@ -1,6 +1,7 @@
 """Unit tests for cleaner.py — clipping detection, silence detection, processing logic."""
 
 import os
+import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -13,11 +14,14 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cleaner import (
+    BinaryNotFoundError,
     CleanupParams,
+    ProbeError,
     SegmentInput,
     SegmentResult,
     _check_channel_clipping,
     _extract_loudnorm_json,
+    _is_silent_measurement,
     detect_clipping,
     process_segment,
 )
@@ -235,3 +239,239 @@ class TestProcessSegment:
         assert result.auto_rejected is True
         assert result.output_path is None
         assert result.error is None
+
+
+# ---------------------------------------------------------------------------
+# C1 — silence trim removes ONLY leading/trailing silence
+# ---------------------------------------------------------------------------
+
+
+class TestSilenceTrimFilter:
+    def test_trim_filter_is_leading_and_trailing_only(self, tmp_dir, clean_wav, output_dir):
+        """The trim pass must use two start-trigger passes wrapped in areverse,
+        never stop_periods=-1 (which strips mid-segment pauses)."""
+        params = CleanupParams()
+        out_path = os.path.join(output_dir, "seg_filter.wav")
+        seg = SegmentInput(id="seg-filter", input_path=clean_wav, output_path=out_path)
+
+        captured_filters = []
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            # Record the -af filter string of every call.
+            if "-af" in cmd:
+                captured_filters.append(cmd[cmd.index("-af") + 1])
+            if len(captured_filters) == 1:
+                result.stderr = LOUDNORM_JSON
+            else:
+                result.stderr = ""
+                sf.write(cmd[-1], np.zeros(22050, dtype=np.float32), 22050, subtype="PCM_16")
+            return result
+
+        with patch("cleaner.subprocess.run", side_effect=mock_run):
+            with patch("cleaner._get_audio_duration", return_value=1.0):
+                process_segment(seg, params)
+
+        # The trim pass is the third ffmpeg invocation.
+        trim_filter = captured_filters[2]
+        # Mid-file silence must NOT be stripped.
+        assert "stop_periods" not in trim_filter
+        # Leading + trailing trim via two start passes wrapped in areverse.
+        assert trim_filter.count("silenceremove=start_periods=1") == 2
+        assert trim_filter.count("areverse") == 2
+        assert f"highpass=f={params.highpass_hz}" in trim_filter
+        # Exact chain shape.
+        start = (
+            f"silenceremove=start_periods=1"
+            f":start_duration={params.silence_min_duration_secs}"
+            f":start_threshold={params.silence_threshold_db}dB"
+        )
+        assert trim_filter == (
+            f"{start},areverse,{start},areverse,highpass=f={params.highpass_hz}"
+        )
+
+    @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+    @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not installed")
+    def test_real_ffmpeg_preserves_mid_pause(self, tmp_dir, output_dir):
+        """Real FFmpeg run: leading/trailing silence trimmed, mid pause survives.
+
+        Input layout (22050 Hz mono):
+          0.5 s silence | 0.5 s tone | 0.4 s silence (mid pause) | 0.5 s tone | 0.5 s silence
+        Total 2.4 s. After trimming lead + tail (~1.0 s), ~1.4 s should remain,
+        which is only possible if the 0.4 s mid pause was preserved (speech alone
+        is ~1.0 s).
+        """
+        sr = 22050
+
+        def _silence(secs):
+            return np.zeros(int(sr * secs), dtype=np.float32)
+
+        def _tone(secs):
+            t = np.linspace(0, secs, int(sr * secs), endpoint=False)
+            return (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+        signal = np.concatenate([
+            _silence(0.5),
+            _tone(0.5),
+            _silence(0.4),  # mid pause — must survive
+            _tone(0.5),
+            _silence(0.5),
+        ])
+        in_path = os.path.join(tmp_dir, "layered.wav")
+        sf.write(in_path, signal, sr, subtype="PCM_16")
+
+        out_path = os.path.join(output_dir, "layered_out.wav")
+        seg = SegmentInput(id="seg-real", input_path=in_path, output_path=out_path)
+        result = process_segment(seg, CleanupParams())
+
+        assert result.error is None, result.error
+        assert result.auto_rejected is False
+        assert result.output_path == out_path
+
+        data, out_sr = sf.read(out_path)
+        out_secs = len(data) / out_sr
+        # Mid pause survived: clearly more than the ~1.0 s of speech alone.
+        assert out_secs > 1.15, f"mid pause was stripped (output {out_secs:.3f}s)"
+        # Leading + trailing silence trimmed: clearly less than the 2.4 s input.
+        assert out_secs < 1.9, f"lead/tail silence not trimmed (output {out_secs:.3f}s)"
+
+
+# ---------------------------------------------------------------------------
+# C2 — all-silence / sub-threshold input auto-rejected (loudnorm -inf)
+# ---------------------------------------------------------------------------
+
+
+SILENT_LOUDNORM_JSON = """{
+    "input_i" : "-inf",
+    "input_tp" : "-inf",
+    "input_lra" : "0.00",
+    "input_thresh" : "-inf",
+    "output_i" : "-23.00",
+    "output_tp" : "-2.00",
+    "output_lra" : "0.00",
+    "output_thresh" : "-33.32",
+    "target_offset" : "0.00"
+}"""
+
+
+class TestIsSilentMeasurement:
+    def test_negative_infinity_string(self):
+        assert _is_silent_measurement("-inf") is True
+
+    def test_float_negative_infinity(self):
+        assert _is_silent_measurement(float("-inf")) is True
+
+    def test_below_99_lufs(self):
+        assert _is_silent_measurement("-120.5") is True
+
+    def test_real_speech_loudness(self):
+        assert _is_silent_measurement("-23.25") is False
+        assert _is_silent_measurement("-9.0") is False
+
+
+class TestSilentInputAutoRejected:
+    def test_loudnorm_inf_short_circuits_to_auto_reject(self, tmp_dir, clean_wav, output_dir):
+        """A pass-1 measurement of -inf must auto-reject with error=None and
+        must NOT proceed to pass 2 (which would exit non-zero and mislabel it
+        as ffmpeg_error)."""
+        params = CleanupParams()
+        out_path = os.path.join(output_dir, "seg_inf.wav")
+        seg = SegmentInput(id="seg-inf", input_path=clean_wav, output_path=out_path)
+
+        call_count = [0]
+
+        def mock_run(cmd, **kwargs):
+            call_count[0] += 1
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = SILENT_LOUDNORM_JSON if call_count[0] == 1 else ""
+            return result
+
+        with patch("cleaner.subprocess.run", side_effect=mock_run):
+            result = process_segment(seg, params)
+
+        assert result.auto_rejected is True
+        assert result.error is None
+        assert result.output_path is None
+        # Only pass 1 ran — no pass 2, no trim.
+        assert call_count[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# C3 — missing binary is a job-level failure, not a per-segment error
+# ---------------------------------------------------------------------------
+
+
+class TestBinaryNotFound:
+    def test_missing_ffmpeg_raises_binary_not_found(self, tmp_dir, clean_wav, output_dir):
+        """A missing ffmpeg binary must propagate BinaryNotFoundError, not be
+        captured as a per-segment result."""
+        params = CleanupParams()
+        out_path = os.path.join(output_dir, "seg_nobin.wav")
+        seg = SegmentInput(id="seg-nobin", input_path=clean_wav, output_path=out_path)
+
+        with patch("cleaner.subprocess.run", side_effect=FileNotFoundError("ffmpeg")):
+            with pytest.raises(BinaryNotFoundError):
+                process_segment(seg, params)
+
+
+# ---------------------------------------------------------------------------
+# C4 — ffprobe failure is a per-segment error, not a false auto-reject
+# ---------------------------------------------------------------------------
+
+
+class TestProbeErrorNotAutoReject:
+    def test_probe_error_becomes_segment_error(self, tmp_dir, clean_wav, output_dir):
+        """If ffprobe fails on the trimmed output, the segment is a per-segment
+        error (auto_rejected=False), never a silent auto-reject."""
+        params = CleanupParams()
+        out_path = os.path.join(output_dir, "seg_probe.wav")
+        seg = SegmentInput(id="seg-probe", input_path=clean_wav, output_path=out_path)
+
+        call_count = [0]
+
+        def mock_run(cmd, **kwargs):
+            call_count[0] += 1
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            if call_count[0] == 1:
+                result.stderr = LOUDNORM_JSON
+            else:
+                result.stderr = ""
+                sf.write(cmd[-1], np.zeros(22050, dtype=np.float32), 22050, subtype="PCM_16")
+            return result
+
+        with patch("cleaner.subprocess.run", side_effect=mock_run):
+            with patch("cleaner._get_audio_duration", side_effect=ProbeError("boom")):
+                result = process_segment(seg, params)
+
+        assert result.auto_rejected is False
+        assert result.output_path is None
+        assert result.error is not None
+        assert "ffmpeg_error" in result.error
+
+    def test_get_audio_duration_raises_on_probe_failure(self):
+        """_get_audio_duration raises ProbeError (not returns 0.0) when ffprobe
+        exits non-zero."""
+        from cleaner import _get_audio_duration
+
+        failed = MagicMock()
+        failed.returncode = 1
+        failed.stdout = ""
+        failed.stderr = "corrupt"
+        with patch("cleaner.subprocess.run", return_value=failed):
+            with pytest.raises(ProbeError):
+                _get_audio_duration("/some/path.wav")
+
+    def test_get_audio_duration_raises_binary_not_found(self):
+        """_get_audio_duration raises BinaryNotFoundError when ffprobe is
+        missing."""
+        from cleaner import _get_audio_duration
+
+        with patch("cleaner.subprocess.run", side_effect=FileNotFoundError("ffprobe")):
+            with pytest.raises(BinaryNotFoundError):
+                _get_audio_duration("/some/path.wav")

@@ -10,7 +10,10 @@ import math
 
 import numpy as np
 import pytest
-import torch
+
+# stitch_chunks operates on torch tensors, so these tests need torch installed.
+# Skip cleanly (rather than error at collection) in environments without it.
+torch = pytest.importorskip("torch")
 
 from separator import compute_chunks, stitch_chunks, CHUNK_OVERLAP_SECS
 

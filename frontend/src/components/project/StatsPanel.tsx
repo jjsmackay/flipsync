@@ -25,7 +25,7 @@ function StatBox({ label, value, colorClass }: StatBoxProps) {
 
 export function StatsPanel({ stats, config }: StatsPanelProps) {
   const progressValue = config.target_duration_secs > 0
-    ? stats.approved_duration_secs / config.target_duration_secs
+    ? (stats.approved_duration_secs / config.target_duration_secs) * 100
     : 0
 
   const approvedLabel = `${formatDuration(stats.approved_duration_secs)} / ${formatDuration(config.target_duration_secs)}`

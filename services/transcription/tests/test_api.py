@@ -128,6 +128,76 @@ class TestSubmitJob:
         resp = client.post("/jobs", json=payload)
         assert resp.status_code == 422
 
+    def test_invalid_model_returns_flat_422(self, client, sine_wav_path, job_id):
+        payload = {
+            "job_id": job_id,
+            "segments": [{"id": str(uuid.uuid4()), "wav_path": sine_wav_path}],
+            "model": "gpt-4",
+        }
+        resp = client.post("/jobs", json=payload)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error"] == "validation_error"
+        assert "message" in body
+        assert "detail" in body
+
+    def test_invalid_batch_size_returns_flat_422(self, client, sine_wav_path, job_id):
+        payload = {
+            "job_id": job_id,
+            "segments": [{"id": str(uuid.uuid4()), "wav_path": sine_wav_path}],
+            "model": "large-v2",
+            "batch_size": 0,
+        }
+        resp = client.post("/jobs", json=payload)
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "validation_error"
+
+    def test_duplicate_job_returns_409(self, client, sine_wav_path, job_id):
+        payload = {
+            "job_id": job_id,
+            "segments": [{"id": str(uuid.uuid4()), "wav_path": sine_wav_path}],
+            "model": "large-v2",
+        }
+        with patch("main.load_model", return_value=_make_mock_model()):
+            assert client.post("/jobs", json=payload).status_code == 202
+            dup = client.post("/jobs", json=payload)
+        assert dup.status_code == 409
+        assert dup.json()["error"] == "job_exists"
+
+
+class TestPerSegmentFailure:
+    def test_bad_segment_does_not_fail_job(self, client, sine_wav_path, tmp_path, job_id):
+        """One unreadable WAV must not fail the job: it completes with a
+        per-segment error while the good segment transcribes."""
+        good_id = str(uuid.uuid4())
+        bad_id = str(uuid.uuid4())
+
+        with patch("main.load_model", return_value=_make_mock_model()):
+            payload = {
+                "job_id": job_id,
+                "segments": [
+                    {"id": good_id, "wav_path": sine_wav_path},
+                    {"id": bad_id, "wav_path": str(tmp_path / "missing.wav")},
+                ],
+                "model": "large-v2",
+                "batch_size": 16,
+            }
+            assert client.post("/jobs", json=payload).status_code == 202
+
+            import time
+            deadline = time.time() + 5.0
+            poll = client.get(f"/jobs/{job_id}").json()
+            while poll["status"] == "running" and time.time() < deadline:
+                time.sleep(0.1)
+                poll = client.get(f"/jobs/{job_id}").json()
+
+        assert poll["status"] == "complete"
+        assert poll["error"] is None
+        by_id = {s["id"]: s for s in poll["completed_segments"]}
+        assert by_id[bad_id]["error"]
+        assert by_id[bad_id]["transcript"] == ""
+        assert "error" not in by_id[good_id]
+
 
 class TestGetJob:
     def test_unknown_job_returns_not_found(self, client):

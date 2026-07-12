@@ -1,7 +1,9 @@
 fastapi==0.115.0
 uvicorn==0.30.6
 faster-whisper==1.0.3
-torch
-httpx
-pytest
-pytest-asyncio
+# Pinned <4.5: ctranslate2 4.5+ requires cuDNN 9 on LD_LIBRARY_PATH, which the
+# python:3.11-slim base image does not provide. 4.4.x bundles cuDNN 8 and loads
+# on first GPU run. faster-whisper 1.0.3 is compatible with this range.
+# CUDA availability is detected via ctranslate2.get_cuda_device_count(); torch
+# is no longer a dependency (it was imported solely for cuda.is_available()).
+ctranslate2<4.5

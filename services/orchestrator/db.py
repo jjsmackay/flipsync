@@ -40,6 +40,9 @@ def get_conn(project_id: str) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # Databases created by an older build may be missing later migrations;
+        # _run_migrations is idempotent via the _migrations ledger.
+        _run_migrations(conn)
         _connections[project_id] = conn
     return _connections[project_id]
 

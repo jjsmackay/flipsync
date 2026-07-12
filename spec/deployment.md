@@ -39,11 +39,12 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - DATABASE_DIR=/data/projects
-      - VOCAL_SEP_URL=http://vocal-separation:8001
+      - DATA_DIR=/data
+      - VOCAL_SEPARATION_URL=http://vocal-separation:8001
       - DIARISATION_URL=http://diarisation:8002
       - TRANSCRIPTION_URL=http://transcription:8003
       - CLEANUP_URL=http://cleanup:8004
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
     depends_on:
       - vocal-separation
       - diarisation
@@ -148,11 +149,11 @@ Create a `.env` file at the repo root before first run. This file is gitignored.
 ```bash
 # Required
 HF_TOKEN=hf_...          # HuggingFace token for pyannote model download
-
-# Optional overrides
-DEMUCS_MODEL=htdemucs    # htdemucs (default) or mdx_extra
-WHISPER_MODEL=large-v2   # tiny, base, large-v2 (default), large-v3
 ```
+
+Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.
+
+**Orchestrator CORS.** The orchestrator reads `CORS_ORIGINS` — a comma-separated list of allowed browser origins. It defaults to `http://localhost:3000,http://127.0.0.1:3000` (the frontend dev and container origins), so it only needs setting when the frontend is served from a different host or port. Override it via the orchestrator's `environment:` block in `docker-compose.yml` rather than `.env`.
 
 The HuggingFace token is only needed on first run to download pyannote's speaker diarisation and embedding models. After the models are cached in the `pyannote-models` volume, the token is no longer used. It must still be present in the environment or pyannote's library will fail to initialise — this is a pyannote limitation, not a FlipSync one.
 

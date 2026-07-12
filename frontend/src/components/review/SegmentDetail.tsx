@@ -11,11 +11,17 @@ interface SegmentDetailProps {
   projectId: string
   segment: Segment
   onStatusChange: (id: string, status: SegmentStatus) => void
-  onTranscriptChange: (id: string, transcript: string) => void
+  onTranscriptChange: (id: string, transcript: string | null) => void
   onFocusChange: (focused: boolean) => void
   showSpectrogram: boolean
   onSpectrogramToggle: () => void
+  autoPlay: boolean
 }
+
+const MATCH_TOOLTIP =
+  'Speaker match: cosine similarity between this segment and your reference clip (0–1). Higher means more likely to be the target speaker.'
+const TRANSCRIPT_TOOLTIP =
+  'Transcript confidence: the average word probability reported by Whisper for this segment (0–1). Lower values often mean unclear speech.'
 
 function formatTimestamp(secs: number): string {
   const h = Math.floor(secs / 3600)
@@ -34,15 +40,51 @@ export function SegmentDetail({
   onFocusChange,
   showSpectrogram,
   onSpectrogramToggle,
+  autoPlay,
 }: SegmentDetailProps) {
-  const audioUrl = getSegmentAudioUrl(projectId, segment.id)
-  const audio = useAudio(audioUrl)
+  const audioApiUrl = getSegmentAudioUrl(projectId, segment.id)
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
+  const [objectUrl, setObjectUrl] = useState<string | null>(null)
+  const audio = useAudio(objectUrl)
 
   const [isEditing, setIsEditing] = useState(false)
   const [editedTranscript, setEditedTranscript] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Download the segment audio once, as a blob, and hand the same bytes to both the
+  // audio player (via object URL) and the waveform/spectrogram (via the blob). The
+  // object URL is revoked when the segment changes or the panel unmounts.
+  useEffect(() => {
+    let cancelled = false
+    let createdUrl: string | null = null
+    setAudioBlob(null)
+    setObjectUrl(null)
+    fetch(audioApiUrl)
+      .then((r) => r.blob())
+      .then((blob) => {
+        if (cancelled) return
+        createdUrl = URL.createObjectURL(blob)
+        setAudioBlob(blob)
+        setObjectUrl(createdUrl)
+      })
+      .catch(() => {
+        /* player and waveform show their empty states */
+      })
+    return () => {
+      cancelled = true
+      if (createdUrl) URL.revokeObjectURL(createdUrl)
+    }
+  }, [audioApiUrl])
+
+  // Auto-play when a new segment's audio is ready, if the header toggle is on.
+  useEffect(() => {
+    if (autoPlay && objectUrl) {
+      audio.play()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objectUrl, autoPlay])
 
   // Reset state when segment changes
   useEffect(() => {
@@ -152,9 +194,9 @@ export function SegmentDetail({
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2 flex-wrap">
           <StatusBadge status={segment.status} />
-          <ConfidenceBadge value={segment.match_confidence} label="match" />
+          <ConfidenceBadge value={segment.match_confidence} label="match" title={MATCH_TOOLTIP} />
           {segment.transcript_confidence !== null && (
-            <ConfidenceBadge value={segment.transcript_confidence} label="transcript" />
+            <ConfidenceBadge value={segment.transcript_confidence} label="transcript" title={TRANSCRIPT_TOOLTIP} />
           )}
           {segment.clipping_warning && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700">
@@ -197,7 +239,7 @@ export function SegmentDetail({
       {/* Waveform */}
       <div className="flex flex-col gap-1.5">
         <WaveformCanvas
-          audioUrl={audioUrl}
+          audioBlob={audioBlob}
           currentTime={audio.currentTime}
           duration={audio.duration}
           onSeek={audio.seek}
@@ -235,7 +277,9 @@ export function SegmentDetail({
                   onClick={async () => {
                     try {
                       await patchSegment(projectId, segment.id, { transcript_edited: null })
-                      onTranscriptChange(segment.id, segment.transcript ?? '')
+                      // Clear the edit locally so the UI falls back to the original transcript
+                      // and the Undo button disappears (SC2).
+                      onTranscriptChange(segment.id, null)
                     } catch (e) {
                       setError(e instanceof Error ? e.message : 'Undo failed')
                     }

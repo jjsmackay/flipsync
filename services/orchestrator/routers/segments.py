@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from db import project_dir, require_project, utc_now
 from errors import AppError
 from state_machines import validate_segment_transition, BULK_ACTION_SOURCES
-from status import recompute_project_status
+from status import invalidate_export
 
 router = APIRouter(prefix="/projects/{project_id}/segments", tags=["segments"])
 
@@ -32,12 +32,23 @@ def _serialize_segment(row, project_id: str) -> dict:
         "transcript_confidence": row["transcript_confidence"],
         "status": row["status"],
         "clipping_warning": bool(row["clipping_warning"]),
+        "flags": json.loads(row["flags"]) if row["flags"] else [],
         "audio_url": f"/projects/{project_id}/segments/{row['id']}/audio",
     }
 
 
-VALID_SORT_FIELDS = {"match_confidence", "duration_secs", "start_secs", "transcript_confidence"}
+# Maps accepted `sort` values (spec + column aliases) to the actual column name.
+SORT_FIELD_MAP = {
+    "match_confidence": "match_confidence",
+    "duration": "duration_secs",
+    "duration_secs": "duration_secs",
+    "start_secs": "start_secs",
+    "transcript_confidence": "transcript_confidence",
+}
 VALID_ORDERS = {"asc", "desc"}
+
+# Default status filter, shared by GET /segments and POST /segments/bulk.
+DEFAULT_STATUS_FILTER = ("pending", "maybe")
 
 
 @router.get("")
@@ -57,14 +68,24 @@ async def list_segments(
 ):
     conn = require_project(project_id)
 
-    if sort not in VALID_SORT_FIELDS:
-        raise AppError(422, "invalid_sort", f"sort must be one of {sorted(VALID_SORT_FIELDS)}.")
+    if sort not in SORT_FIELD_MAP:
+        raise AppError(422, "invalid_sort", f"sort must be one of {sorted(SORT_FIELD_MAP)}.")
     if order not in VALID_ORDERS:
         raise AppError(422, "invalid_order", "order must be 'asc' or 'desc'.")
+    sort_col = SORT_FIELD_MAP[sort]
     per_page = min(per_page, 200)
     page = max(page, 1)
 
     statuses = [s.strip() for s in status.split(",") if s.strip()]
+    if not statuses:
+        # An explicit empty ?status= filters to no statuses — return an empty
+        # result set rather than building invalid `IN ()` SQL.
+        if count_only:
+            return {"total": 0}
+        return {
+            "segments": [],
+            "pagination": {"page": page, "per_page": per_page, "total": 0, "pages": 1},
+        }
     placeholders = ",".join("?" * len(statuses))
 
     conditions = [f"seg.project_id=?", f"seg.status IN ({placeholders})"]
@@ -105,7 +126,7 @@ async def list_segments(
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
         WHERE {where}
-        ORDER BY seg.{sort} {order.upper()}
+        ORDER BY seg.{sort_col} {order.upper()}
         LIMIT ? OFFSET ?
         """,
         [*params, per_page, offset],
@@ -171,7 +192,9 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
             )
         updates["status"] = body.status
 
-    if body.transcript_edited is not None:
+    # Distinguish an absent field (no change) from an explicit null (clear the
+    # edit) via model_fields_set — SC2. transcript_edited=null resets to NULL.
+    if "transcript_edited" in body.model_fields_set:
         updates["transcript_edited"] = body.transcript_edited
 
     if not updates:
@@ -184,8 +207,9 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
         (*updates.values(), segment_id),
     )
     conn.commit()
-    if "status" in updates:
-        recompute_project_status(project_id)
+    # Any approval or transcript change makes a prior export stale (the manifest
+    # is derived from approvals + COALESCE(transcript_edited, transcript)).
+    invalidate_export(project_id)
 
     updated = conn.execute(
         """
@@ -234,20 +258,24 @@ async def bulk_action(project_id: str, body: BulkRequest):
     to_status = BULK_ACTION_TARGET[body.action]
     allowed_sources = BULK_ACTION_SOURCES[body.action]
 
-    placeholders = ",".join("?" * len(allowed_sources))
-    conditions = [f"project_id=?", f"status IN ({placeholders})"]
-    params: list = [project_id, *allowed_sources]
-
     f = body.filter
+    # No status filter defaults to pending+maybe (SC4) — the same default as
+    # GET /segments — so a filterless reject never touches approved segments.
+    # A caller wanting a wider set (e.g. "All") sends the explicit status list.
     if f.status:
-        # Intersect filter status with allowed sources
-        filter_statuses = {s.strip() for s in f.status.split(",")}
-        intersected = allowed_sources & filter_statuses
-        if not intersected:
-            return {"affected_count": 0}
-        placeholders2 = ",".join("?" * len(intersected))
-        conditions.append(f"status IN ({placeholders2})")
-        params.extend(intersected)
+        filter_statuses = {s.strip() for s in f.status.split(",") if s.strip()}
+    else:
+        filter_statuses = set(DEFAULT_STATUS_FILTER)
+
+    # Only act on statuses the action can legally transition from.
+    target_statuses = allowed_sources & filter_statuses
+    if not target_statuses:
+        return {"affected_count": 0}
+
+    placeholders = ",".join("?" * len(target_statuses))
+    conditions = ["project_id=?", f"status IN ({placeholders})"]
+    params: list = [project_id, *target_statuses]
+
     if f.source_id:
         conditions.append("source_id=?")
         params.append(f.source_id)
@@ -274,6 +302,6 @@ async def bulk_action(project_id: str, body: BulkRequest):
 
     affected = result.rowcount
     if affected > 0:
-        recompute_project_status(project_id)
+        invalidate_export(project_id)
 
     return {"affected_count": affected}

@@ -43,7 +43,7 @@ export interface ProjectSummary {
 
 export interface ProjectConfig {
   whisper_model: string
-  language: string
+  language: string | null
   match_threshold: number
   target_duration_secs: number
 }
@@ -137,7 +137,7 @@ export interface Job {
 export interface CreateProjectRequest {
   name: string
   whisper_model: string
-  language: string
+  language: string | null
   match_threshold: number
   target_duration_secs: number
 }
@@ -147,7 +147,7 @@ export interface PatchProjectRequest {
   match_threshold?: number
   target_duration_secs?: number
   whisper_model?: string
-  language?: string
+  language?: string | null
 }
 
 export interface PatchSegmentRequest {
@@ -156,7 +156,8 @@ export interface PatchSegmentRequest {
 }
 
 export interface BulkFilter {
-  status?: SegmentStatus
+  // May be a single status or a comma-separated list (e.g. the full status set for "Any").
+  status?: string
   source_id?: string
   min_confidence?: number
   max_confidence?: number
@@ -170,7 +171,8 @@ export interface BulkSegmentRequest {
 }
 
 export interface GetSegmentsParams {
-  status?: SegmentStatus
+  // May be a single status or a comma-separated list.
+  status?: string
   source_id?: string
   min_confidence?: number
   max_confidence?: number
