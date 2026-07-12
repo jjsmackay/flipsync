@@ -69,6 +69,19 @@ async def check_health(service_name: str, timeout_secs: int = 300) -> bool:
     return False
 
 
+async def probe_health(service_name: str) -> bool:
+    """Single-shot GET /health. Returns True iff the service returned 200.
+
+    Uses a short-lived client rather than the shared pooled one so it is safe
+    to call from ad hoc event loops. Transport errors propagate to the caller
+    (jobs.wait_for_service_ready decides how to treat them).
+    """
+    url = get_service_url(service_name)
+    async with httpx.AsyncClient(timeout=5) as client:
+        resp = await client.get(f"{url}/health")
+        return resp.status_code == 200
+
+
 async def submit_job(service_name: str, payload: dict) -> dict:
     """POST /jobs to a processing service. Returns the response JSON.
 
