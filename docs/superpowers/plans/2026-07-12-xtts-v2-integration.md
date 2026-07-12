@@ -100,7 +100,7 @@ Run: xtts test command from Global Constraints. Expected: all pass without torch
 ### Task 5: Orchestrator — migration 003
 
 **Files:**
-- Create: `services/orchestrator/migrations/008_xtts_models.sql`
+- Create: `services/orchestrator/migrations/009_xtts_models.sql`
 
 **Content:** `CREATE TABLE IF NOT EXISTS models (...)` — exact DDL from `spec/data-models.md` §models; `ALTER TABLE jobs ADD COLUMN progress_detail TEXT;`. Comment header like `002_add_exported_at.sql`.
 

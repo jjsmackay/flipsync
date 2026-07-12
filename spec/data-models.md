@@ -490,5 +490,6 @@ Migration log:
 | 005 | `005_semantic_source_statuses.sql` | Renames positional step1/step2 column names and source statuses to `separation`/`diarisation` |
 | 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
 | 007 | `007_scout_pool.sql` | Rebuilds `speaker_candidates`: replaces `montage_path` with `pool_json` (curatable per-turn scout pool). Candidate rows are transient, so the table is dropped and recreated |
-| 008 | `008_xtts_models.sql` | v1.5: adds the `models` table and the `jobs.progress_detail` column. Both additive |
-| 009 | `009_cleaned_path.sql` | v1.5: `segments.cleaned_path TEXT NULL` — dataset cleanup cache (`cleaned/{id}.wav`), decoupling dataset builds from `export/`/`export_path` |
+| 008 | `008_whisper_tuning.sql` | Whisper transcription tuning as project config (`transcription_batch_size`, `transcription_compute_type`) |
+| 009 | `009_xtts_models.sql` | v1.5: adds the `models` table and the `jobs.progress_detail` column. Both additive |
+| 010 | `010_cleaned_path.sql` | v1.5: `segments.cleaned_path TEXT NULL` — dataset cleanup cache (`cleaned/{id}.wav`), decoupling dataset builds from `export/`/`export_path` |
