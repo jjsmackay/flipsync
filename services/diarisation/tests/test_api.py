@@ -449,3 +449,152 @@ def test_all_segments_returned_regardless_of_confidence(sample_wav_path, referen
     speaker_labels = {s["speaker_label"] for s in segments}
     assert "SPEAKER_00" in speaker_labels
     assert "SPEAKER_01" in speaker_labels
+
+
+# ---------------------------------------------------------------------------
+# Test: scout mode — reference_path null is accepted and reports mode "scout"
+# ---------------------------------------------------------------------------
+
+
+def test_submit_scout_job_accepted(client, sample_wav_path, output_dir):
+    """A reference_path: null request is accepted (202) and runs in scout mode."""
+    job_id = str(uuid.uuid4())
+
+    with patch("main._run_job"):  # prevent actual background execution
+        resp = client.post(
+            "/jobs",
+            json={
+                "job_id": job_id,
+                "input_path": sample_wav_path,
+                "reference_path": None,
+                "output_dir": output_dir,
+                "params": {
+                    "min_segment_duration": 1.0,
+                    "min_speakers": 1,
+                    "max_speakers": 10,
+                    "montage_max_secs": 30.0,
+                },
+            },
+        )
+
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job_id
+
+    poll = client.get(f"/jobs/{job_id}")
+    data = poll.json()
+    assert data["mode"] == "scout"
+    assert "speakers" in data
+
+
+def test_submit_scout_job_omitted_reference(client, sample_wav_path, output_dir):
+    """reference_path may be omitted entirely to select scout mode."""
+    job_id = str(uuid.uuid4())
+
+    with patch("main._run_job"):
+        resp = client.post(
+            "/jobs",
+            json={
+                "job_id": job_id,
+                "input_path": sample_wav_path,
+                "output_dir": output_dir,
+            },
+        )
+
+    assert resp.status_code == 202
+    assert client.get(f"/jobs/{job_id}").json()["mode"] == "scout"
+
+
+def test_submit_match_job_reports_mode_match(client, sample_wav_path, reference_wav_path, output_dir):
+    """Regression: a match-mode request still works and now reports mode 'match'."""
+    job_id = str(uuid.uuid4())
+
+    with patch("main._run_job"):
+        resp = client.post(
+            "/jobs",
+            json={
+                "job_id": job_id,
+                "input_path": sample_wav_path,
+                "reference_path": reference_wav_path,
+                "output_dir": output_dir,
+            },
+        )
+
+    assert resp.status_code == 202
+    poll = client.get(f"/jobs/{job_id}").json()
+    assert poll["mode"] == "match"
+    # Match-mode response fields are unchanged.
+    assert "segments" in poll
+    assert "coverage_ratio" in poll
+
+
+def test_scout_completion_shape(sample_wav_path, output_dir):
+    """A completed scout job carries mode 'scout' and a speakers array."""
+    import main
+    from unittest.mock import patch as _patch
+
+    job_id = str(uuid.uuid4())
+    main._jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "mode": "scout",
+        "progress": 0,
+        "segments": None,
+        "coverage_ratio": None,
+        "speakers": None,
+        "error": None,
+        "message": None,
+    }
+
+    fake_speakers = [
+        {"speaker_label": "SPEAKER_00", "montage_path": "/x/SPEAKER_00.wav",
+         "total_secs": 40.0, "segment_count": 12},
+        {"speaker_label": "SPEAKER_01", "montage_path": "/x/SPEAKER_01.wav",
+         "total_secs": 8.0, "segment_count": 3},
+    ]
+
+    req = MagicMock()
+    req.input_path = sample_wav_path
+    req.output_dir = output_dir
+    req.reference_path = None
+
+    with _patch("main._load_models"), _patch("diariser.run_scout", return_value=fake_speakers):
+        main._run_job(job_id, req)
+
+    job = main._jobs[job_id]
+    assert job["status"] == "complete"
+    assert job["mode"] == "scout"
+    assert job["speakers"] == fake_speakers
+    assert job["error"] is None
+
+
+def test_scout_failure_surfaces_failed_shape(sample_wav_path, output_dir):
+    """A scout-mode failure surfaces the standard failed shape."""
+    import main
+    from unittest.mock import patch as _patch
+
+    job_id = str(uuid.uuid4())
+    main._jobs[job_id] = {
+        "job_id": job_id,
+        "status": "running",
+        "mode": "scout",
+        "progress": 0,
+        "segments": None,
+        "coverage_ratio": None,
+        "speakers": None,
+        "error": None,
+        "message": None,
+    }
+
+    req = MagicMock()
+    req.reference_path = None
+
+    with _patch("main._load_models"), _patch(
+        "diariser.run_scout", side_effect=ValueError("boom in scout")
+    ):
+        main._run_job(job_id, req)
+
+    job = main._jobs[job_id]
+    assert job["status"] == "failed"
+    assert job["error"] == "diarisation_failed"
+    assert "boom in scout" in job["message"]
+    assert job["speakers"] is None

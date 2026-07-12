@@ -1,6 +1,13 @@
 // ---- Status enums ----
 
-export type ProjectStatus = 'new' | 'ready' | 'processing' | 'review' | 'exporting' | 'exported'
+export type ProjectStatus =
+  | 'new'
+  | 'ready'
+  | 'processing'
+  | 'awaiting_reference'
+  | 'review'
+  | 'exporting'
+  | 'exported'
 
 export type SegmentStatus =
   | 'pending'
@@ -85,11 +92,31 @@ export interface FailedJob {
   completed_at: string | null
 }
 
+// ---- Reference ----
+
+export type ReferenceOrigin =
+  | { type: 'uploaded' }
+  | { type: 'diarise_pick'; source_id: string; speaker_label: string }
+
+export interface SpeakerCandidate {
+  speaker_label: string
+  total_secs: number
+  segment_count: number
+  sample_url: string
+}
+
+export type ScoutStatus =
+  | { status: 'running'; progress: number; source_id: string; speakers: SpeakerCandidate[] }
+  | { status: 'failed'; source_id: string; error: string; speakers: SpeakerCandidate[] }
+  | { status: 'complete'; source_id: string; speakers: SpeakerCandidate[] }
+
 export interface ProjectDetail extends ProjectSummary {
   config: ProjectConfig
   stats: ProjectDetailStats
   active_jobs: JobSummary[]
   recent_failed_jobs: FailedJob[]
+  reference_path: string | null
+  reference_origin: ReferenceOrigin | null
 }
 
 // ---- Segments ----

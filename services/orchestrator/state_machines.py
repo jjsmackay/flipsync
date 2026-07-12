@@ -73,6 +73,7 @@ PROJECT_STATUSES = {
     "ready",
     "processing",
     "review",
+    "awaiting_reference",
     "exporting",
     "exported",
 }
@@ -84,11 +85,17 @@ def compute_project_status(
     has_active_jobs: bool,
     all_sources_complete: bool,
     export_complete: bool,
+    reference_set: bool = True,
+    has_step2_pending: bool = False,
 ) -> str:
     """Compute project status from observed state.
 
     This is called after each job completion or user action; it does not
     enforce transitions, it derives the correct status from facts.
+
+    Precedence: processing (any active job, incl. a running scout) → review
+    (all sources complete) → awaiting_reference (no reference yet, step 1 done
+    on ≥1 source) → ready.
     """
     if has_active_jobs:
         if current_status == "exporting":
@@ -103,5 +110,8 @@ def compute_project_status(
 
     if all_sources_complete:
         return "review"
+
+    if not reference_set and has_step2_pending:
+        return "awaiting_reference"
 
     return "ready"

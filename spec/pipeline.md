@@ -18,6 +18,8 @@ Step 4  Cleanup + Export      approved segs only  FFmpeg
 
 Any step can be re-run in isolation. Re-running step 1 for a file invalidates its step 2 output. Re-running step 2 does not affect transcriptions from other files. Re-running step 3 for a segment does not affect its approval state. These invalidation rules are enforced by the orchestrator — see [Data Models](data-models.md) for processing state transitions.
 
+**The reference gate.** Step 2 needs a `reference.wav` to match against. If the project has no reference when the pipeline starts, an explicit **"Set reference" stage** sits between steps 1 and 2: the orchestrator runs step 1 for every source but does not chain step 2, and the project rests in `awaiting_reference` once those jobs drain. The user sets a reference — by uploading a clip, or by scouting a source's vocals stem and picking a detected speaker (see [Step 2 — Scout mode](#scout-mode-reference-acquisition) below) — then triggers `pipeline/continue` to run step 2 for the sources waiting on it. If a reference is already set (uploaded previously, or picked on a prior run) this stage is skipped entirely and the pipeline runs straight through as before.
+
 ---
 
 ## Pre-step — Audio Extraction
@@ -117,6 +119,14 @@ Segments from different source files coexist in `segments/raw/`. Segment IDs are
 After processing a source file, the service reports the fraction of total audio attributed to the top matched speaker. If this is below 15% of the file duration, the orchestrator logs a `low_coverage` warning for that file. The UI surfaces this when the user views the project summary.
 
 A full season with low per-episode coverage may still produce enough material in aggregate. The orchestrator tracks cumulative approved duration across all files and surfaces this in the project header.
+
+### Scout mode (reference acquisition)
+
+A reference-less diarisation pass over one source, used to derive a reference from the source material itself instead of an uploaded clip. Triggered by `POST /projects/{project_id}/reference/scout` (see [API Contracts](api-contracts.md)) and available once that source has a vocals stem (step 1 complete).
+
+The service runs the same pyannote diarisation as Phase 1 above, producing anonymous speaker clusters (`SPEAKER_00`, `SPEAKER_01`, …), but skips Phase 2 entirely — there is no reference embedding yet to match against. For each speaker, it writes a **montage WAV** to `output_dir` at `{speaker_label}.wav`: that speaker's segments concatenated longest-first, up to `montage_max_secs` (default 30.0), so the sample is representative and usable as a reference in its own right. No per-segment WAVs are written and no `match_confidence` is computed.
+
+This single montage file serves two purposes: it's what the picker plays back so the user can identify their target speaker by ear, and — if that speaker is selected — it becomes `reference.wav` directly (copied, not reprocessed). One artifact, two uses.
 
 ### Error states
 

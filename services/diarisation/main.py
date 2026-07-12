@@ -78,12 +78,13 @@ class DiariseParams(BaseModel):
     min_segment_duration: float = 1.0
     min_speakers: int = 1
     max_speakers: int = 10
+    montage_max_secs: float = 30.0
 
 
 class JobRequest(BaseModel):
     job_id: str
     input_path: str
-    reference_path: str
+    reference_path: Optional[str] = None
     output_dir: str
     params: DiariseParams = DiariseParams()
 
@@ -138,8 +139,13 @@ def _evict_finished_jobs():
 
 
 def _run_job(job_id: str, request: JobRequest):
-    """Blocking job runner — executes in thread pool."""
-    from diariser import DiarisationError, run_diarisation
+    """Blocking job runner — executes in thread pool.
+
+    A null ``reference_path`` selects scout mode (reference-less diarisation
+    yielding per-speaker montages); otherwise the existing match-mode
+    diarisation runs.
+    """
+    from diariser import DiarisationError, run_diarisation, run_scout
 
     def _progress(pct: int):
         if job_id in _jobs:
@@ -148,29 +154,50 @@ def _run_job(job_id: str, request: JobRequest):
     try:
         _load_models()
 
-        segments, coverage_ratio = run_diarisation(
-            pipeline=_pipeline,
-            embedding_model=_embedding_model,
-            input_path=request.input_path,
-            reference_path=request.reference_path,
-            output_dir=request.output_dir,
-            min_segment_duration=request.params.min_segment_duration,
-            min_speakers=request.params.min_speakers,
-            max_speakers=request.params.max_speakers,
-            progress_callback=_progress,
-        )
-
-        _jobs[job_id].update(
-            {
-                "status": "complete",
-                "progress": 100,
-                "segments": segments,
-                "coverage_ratio": coverage_ratio,
-                "error": None,
-                "message": None,
-            }
-        )
-        logger.info("Job %s complete — %d segments", job_id, len(segments))
+        if request.reference_path is None:
+            speakers = run_scout(
+                pipeline=_pipeline,
+                input_path=request.input_path,
+                output_dir=request.output_dir,
+                min_segment_duration=request.params.min_segment_duration,
+                min_speakers=request.params.min_speakers,
+                max_speakers=request.params.max_speakers,
+                montage_max_secs=request.params.montage_max_secs,
+                progress_callback=_progress,
+            )
+            _jobs[job_id].update(
+                {
+                    "status": "complete",
+                    "progress": 100,
+                    "speakers": speakers,
+                    "error": None,
+                    "message": None,
+                }
+            )
+            logger.info("Scout job %s complete — %d speakers", job_id, len(speakers))
+        else:
+            segments, coverage_ratio = run_diarisation(
+                pipeline=_pipeline,
+                embedding_model=_embedding_model,
+                input_path=request.input_path,
+                reference_path=request.reference_path,
+                output_dir=request.output_dir,
+                min_segment_duration=request.params.min_segment_duration,
+                min_speakers=request.params.min_speakers,
+                max_speakers=request.params.max_speakers,
+                progress_callback=_progress,
+            )
+            _jobs[job_id].update(
+                {
+                    "status": "complete",
+                    "progress": 100,
+                    "segments": segments,
+                    "coverage_ratio": coverage_ratio,
+                    "error": None,
+                    "message": None,
+                }
+            )
+            logger.info("Job %s complete — %d segments", job_id, len(segments))
 
     except DiarisationError as exc:
         logger.exception("Job %s failed (%s): %s", job_id, exc.error_code, exc)
@@ -179,6 +206,7 @@ def _run_job(job_id: str, request: JobRequest):
                 "status": "failed",
                 "segments": None,
                 "coverage_ratio": None,
+                "speakers": None,
                 "error": exc.error_code,
                 "message": str(exc),
             }
@@ -190,6 +218,7 @@ def _run_job(job_id: str, request: JobRequest):
                 "status": "failed",
                 "segments": None,
                 "coverage_ratio": None,
+                "speakers": None,
                 "error": "diarisation_failed",
                 "message": str(exc),
             }
@@ -221,9 +250,11 @@ async def submit_job(req: JobRequest):
     _jobs[job_id] = {
         "job_id": job_id,
         "status": "running",
+        "mode": "scout" if req.reference_path is None else "match",
         "progress": 0,
         "segments": None,
         "coverage_ratio": None,
+        "speakers": None,
         "error": None,
         "message": None,
     }

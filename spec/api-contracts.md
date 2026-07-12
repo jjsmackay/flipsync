@@ -99,6 +99,8 @@ Full project state, including per-source status and summary stats.
   "id": "550e8400-...",
   "name": "Downton Abbey — Carson",
   "status": "review",
+  "reference_path": "reference.wav",
+  "reference_origin": { "type": "diarise_pick", "source_id": "...", "speaker_label": "SPEAKER_02" },
   "config": {
     "whisper_model": "large-v2",
     "language": null,
@@ -147,6 +149,8 @@ Full project state, including per-source status and summary stats.
   ]
 }
 ```
+
+`reference_path` and `reference_origin` are both `null` until a reference is set by either producer (upload or diarise + pick).
 
 ---
 
@@ -248,9 +252,11 @@ Remove a source file and all its segments from the project. Requires confirmatio
 
 ### Reference clip
 
+The reference is a single artifact — `reference.wav` plus a provenance record (`reference_origin`) — with two producers: **upload** (below) and **diarise + pick** (a reference-less scout pass over a source, then select a detected speaker). Both converge on the same `reference_path`; everything downstream (step 2 matching) is unchanged regardless of which producer was used.
+
 #### `POST /projects/{project_id}/reference`
 
-Upload or replace the reference clip. Replaces any existing reference. Does not automatically re-run diarisation.
+Upload or replace the reference clip. Replaces any existing reference. Does not automatically re-run diarisation. Sets `reference_origin` to `{"type": "uploaded"}`.
 
 **Request:** `multipart/form-data`, field `file`. Must be an audio file, minimum 5 seconds.
 
@@ -273,13 +279,105 @@ Upload or replace the reference clip. Replaces any existing reference. Does not 
 
 ---
 
+#### `POST /projects/{project_id}/reference/scout`
+
+Enqueue a reference-less diarisation pass ("scout") over one source, to surface its speakers as reference candidates. Available once the source has a vocals stem (`vocals_path` set, i.e. step 1 complete).
+
+**Request:**
+```json
+{ "source_id": "…" }
+```
+
+**Response 202:**
+```json
+{ "job_id": "…", "type": "scout_speakers" }
+```
+
+**Response 422 `vocals_not_ready`** if the source has no vocals stem (step 1 has not completed for it).
+
+**Response 404** if `source_id` does not exist.
+
+---
+
+#### `GET /projects/{project_id}/reference/scout`
+
+Return the status of the latest scout job for the project and, once complete, its speaker candidates (read from `speaker_candidates`). The frontend polls this.
+
+**Response 200 (running):**
+```json
+{ "status": "running", "progress": 40, "source_id": "…", "speakers": [] }
+```
+
+**Response 200 (complete):**
+```json
+{
+  "status": "complete",
+  "source_id": "…",
+  "speakers": [
+    { "speaker_label": "SPEAKER_00", "total_secs": 412.6, "segment_count": 173,
+      "sample_url": "/api/projects/{id}/reference/scout/samples/SPEAKER_00" },
+    { "speaker_label": "SPEAKER_01", "total_secs": 88.2, "segment_count": 41,
+      "sample_url": "/api/projects/{id}/reference/scout/samples/SPEAKER_01" }
+  ]
+}
+```
+
+`speakers` is sorted by `total_secs` descending — the target speaker is usually the most talkative.
+
+**Response 404 `no_scout`** if no scout has been run for the project.
+
+---
+
+#### `GET /projects/{project_id}/reference/scout/samples/{speaker_label}`
+
+Stream the montage WAV for a candidate speaker so the browser can play it. Reads `montage_path` from `speaker_candidates` for the latest scout. Full file, no `Range` header support, matching the segment-audio streaming convention (`GET /segments/{segment_id}/audio`).
+
+**Response 200:** `audio/wav`, `Content-Length` header set.
+
+**Response 404 `unknown_speaker`** if the label is not in the current candidate set.
+
+---
+
+#### `POST /projects/{project_id}/reference/scout/select`
+
+Adopt a candidate speaker as the reference. Copies the candidate's `montage_path` to `projects/{id}/reference.wav`, sets `reference_path`, and sets `reference_origin` to `{"type": "diarise_pick", "source_id": "…", "speaker_label": "…"}`. Does **not** auto-run step 2 — mirrors the upload endpoint's "does not automatically re-run diarisation" behaviour.
+
+**Request:**
+```json
+{ "speaker_label": "SPEAKER_02" }
+```
+
+**Response 200:**
+```json
+{
+  "reference_path": "reference.wav",
+  "duration_secs": 27.9
+}
+```
+
+**Response 404 `unknown_speaker`** if the label is not in the current candidate set.
+
+**Response 422** if the candidate's montage is under the 5-second minimum (same floor the upload endpoint enforces — a speaker with so little talk time is not a plausible target; the UI should also disable **Use this voice** on cards whose `total_secs` is under 5):
+```json
+{
+  "error": "reference_too_short",
+  "message": "Candidate clip must be at least 5 seconds. SPEAKER_02 has 3.1 seconds of talk time.",
+  "detail": { "duration_secs": 3.1, "minimum_secs": 5.0 }
+}
+```
+
+---
+
 ### Pipeline control
 
 #### `POST /projects/{project_id}/pipeline/start`
 
-Start the full pipeline for all sources in `step1_pending` status. Enqueues jobs in sequence.
+Start the pipeline for all sources in `step1_pending` status.
 
-**Response 202:**
+- **If `reference_path` is set:** unchanged from before — step 1 → step 2 is chained per source, exactly as today.
+- **If `reference_path` is null:** enqueues step 1 (`vocal_separation`) only, for all `step1_pending` sources. Step 2 is not chained. The project reaches `awaiting_reference` once those jobs drain. The user sets a reference (upload or diarise + pick) and calls `pipeline/continue` to proceed.
+
+**Response 202:** (shape unchanged regardless of branch)
 ```json
 {
   "enqueued_jobs": [
@@ -288,6 +386,25 @@ Start the full pipeline for all sources in `step1_pending` status. Enqueues jobs
   ]
 }
 ```
+
+---
+
+#### `POST /projects/{project_id}/pipeline/continue`
+
+Enqueue step 2 (`diarisation`, match mode) for every source at `step2_pending`. This is how a project leaves `awaiting_reference` once a reference has been set.
+
+**Response 202:**
+```json
+{
+  "enqueued_jobs": [
+    { "id": "...", "type": "diarisation", "source_id": "..." }
+  ]
+}
+```
+
+**Response 409 `no_reference`** if `reference_path` is still null — the gate has not been satisfied.
+
+**Response 409 `no_pending_sources`** if no source is at `step2_pending`.
 
 ---
 
@@ -645,7 +762,26 @@ Returns 200 when the service is ready. Note: on first run, the service downloads
 
 **Response 202:** `{ "job_id": "..." }`
 
-**Speaker matching method:** The service extracts a single speaker embedding from the reference clip, plus one embedding per diarised segment. Each segment's `match_confidence` is the cosine similarity between its own embedding and the reference embedding. The per-speaker **average embedding** (computed from the same per-segment embeddings) is scored against the reference too and reported on every segment as `speaker_match_confidence` — a secondary cluster-level signal. Segments shorter than 1.0 s, or whose embedding extraction fails, fall back to the cluster score for `match_confidence`. See `spec/pipeline.md` §Phase 2 for detail.
+**Scout mode.** Selected by setting `reference_path` to `null` — a reference-less diarisation pass used to surface speaker candidates for reference acquisition (see the reference-scout endpoints in Part 1). Request shape:
+
+```json
+{
+  "job_id": "...",
+  "input_path": "/data/projects/{project_id}/audio/vocals/{source_id}.wav",
+  "reference_path": null,
+  "output_dir": "/data/projects/{project_id}/reference_candidates/{job_id}/",
+  "params": {
+    "min_segment_duration": 1.0,
+    "min_speakers": 1,
+    "max_speakers": 10,
+    "montage_max_secs": 30.0
+  }
+}
+```
+
+`montage_max_secs` (default 30.0) caps the length of each per-speaker montage WAV. In scout mode the service runs diarisation to produce anonymous speaker clusters exactly as in match mode, but skips the reference embedding / cosine-similarity step entirely. Instead of per-segment WAVs it writes one montage WAV per speaker to `output_dir` at `{speaker_label}.wav` — that speaker's segments concatenated longest-first up to `montage_max_secs`. No `match_confidence` or `speaker_match_confidence` is computed and no per-segment WAVs are written.
+
+**Speaker matching method (match mode):** The service extracts a single speaker embedding from the reference clip, plus one embedding per diarised segment. Each segment's `match_confidence` is the cosine similarity between its own embedding and the reference embedding. The per-speaker **average embedding** (computed from the same per-segment embeddings) is scored against the reference too and reported on every segment as `speaker_match_confidence` — a secondary cluster-level signal. Segments shorter than 1.0 s, or whose embedding extraction fails, fall back to the cluster score for `match_confidence`. See `spec/pipeline.md` §Phase 2 for detail.
 
 **Segment WAV files:** The service creates the `output_dir` if it doesn't exist. Each segment is written as `{output_dir}/{segment_id}.wav` where `segment_id` is the full UUID (not truncated). The service generates UUIDs for segments — the orchestrator uses these as primary keys when writing to the database.
 
@@ -653,11 +789,12 @@ Returns 200 when the service is ready. Note: on first run, the service downloads
 
 #### `GET /jobs/{job_id}`
 
-On completion:
+On completion (match mode):
 ```json
 {
   "job_id": "...",
   "status": "complete",
+  "mode": "match",
   "segments": [
     {
       "id": "7f3c2a1b-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
@@ -677,6 +814,32 @@ On completion:
 `match_confidence` is the segment's own embedding scored against the reference; `speaker_match_confidence` is the cluster-level (per-speaker average embedding) score for the speaker that segment belongs to — a secondary signal, identical across all segments of the same speaker label. For segments shorter than 1.0 s or whose embedding extraction failed, `match_confidence` equals `speaker_match_confidence` (cluster fallback).
 
 The orchestrator writes all segments to the database from this response. It copies `wav_path` to the `raw_path` column. Segments with `match_confidence` below `project.match_threshold` are written with status `below_threshold`; others with status `pending`. The orchestrator also updates the source's `coverage_ratio` column from the response.
+
+On completion (scout mode):
+```json
+{
+  "job_id": "...",
+  "status": "complete",
+  "mode": "scout",
+  "speakers": [
+    {
+      "speaker_label": "SPEAKER_00",
+      "montage_path": "/data/projects/{project_id}/reference_candidates/{job_id}/SPEAKER_00.wav",
+      "total_secs": 412.6,
+      "segment_count": 173
+    },
+    {
+      "speaker_label": "SPEAKER_01",
+      "montage_path": "/data/projects/{project_id}/reference_candidates/{job_id}/SPEAKER_01.wav",
+      "total_secs": 88.2,
+      "segment_count": 41
+    }
+  ],
+  "error": null
+}
+```
+
+The `mode` field (`"scout"` | `"match"`) is present on every completion response so the orchestrator can assert the shape it expects. On a scout completion, the orchestrator replaces the project's `speaker_candidates` rows with one row per speaker in the response.
 
 ---
 

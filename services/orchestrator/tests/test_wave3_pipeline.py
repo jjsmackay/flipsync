@@ -305,8 +305,15 @@ class TestReprocessFlow:
         ).fetchone()[0]
         assert count == 0
 
-    def test_step2_reprocess_deletes_segments_preserves_vocals(self, client, project):
+    def test_step2_reprocess_deletes_segments_preserves_vocals(self, client, project, monkeypatch):
         import db
+        import jobs
+
+        # This test asserts the endpoint's synchronous effects (segment deletion,
+        # source -> step2_pending). Keep the enqueued diarisation job from
+        # executing on the TestClient's background loop: with no reference set it
+        # fails fast and flips the source to step2_failed mid-assertion.
+        monkeypatch.setattr(jobs, "_ensure_runner", lambda project_id: None)
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "complete",
                                     vocals_path="audio/vocals/test.wav")

@@ -52,14 +52,19 @@ class TestPipelineStart:
         assert len(jobs) == 2
         assert all(j["type"] == "vocal_separation" for j in jobs)
 
-    def test_start_without_reference_returns_409(self, client, project):
+    def test_start_without_reference_enqueues_step1_only(self, client, project):
+        """Start now always runs step 1; the reference gate happens after step 1
+        drains (project → awaiting_reference), not at start."""
         import db
         conn = db.get_conn(project)
         _insert_source(conn, project, "step1_pending")
+        _insert_source(conn, project, "step1_pending")
 
         resp = client.post(f"/projects/{project}/pipeline/start")
-        assert resp.status_code == 409
-        assert resp.json()["error"] == "no_reference_clip"
+        assert resp.status_code == 202
+        jobs = resp.json()["enqueued_jobs"]
+        assert len(jobs) == 2
+        assert all(j["type"] == "vocal_separation" for j in jobs)
 
     def test_start_nonexistent_project_returns_404(self, client):
         resp = client.post("/projects/bad-id/pipeline/start")

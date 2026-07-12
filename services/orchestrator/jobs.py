@@ -32,7 +32,7 @@ _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 # concurrent GPU jobs contend for VRAM and OOM). CPU jobs (extract_audio,
 # export — FFmpeg subprocess / CPU-only cleanup service) are not gated.
 GPU_JOB_TYPES = frozenset(
-    {"vocal_separation", "diarisation", "transcription_bulk", "transcription_segment"}
+    {"vocal_separation", "diarisation", "scout_speakers", "transcription_bulk", "transcription_segment"}
 )
 
 # The global GPU lock is created lazily per event loop: an asyncio.Lock binds
@@ -417,19 +417,16 @@ async def _handle_vocal_separation(
 def _auto_enqueue_diarisation(project_id: str, source_id: str) -> None:
     """After vocal separation succeeds, auto-enqueue diarisation for this source.
 
-    Without a reference clip diarisation cannot run; rather than silently
-    leaving the source in step2_pending forever, surface it as a step2 failure.
+    This is the reference gate. With a reference set, step 2 chains straight
+    through. Without one, the source rests at step2_pending (untouched) and the
+    project settles into awaiting_reference; POST /pipeline/continue picks up
+    from here once a reference is set.
     """
     conn = get_conn(project_id)
     project = conn.execute("SELECT reference_path FROM projects WHERE id=?", (project_id,)).fetchone()
     if project and project["reference_path"]:
         enqueue(project_id, "diarisation", source_id=source_id)
     else:
-        conn.execute(
-            "UPDATE sources SET status='step2_failed', step2_error='no_reference_clip', updated_at=? WHERE id=?",
-            (_now(), source_id),
-        )
-        conn.commit()
         _recompute_project_status(project_id)
 
 
@@ -584,6 +581,86 @@ def _maybe_auto_transcribe(project_id: str) -> None:
             "language": project["language"],
         }
         enqueue(project_id, "transcription_bulk", params=params)
+
+
+# ---------------------------------------------------------------------------
+# Scout handler (reference-less diarisation pass — calls external service)
+# ---------------------------------------------------------------------------
+
+
+async def _handle_scout_speakers(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Reference-less diarisation pass over one source, yielding speaker
+    candidates. Never touches the source's status — a scout only reads its
+    vocals stem. On success, replaces the project's speaker_candidates rows."""
+    conn = get_conn(project_id)
+    source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+    if source is None:
+        _fail_job(project_id, job_id, "source_not_found")
+        _recompute_project_status(project_id)
+        return
+
+    if not source["vocals_path"]:
+        _fail_job(project_id, job_id, "vocals_not_ready")
+        _recompute_project_status(project_id)
+        return
+
+    data_prefix = _data_prefix()
+    payload = {
+        "job_id": job_id,
+        "input_path": f"{data_prefix}/projects/{project_id}/{source['vocals_path']}",
+        "reference_path": None,
+        "output_dir": f"{data_prefix}/projects/{project_id}/reference_candidates/{job_id}/",
+        "params": {
+            "min_segment_duration": 1.0,
+            "min_speakers": 1,
+            "max_speakers": 10,
+            "montage_max_secs": 30.0,
+        },
+    }
+
+    try:
+        await _submit_with_retry("diarisation", payload)
+    except Exception as exc:
+        _fail_job(project_id, job_id, f"submit_failed: {exc}")
+        _recompute_project_status(project_id)
+        return
+
+    def on_progress(result):
+        progress = result.get("progress", 0)
+        if progress:
+            _update_progress(project_id, job_id, progress)
+
+    result = await service_client.poll_until_complete("diarisation", job_id, on_progress=on_progress)
+
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "unknown_error"))
+        _recompute_project_status(project_id)
+        return
+
+    # Replace the project's candidate set with this scout's speakers. montage_path
+    # is stored relative to the project dir.
+    now = _now()
+    conn.execute("DELETE FROM speaker_candidates WHERE project_id=?", (project_id,))
+    for sp in result.get("speakers", []):
+        conn.execute(
+            """
+            INSERT INTO speaker_candidates
+                (id, project_id, scout_job_id, source_id, speaker_label,
+                 montage_path, total_secs, segment_count, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()), project_id, job_id, source_id, sp["speaker_label"],
+                f"reference_candidates/{job_id}/{sp['speaker_label']}.wav",
+                sp["total_secs"], sp["segment_count"], now,
+            ),
+        )
+    conn.commit()
+
+    _complete_job(project_id, job_id)
+    _recompute_project_status(project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1093,6 +1170,7 @@ HANDLERS: dict[str, Callable] = {
     "extract_audio": _handle_extract_audio,
     "vocal_separation": _handle_vocal_separation,
     "diarisation": _handle_diarisation,
+    "scout_speakers": _handle_scout_speakers,
     "transcription_bulk": _handle_transcription_bulk,
     "transcription_segment": _handle_transcription_segment,
     "export": _handle_export,

@@ -181,6 +181,130 @@ def slice_wav(audio_data: np.ndarray, sample_rate: int, start_secs: float, end_s
     return audio_data[start_sample:end_sample]
 
 
+def select_montage_turns(
+    turns: list[dict], montage_max_secs: float
+) -> list[tuple[dict, float]]:
+    """Choose which turns go into a speaker montage, longest-first.
+
+    Returns (turn, take_secs) pairs ordered by turn duration descending. The
+    sum of take_secs never exceeds montage_max_secs; the final selected turn is
+    truncated so the montage lands exactly on the cap. Leading with the longest
+    turns keeps the sample representative and usable as a reference clip.
+    """
+    ordered = sorted(turns, key=lambda t: t["end"] - t["start"], reverse=True)
+
+    selected: list[tuple[dict, float]] = []
+    total = 0.0
+    for turn in ordered:
+        remaining = montage_max_secs - total
+        if remaining <= 0:
+            break
+        duration = turn["end"] - turn["start"]
+        take = min(duration, remaining)
+        selected.append((turn, take))
+        total += take
+    return selected
+
+
+def run_scout(
+    pipeline,
+    input_path: str,
+    output_dir: str,
+    min_segment_duration: float = 1.0,
+    min_speakers: int = 1,
+    max_speakers: int = 10,
+    montage_max_secs: float = 30.0,
+    progress_callback=None,
+) -> list[dict]:
+    """Reference-less scout pass: diarise into anonymous clusters and write one
+    montage WAV per speaker.
+
+    Runs pyannote diarisation exactly as match mode's phase 1 (same
+    ``min_segment_duration`` filter) but computes no reference embedding, no
+    cosine similarity, and no per-segment WAVs. For each speaker it writes a
+    single montage to ``{output_dir}/{speaker_label}.wav`` — that speaker's
+    turns concatenated longest-first up to ``montage_max_secs`` total.
+
+    Returns a list of ``{speaker_label, montage_path, total_secs,
+    segment_count}`` dicts sorted by total talk time descending. ``total_secs``
+    is the speaker's total talk time in the source, not the montage length.
+    """
+    import soundfile as sf
+
+    def _progress(pct: int):
+        if progress_callback:
+            progress_callback(pct)
+
+    # ---- Phase 1: Diarisation (identical to match mode) ----
+    logger.info("Running pyannote diarisation (scout) on %s", input_path)
+    diarization = pipeline(
+        input_path,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+    )
+
+    raw_turns = []
+    for turn, _, speaker_label in diarization.itertracks(yield_label=True):
+        duration = turn.end - turn.start
+        if duration >= min_segment_duration:
+            raw_turns.append({
+                "start": turn.start,
+                "end": turn.end,
+                "speaker_label": speaker_label,
+            })
+
+    logger.info("Scout found %d turns (after duration filter)", len(raw_turns))
+    _progress(10)
+
+    if not raw_turns:
+        logger.warning("No turns found after diarisation")
+        return []
+
+    # Group turns by speaker
+    speakers: dict[str, list[dict]] = {}
+    for turn in raw_turns:
+        speakers.setdefault(turn["speaker_label"], []).append(turn)
+
+    _progress(50)
+
+    # ---- Montage writing ----
+    logger.info("Writing speaker montages into %s", output_dir)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Load source audio once. Same whole-file v1 memory note as run_diarisation:
+    # this reads the entire vocals file into RAM; a future refinement could
+    # seek/read per-turn to bound memory.
+    audio_data, sample_rate = sf.read(input_path, dtype="float32", always_2d=False)
+
+    results = []
+    for label, turns in speakers.items():
+        montage_path = str(Path(output_dir) / f"{label}.wav")
+
+        chunks = []
+        for turn, take_secs in select_montage_turns(turns, montage_max_secs):
+            chunk = slice_wav(
+                audio_data, sample_rate, turn["start"], turn["start"] + take_secs
+            )
+            chunks.append(chunk)
+
+        montage = np.concatenate(chunks, axis=0) if chunks else np.zeros(0, dtype="float32")
+        sf.write(montage_path, montage, sample_rate)
+
+        total_secs = sum(t["end"] - t["start"] for t in turns)
+        results.append({
+            "speaker_label": label,
+            "montage_path": montage_path,
+            "total_secs": total_secs,
+            "segment_count": len(turns),
+        })
+
+    # Most talkative speaker first — usually the target.
+    results.sort(key=lambda s: s["total_secs"], reverse=True)
+    _progress(100)
+    logger.info("Scout wrote %d speaker montages", len(results))
+    return results
+
+
 def run_diarisation(
     pipeline,
     embedding_model,

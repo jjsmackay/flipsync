@@ -56,6 +56,7 @@ All services and the orchestrator run in the same Docker network. Services expos
 - Serves current project state to the browser
 - Accepts review actions from the browser (approve, reject, maybe, edit transcript)
 - Handles export: packages approved segments and writes `manifest.json` from the database
+- Gates step 2 on a reference being set: if `pipeline/start` is called with no reference, only step 1 is enqueued and the project rests in `awaiting_reference` once those jobs drain; `pipeline/continue` releases the gate once a reference exists. A `scout_speakers` job (reference-less diarisation, run via `POST /reference/scout`) is how the user derives a reference from source material instead of uploading one — see [Data Models](data-models.md) and [API Contracts](api-contracts.md).
 
 **Does not:**
 - Perform any audio or ML processing (except FFmpeg audio extraction, which runs as a subprocess)
@@ -107,6 +108,8 @@ Two-phase operation:
 
 The service returns all speakers' segments, not just the matched target. The orchestrator filters by confidence threshold for the initial review queue, but stores everything. This allows the threshold to be adjusted without reprocessing.
 
+**Scout mode.** The service also supports a reference-less pass, selected by passing `reference_path: null` — diarisation only, no embedding comparison. Instead of per-segment WAVs it writes one montage WAV per detected speaker (that speaker's segments concatenated up to a capped duration), which the orchestrator surfaces as reference candidates. This is the "diarise + pick" path to acquiring a reference from the source video itself, rather than uploading a separate clip. See [Pipeline](pipeline.md) §Step 2 — Scout mode.
+
 Pyannote requires a HuggingFace token to download models on first run. The token is passed via environment variable. After first run, models are cached in a Docker volume and the token is no longer needed.
 
 ---
@@ -149,13 +152,17 @@ v1 uses sensible fixed defaults. Parameters will be exposed as project-level con
 ## Data flow
 
 ```
-User uploads video files + reference clip
+User uploads video files (+ optionally, a reference clip)
           │
           ▼
 Orchestrator: FFmpeg extracts audio track → working_dir/audio/raw/
           │
           ▼
 Service 1 (Demucs): vocals stem → working_dir/audio/vocals/
+          │
+          ▼
+[ if no reference yet: project rests in awaiting_reference here —
+  user sets one via upload or diarise + pick, then pipeline/continue ]
           │
           ▼
 Service 2 (pyannote): speaker timeline + confidence scores
@@ -177,6 +184,18 @@ Orchestrator: writes manifest.json (XTTS-v2 format) from database → export/
 User downloads export archive
 ```
 
+### One reference artifact, several producers
+
+The reference is a single artifact — `reference.wav` plus a provenance record (`reference_origin`) — and each acquisition method converges on it. Everything downstream of the reference (step 2 matching) is unchanged regardless of which producer was used, which is what keeps multiple acquisition methods cheap: the back end has one consumer, not several.
+
+```
+Upload ─────────────┐
+                    ├──▶ projects/{id}/reference.wav ──▶ step 2 matching (unchanged)
+Diarise + pick ─────┘
+```
+
+Diarise + pick needs a vocals stem to embed against, so it can only run once step 1 has produced one for at least one source — that dependency is what forces the `awaiting_reference` pause described above when a project has no reference at pipeline start.
+
 ---
 
 ## Project structure (working directory)
@@ -193,8 +212,10 @@ projects/
     │   └── vocals/           # Demucs vocals stem, one file per source
     ├── segments/
     │   └── raw/              # Sliced segment WAVs from diarisation
+    ├── reference_candidates/
+    │   └── {scout_job_id}/   # Per-speaker montage WAVs from a scout_speakers job
     ├── export/               # Cleaned WAVs + manifest.json, written at export time
-    └── reference.wav         # Uploaded reference clip for speaker matching
+    └── reference.wav         # Reference clip for speaker matching — uploaded, or copied from a chosen candidate montage
 ```
 
 ---

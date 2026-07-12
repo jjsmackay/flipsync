@@ -5,6 +5,7 @@ type AnyStatus = ProjectStatus | SegmentStatus | SourceStatus
 const STATUS_STYLES: Record<string, string> = {
   new: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
   processing: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  awaiting_reference: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
   review: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',
   ready: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
   exporting: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',

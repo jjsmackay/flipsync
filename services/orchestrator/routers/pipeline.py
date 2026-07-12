@@ -34,19 +34,54 @@ async def start_pipeline(project_id: str):
             "No sources in step1_pending status. Upload sources or check source status.",
         )
 
-    # Step 2 (diarisation) needs a reference clip. Fail fast at start rather
-    # than leaving sources stranded in step2_pending after step 1 succeeds.
-    project = conn.execute("SELECT reference_path FROM projects WHERE id=?", (project_id,)).fetchone()
-    if not project["reference_path"]:
-        raise AppError(
-            409, "no_reference_clip",
-            "Upload a reference clip before starting the pipeline; diarisation needs it to match the target speaker.",
-        )
-
+    # Step 1 always runs regardless of reference. If no reference is set, step 2
+    # is not chained (see jobs._auto_enqueue_diarisation) — the project rests in
+    # awaiting_reference until the user sets a reference and calls pipeline/continue.
     enqueued = []
     for s in pending_sources:
         job_id = enqueue(project_id, "vocal_separation", source_id=s["id"])
         enqueued.append({"id": job_id, "type": "vocal_separation", "source_id": s["id"]})
+
+    conn.execute(
+        "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
+        (utc_now(), project_id),
+    )
+    conn.commit()
+
+    return {"enqueued_jobs": enqueued}
+
+
+# ---------------------------------------------------------------------------
+# Pipeline continue (reference gate)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/pipeline/continue", status_code=202)
+async def continue_pipeline(project_id: str):
+    conn = require_project(project_id)
+
+    project = conn.execute("SELECT reference_path FROM projects WHERE id=?", (project_id,)).fetchone()
+    if not project["reference_path"]:
+        raise AppError(
+            409, "no_reference",
+            "Set a reference before continuing; diarisation needs it to match the target speaker.",
+        )
+
+    pending_sources = conn.execute(
+        "SELECT id FROM sources WHERE project_id=? AND status='step2_pending'",
+        (project_id,),
+    ).fetchall()
+
+    if not pending_sources:
+        raise AppError(
+            409, "no_pending_sources",
+            "No sources in step2_pending status. Run step 1 first.",
+        )
+
+    enqueued = []
+    for s in pending_sources:
+        job_id = enqueue(project_id, "diarisation", source_id=s["id"])
+        enqueued.append({"id": job_id, "type": "diarisation", "source_id": s["id"]})
 
     conn.execute(
         "UPDATE projects SET status='processing', updated_at=? WHERE id=?",

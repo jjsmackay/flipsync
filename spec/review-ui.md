@@ -36,6 +36,22 @@ The entry point for a project. Shows:
 
 The dashboard is the place for pipeline operations and error recovery. The review queue is for segment decisions only.
 
+#### Set reference panel
+
+Shown only while the project is in `awaiting_reference` — step 1 has finished for at least one source and no reference is set. This is what unblocks step 2. Two tabs:
+
+**Find speakers** (default tab):
+1. A source dropdown listing sources with a vocals stem ready (`vocals_path` set); defaults to the first such source.
+2. A **Scan for speakers** button → `POST /projects/{id}/reference/scout`, then polls `GET /projects/{id}/reference/scout` showing progress.
+3. On completion, a list of speaker cards sorted by talk time (`total_secs`) descending, each with a play control (streams `sample_url`) and stats (talk time, segment count).
+4. **Use this voice** on a card → `POST /projects/{id}/reference/scout/select`. Disabled on cards whose `total_secs` is under 5 seconds (a candidate that short can't pass the same floor the upload tab enforces). On success, the panel shows the chosen reference and **Continue** becomes enabled.
+
+**Upload** — the existing reference upload control (`POST /projects/{id}/reference`). On success, **Continue** becomes enabled.
+
+**Continue** → `POST /projects/{id}/pipeline/continue`, then resumes normal 3s polling. The panel displays the current `reference_origin` when one is already set (e.g. re-picking a different speaker after a prior scout).
+
+The canvas timeline component (see [Timeline component](#timeline-component)) is deliberately **not** reused here — it's built for segment-review density. The speaker picker is a simple list of cards with audio players.
+
 ---
 
 ### 3. Review queue (`/projects/{id}/review`)

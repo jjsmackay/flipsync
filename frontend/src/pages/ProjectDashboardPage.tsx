@@ -8,6 +8,7 @@ import { JobsPanel } from '../components/project/JobsPanel'
 import { StatsPanel } from '../components/project/StatsPanel'
 import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel'
 import { PipelineControls } from '../components/project/PipelineControls'
+import { SetReferencePanel } from '../components/project/SetReferencePanel'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
@@ -144,6 +145,18 @@ export function ProjectDashboardPage() {
       <Section title="Stats">
         <StatsPanel stats={project.stats} config={project.config} />
       </Section>
+
+      {/* Set reference — the pipeline gate. Shown when step 1 has produced a
+          stem (a source is at step2_pending) and nothing is running. Keyed on
+          the source state, not status === 'awaiting_reference', because picking
+          a reference recomputes the project to 'ready' before the user clicks
+          Continue and the panel must stay up. */}
+      {project.active_jobs.length === 0 &&
+        project.stats.source_coverage.some((s) => s.status === 'step2_pending') && (
+          <Section title="Set reference">
+            <SetReferencePanel project={project} onAction={() => void refetch()} />
+          </Section>
+        )}
 
       {/* Settings */}
       <Section title="Settings">

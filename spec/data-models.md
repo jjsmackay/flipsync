@@ -39,6 +39,7 @@ CREATE TABLE projects (
     updated_at      TEXT NOT NULL,
     status          TEXT NOT NULL,          -- see Project status
     reference_path  TEXT,                   -- path to reference.wav
+    reference_origin TEXT,                  -- JSON, provenance of the current reference; NULL if none set
     whisper_model   TEXT NOT NULL DEFAULT 'large-v2',
     language        TEXT,                   -- NULL = auto-detect
     match_threshold      REAL NOT NULL DEFAULT 0.75,
@@ -49,6 +50,15 @@ CREATE TABLE projects (
     auto_approve_transcript_threshold REAL NOT NULL DEFAULT 0.90
 );
 ```
+
+**`reference_origin` shape.** Records how the current reference was produced, for display on the dashboard (e.g. "Reference: SPEAKER_02 from s01e01"):
+
+```json
+{ "type": "uploaded" }
+{ "type": "diarise_pick", "source_id": "…", "speaker_label": "SPEAKER_02" }
+```
+
+Set whenever `reference_path` is (re)established — by `POST /reference` (upload) or `POST /reference/scout/select` (diarise + pick). NULL until a reference is set.
 
 **Auto-approve columns.** When `auto_approve_enabled` is set, segments whose `match_confidence` and `transcript_confidence` clear the two auto-approve thresholds (and that carry no flags or clipping warning) are moved from `pending` to `auto_approved` when transcription results land. See [Pipeline](pipeline.md) §Auto-approval for the full eligibility rule and [API Contracts](api-contracts.md) `PATCH /projects` for re-evaluation on threshold changes.
 
@@ -156,6 +166,30 @@ CREATE TABLE jobs (
 
 ---
 
+### `speaker_candidates`
+
+Transient store for the most recent reference-scouting result for a project — the speakers found by a `scout_speakers` job, waiting to be picked (or re-picked) as the reference. Exists so a scout result is queryable state rather than a JSON file, per the SQLite-source-of-truth rule.
+
+```sql
+CREATE TABLE speaker_candidates (
+    id             TEXT PRIMARY KEY,       -- UUID
+    project_id     TEXT NOT NULL REFERENCES projects(id),
+    scout_job_id   TEXT NOT NULL REFERENCES jobs(id),
+    source_id      TEXT NOT NULL REFERENCES sources(id),
+    speaker_label  TEXT NOT NULL,          -- SPEAKER_00 etc, local to the scouted source
+    montage_path   TEXT NOT NULL,          -- reference_candidates/{scout_job_id}/{speaker_label}.wav
+    total_secs     REAL NOT NULL,          -- total talk time for this speaker in the scouted source
+    segment_count  INTEGER NOT NULL,       -- number of segments attributed to this speaker
+    created_at     TEXT NOT NULL
+);
+```
+
+`montage_path` is relative to the project directory, matching the convention used by other path columns (`audio_path`, `raw_path`, etc).
+
+**Rows are replaced on a new scout.** Running a fresh `scout_speakers` job for a project deletes all existing `speaker_candidates` rows for that `project_id` and inserts the new set. **Rows are kept after a pick.** Selecting a candidate as the reference (`POST /reference/scout/select`) does not delete `speaker_candidates` rows — the user can re-pick a different speaker from the same scout without re-scouting.
+
+---
+
 ## Enumerations
 
 ### Project status
@@ -165,6 +199,7 @@ CREATE TABLE jobs (
 | `new` | Created, no files uploaded yet |
 | `ready` | Files uploaded, pipeline not started |
 | `processing` | One or more jobs running |
+| `awaiting_reference` | Step 1 complete on at least one source, waiting for the user to set a reference before step 2 |
 | `review` | All pipeline steps complete, awaiting user review |
 | `exporting` | Export job running |
 | `exported` | Export complete, archive available |
@@ -172,19 +207,26 @@ CREATE TABLE jobs (
 State transitions:
 
 ```
-new         -> ready              (first source file uploaded)
-ready       -> processing         (pipeline started)
-processing  -> review             (all jobs complete, no failures)
-processing  -> ready              (all jobs complete, some failed — user action needed)
-review      -> processing         (user re-runs a step or triggers transcription)
-review      -> exporting          (user triggers export)
-exporting   -> exported           (export job completes)
-exported    -> processing         (user re-runs a step)
-exported    -> review             (user changes approvals without re-processing)
-exported    -> exporting          (user re-exports with different approvals)
+new                 -> ready              (first source file uploaded)
+ready               -> processing         (pipeline started)
+processing          -> review             (all jobs complete, no failures)
+processing          -> ready              (all jobs complete, some failed — user action needed)
+processing          -> awaiting_reference (jobs drained; ≥1 source at step2_pending; reference_path IS NULL)
+awaiting_reference  -> processing          (user sets a reference and triggers pipeline/continue, OR a scout job is enqueued)
+review              -> processing         (user re-runs a step or triggers transcription)
+review              -> exporting          (user triggers export)
+exporting           -> exported           (export job completes)
+exported            -> processing         (user re-runs a step)
+exported            -> review             (user changes approvals without re-processing)
+exported            -> exporting          (user re-exports with different approvals)
 ```
 
-The orchestrator recomputes project status after each job completion or user action. A project is `processing` if any job is `queued` or `running`; `review` if all sources are `complete` and no jobs are active.
+The orchestrator recomputes project status after each job completion or user action, evaluated in order — first match wins:
+
+1. `processing` — any job is `queued` or `running` (a running `scout_speakers` job counts, so scouting simply shows as `processing`).
+2. `review` — all sources are `complete`.
+3. `awaiting_reference` — no active jobs, `reference_path IS NULL`, and at least one source is at `step2_pending`.
+4. `ready` — no active jobs and one or more sources ended in a failed state (some failed, user action needed).
 
 ---
 
@@ -279,6 +321,7 @@ The orchestrator rejects any transition not in this list.
 |-------|-------------|-----------|
 | `extract_audio` | File upload | In-process FFmpeg subprocess (no external service) |
 | `vocal_separation` | User starts pipeline or re-runs step 1 | External service (port 8001) |
+| `scout_speakers` | User requests speaker scan for reference acquisition | External service (port 8002), reference-less diarisation over one source; `source_id` set |
 | `diarisation` | Step 1 complete or user re-runs step 2 | External service (port 8002) |
 | `transcription_bulk` | Step 2 complete or user triggers | External service (port 8003) |
 | `transcription_segment` | User re-transcribes a single segment | External service (port 8003) |
@@ -366,6 +409,7 @@ CREATE INDEX idx_segments_status      ON segments(status);
 CREATE INDEX idx_segments_confidence  ON segments(match_confidence);
 CREATE INDEX idx_jobs_project_status  ON jobs(project_id, status);
 CREATE INDEX idx_sources_project      ON sources(project_id);
+CREATE INDEX idx_speaker_candidates_project ON speaker_candidates(project_id);
 ```
 
 These cover the queries the review UI needs: filter by status, sort by confidence, filter by source, aggregate approved duration.
@@ -377,3 +421,5 @@ These cover the queries the review UI needs: filter by status, sort by confidenc
 Schema changes use sequential numbered migration files in `services/orchestrator/migrations/`. The orchestrator runs pending migrations on startup. SQLite's `ALTER TABLE` support is limited; additive changes (new columns with defaults) are preferred. Destructive changes require a new table and data copy.
 
 For v1, migrations are add-only. Breaking schema changes before v1.0 are acceptable with a documented upgrade path in the release notes.
+
+Migration 003 adds `reference_origin` to `projects` and creates the `speaker_candidates` table (reference acquisition from source video).

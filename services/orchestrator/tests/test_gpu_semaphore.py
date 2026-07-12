@@ -46,6 +46,7 @@ class TestGpuJobTypes:
         assert jobs.GPU_JOB_TYPES == {
             "vocal_separation",
             "diarisation",
+            "scout_speakers",
             "transcription_bulk",
             "transcription_segment",
         }

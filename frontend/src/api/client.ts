@@ -10,6 +10,7 @@ import type {
   PaginatedSegments,
   Segment,
   Job,
+  ScoutStatus,
 } from '../types/api'
 
 // When VITE_API_URL is unset (the default in the shipped compose), API calls go
@@ -186,10 +187,48 @@ export function uploadReference(
   return uploadWithProgress(`/projects/${projectId}/reference`, file, onProgress)
 }
 
+// ---- Reference: diarise + pick (scout) ----
+
+export function startScout(
+  projectId: string,
+  sourceId: string,
+): Promise<{ job_id: string; type: string }> {
+  return request(`/projects/${projectId}/reference/scout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_id: sourceId }),
+  })
+}
+
+export function getScoutStatus(projectId: string): Promise<ScoutStatus> {
+  return request(`/projects/${projectId}/reference/scout`)
+}
+
+export function getScoutSampleUrl(projectId: string, speakerLabel: string): string {
+  return `${BASE_URL}/projects/${projectId}/reference/scout/samples/${speakerLabel}`
+}
+
+export function selectScoutSpeaker(
+  projectId: string,
+  speakerLabel: string,
+): Promise<{ reference_path: string; duration_secs: number }> {
+  return request(`/projects/${projectId}/reference/scout/select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ speaker_label: speakerLabel }),
+  })
+}
+
 // ---- Pipeline ----
 
 export function startPipeline(projectId: string): Promise<{ enqueued_jobs: Job[] }> {
   return request(`/projects/${projectId}/pipeline/start`, {
+    method: 'POST',
+  })
+}
+
+export function continuePipeline(projectId: string): Promise<{ enqueued_jobs: Job[] }> {
+  return request(`/projects/${projectId}/pipeline/continue`, {
     method: 'POST',
   })
 }

@@ -7,7 +7,7 @@
 
 ## What FlipSync is
 
-FlipSync extracts clean, speaker-specific dialogue audio from video files and produces datasets ready for voice cloning. You give it a video collection and a short reference clip of your target speaker. It runs a pipeline of vocal separation, diarisation, speaker matching, transcription, and audio cleanup. You review the segments in a browser UI, approve what's usable, and export a labelled WAV archive with a training manifest.
+FlipSync extracts clean, speaker-specific dialogue audio from video files and produces datasets ready for voice cloning. You give it a video collection and identify your target speaker — either by uploading a short reference clip, or by picking the speaker from the voices FlipSync finds in your own footage. It runs a pipeline of vocal separation, diarisation, speaker matching, transcription, and audio cleanup. You review the segments in a browser UI, approve what's usable, and export a labelled WAV archive with a training manifest.
 
 The pipeline is modular. Any step can be re-run in isolation if the output isn't good enough. The UI shows you confidence scores and transcriptions so you can make informed approval decisions, not just listen to clips in the dark.
 

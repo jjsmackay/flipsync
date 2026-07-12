@@ -106,6 +106,8 @@ def recompute_project_status(project_id: str) -> None:
     has_sources = len(sources) > 0
     has_active_jobs = active_jobs > 0
     all_sources_complete = has_sources and all(s["status"] == "complete" for s in sources)
+    reference_set = project["reference_path"] is not None
+    has_step2_pending = any(s["status"] == "step2_pending" for s in sources)
 
     # A project is 'exported' only when a completed export recorded exported_at
     # AND the archive is still on disk. exported_at is cleared whenever approvals
@@ -117,7 +119,8 @@ def recompute_project_status(project_id: str) -> None:
     export_complete = archive_exists and project["exported_at"] is not None
 
     new_status = compute_project_status(
-        project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete
+        project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete,
+        reference_set=reference_set, has_step2_pending=has_step2_pending,
     )
 
     if new_status != project["status"]:

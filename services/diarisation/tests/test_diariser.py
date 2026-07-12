@@ -546,3 +546,228 @@ def test_progress_callback_milestones(sample_wav_path, reference_wav_path, outpu
     # Must hit 10, 50, 75, 100
     for milestone in (10, 50, 75, 100):
         assert milestone in progress_values, f"Missing milestone {milestone} in {progress_values}"
+
+
+# ---------------------------------------------------------------------------
+# Test: select_montage_turns — ordering, cap, truncation
+# ---------------------------------------------------------------------------
+
+
+def _turn(start, end, label="SPEAKER_00"):
+    return {"start": start, "end": end, "speaker_label": label}
+
+
+def test_select_montage_turns_longest_first():
+    from diariser import select_montage_turns
+
+    turns = [_turn(0.0, 2.0), _turn(10.0, 15.0), _turn(20.0, 23.0)]
+    selected = select_montage_turns(turns, montage_max_secs=30.0)
+
+    # Durations 2, 5, 3 → ordered 5, 3, 2
+    take_durations = [round(pair[0]["end"] - pair[0]["start"], 6) for pair in selected]
+    assert take_durations == [5.0, 3.0, 2.0]
+
+
+def test_select_montage_turns_all_returned_under_cap():
+    from diariser import select_montage_turns
+
+    turns = [_turn(0.0, 2.0), _turn(10.0, 15.0), _turn(20.0, 23.0)]
+    selected = select_montage_turns(turns, montage_max_secs=30.0)
+
+    # Total is 10s < 30s cap: every turn taken in full.
+    assert len(selected) == 3
+    total_taken = sum(take for _, take in selected)
+    assert abs(total_taken - 10.0) < 1e-9
+    for turn, take in selected:
+        assert abs(take - (turn["end"] - turn["start"])) < 1e-9
+
+
+def test_select_montage_turns_truncates_final_at_cap():
+    from diariser import select_montage_turns
+
+    # Durations 10, 8, 6 → ordered 10, 8, 6. Cap 15 → 10 (full) + 5 (of 8), stop.
+    turns = [_turn(0.0, 10.0), _turn(20.0, 28.0), _turn(40.0, 46.0)]
+    selected = select_montage_turns(turns, montage_max_secs=15.0)
+
+    total_taken = sum(take for _, take in selected)
+    assert abs(total_taken - 15.0) < 1e-9
+    assert len(selected) == 2
+    assert abs(selected[0][1] - 10.0) < 1e-9
+    assert abs(selected[1][1] - 5.0) < 1e-9  # final turn truncated to fit
+
+
+def test_select_montage_turns_empty():
+    from diariser import select_montage_turns
+
+    assert select_montage_turns([], montage_max_secs=30.0) == []
+
+
+# ---------------------------------------------------------------------------
+# Test: run_scout — montages, stats, sorting, no per-segment WAVs
+# ---------------------------------------------------------------------------
+
+
+def _mock_scout_pipeline(tracks):
+    """Build a mock pyannote pipeline whose diarization yields the given tracks.
+
+    tracks: list of (start, end, speaker_label).
+    """
+    from unittest.mock import MagicMock
+
+    itertracks = []
+    for start, end, label in tracks:
+        turn = MagicMock()
+        turn.start = start
+        turn.end = end
+        itertracks.append((turn, None, label))
+
+    diarization = MagicMock()
+    diarization.itertracks.return_value = itertracks
+    return MagicMock(return_value=diarization)
+
+
+def test_run_scout_writes_montages_and_stats(sample_wav_path, output_dir):
+    import soundfile as sf
+    from diariser import run_scout
+
+    # SPEAKER_00: 2.5 + 3.0 = 5.5s over 2 turns; SPEAKER_01: 2.0s over 1 turn.
+    pipeline = _mock_scout_pipeline([
+        (0.5, 3.0, "SPEAKER_00"),
+        (3.5, 5.5, "SPEAKER_01"),
+        (6.0, 9.0, "SPEAKER_00"),
+    ])
+
+    speakers = run_scout(
+        pipeline=pipeline,
+        input_path=sample_wav_path,
+        output_dir=output_dir,
+        min_segment_duration=1.0,
+        montage_max_secs=30.0,
+    )
+
+    assert len(speakers) == 2
+    by_label = {s["speaker_label"]: s for s in speakers}
+
+    assert abs(by_label["SPEAKER_00"]["total_secs"] - 5.5) < 1e-6
+    assert by_label["SPEAKER_00"]["segment_count"] == 2
+    assert abs(by_label["SPEAKER_01"]["total_secs"] - 2.0) < 1e-6
+    assert by_label["SPEAKER_01"]["segment_count"] == 1
+
+    # Montage WAVs exist at {output_dir}/{label}.wav and are readable.
+    for label, spk in by_label.items():
+        assert spk["montage_path"] == str(Path(output_dir) / f"{label}.wav")
+        assert Path(spk["montage_path"]).exists()
+        data, sr = sf.read(spk["montage_path"])
+        assert len(data) > 0
+
+    # No per-segment UUID WAVs written — only the two montages.
+    wavs = sorted(p.name for p in Path(output_dir).glob("*.wav"))
+    assert wavs == ["SPEAKER_00.wav", "SPEAKER_01.wav"]
+
+
+def test_run_scout_sorted_by_total_secs_desc(sample_wav_path, output_dir):
+    from diariser import run_scout
+
+    # SPEAKER_01 is the most talkative; must sort first.
+    pipeline = _mock_scout_pipeline([
+        (0.5, 2.0, "SPEAKER_00"),
+        (2.5, 8.5, "SPEAKER_01"),
+        (9.0, 9.9, "SPEAKER_02"),  # 0.9s < 1.0s filter → excluded
+    ])
+
+    speakers = run_scout(
+        pipeline=pipeline,
+        input_path=sample_wav_path,
+        output_dir=output_dir,
+        min_segment_duration=1.0,
+    )
+
+    labels = [s["speaker_label"] for s in speakers]
+    # SPEAKER_02 filtered out; remaining sorted by talk time desc.
+    assert labels == ["SPEAKER_01", "SPEAKER_00"]
+    totals = [s["total_secs"] for s in speakers]
+    assert totals == sorted(totals, reverse=True)
+
+
+def test_run_scout_montage_capped(sample_wav_path, output_dir):
+    import soundfile as sf
+    from diariser import run_scout
+
+    # One speaker with 9s of talk in a 10s file; cap the montage at 4s.
+    pipeline = _mock_scout_pipeline([
+        (0.0, 4.5, "SPEAKER_00"),
+        (5.0, 9.5, "SPEAKER_00"),
+    ])
+
+    speakers = run_scout(
+        pipeline=pipeline,
+        input_path=sample_wav_path,
+        output_dir=output_dir,
+        min_segment_duration=1.0,
+        montage_max_secs=4.0,
+    )
+
+    assert len(speakers) == 1
+    spk = speakers[0]
+    # total_secs is talk time in source (9.0s), NOT montage length.
+    assert abs(spk["total_secs"] - 9.0) < 1e-6
+
+    data, sr = sf.read(spk["montage_path"])
+    montage_secs = len(data) / sr
+    assert montage_secs <= 4.0 + 1e-3, f"montage {montage_secs}s exceeds 4s cap"
+    assert abs(montage_secs - 4.0) < 0.05  # filled right up to the cap
+
+
+def test_run_scout_respects_min_segment_duration(sample_wav_path, output_dir):
+    from diariser import run_scout
+
+    pipeline = _mock_scout_pipeline([
+        (0.0, 0.5, "SPEAKER_00"),   # 0.5s < 1.0s → excluded
+        (2.0, 5.0, "SPEAKER_00"),   # 3.0s → kept
+    ])
+
+    speakers = run_scout(
+        pipeline=pipeline,
+        input_path=sample_wav_path,
+        output_dir=output_dir,
+        min_segment_duration=1.0,
+    )
+
+    assert len(speakers) == 1
+    assert speakers[0]["segment_count"] == 1
+    assert abs(speakers[0]["total_secs"] - 3.0) < 1e-6
+
+
+def test_run_scout_creates_output_dir(tmp_path, sample_wav_path):
+    from diariser import run_scout
+
+    new_dir = str(tmp_path / "nested" / "candidates")
+    assert not Path(new_dir).exists()
+
+    pipeline = _mock_scout_pipeline([(0.5, 4.0, "SPEAKER_00")])
+
+    speakers = run_scout(
+        pipeline=pipeline,
+        input_path=sample_wav_path,
+        output_dir=new_dir,
+        min_segment_duration=1.0,
+    )
+
+    assert Path(new_dir).exists()
+    assert len(speakers) == 1
+
+
+def test_run_scout_no_turns_returns_empty(sample_wav_path, output_dir):
+    from diariser import run_scout
+
+    # All turns below the duration filter.
+    pipeline = _mock_scout_pipeline([(0.0, 0.4, "SPEAKER_00")])
+
+    speakers = run_scout(
+        pipeline=pipeline,
+        input_path=sample_wav_path,
+        output_dir=output_dir,
+        min_segment_duration=1.0,
+    )
+
+    assert speakers == []
