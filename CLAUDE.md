@@ -238,7 +238,7 @@ Processing services should return the same flat format directly.
 
 ## Docker notes
 
-- All services share the `${DATA_ROOT:-./data}:/data` bind mount. That's how files flow between them. `DATA_ROOT` defaults to `./data`; on deploy hosts where a tool runs compose from a managed git clone (e.g. Komodo), set it to an absolute path outside the clone so a reclone/destroy can't wipe project data.
+- All services share the same `/data` volume — that's how files flow between them. By default it's the `data` named volume (`flipsync_data` after Compose adds the project prefix; survives `compose down` and a deploy tool re-cloning its stack dir). Set `DATA_ROOT` to a host path (absolute, or `./data` for local dev) to bind-mount instead; if bind-mounting under a managed git clone, use an absolute path outside the clone so a reclone/destroy can't wipe project data.
 - Model caches are bind mounts under `${MODELS_ROOT:-/mnt/models/flipsync}/` (`demucs`, `pyannote`, `whisper`) — the dedicated model-storage disk used by other GPU stacks on the deploy host, not named Docker volumes. `MODELS_ROOT` is an optional `.env` override for hosts without that disk. They survive `docker compose down`.
 - Only the orchestrator (8000) and frontend (3000) expose ports to the host.
 - The cleanup service has no GPU reservation. FFmpeg runs on CPU.

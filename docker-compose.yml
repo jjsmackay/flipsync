@@ -4,7 +4,7 @@ services:
     ports:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
-      - ${DATA_ROOT:-./data}:/data
+      - ${DATA_ROOT:-data}:/data
     environment:
       - DATA_DIR=/data
       - VOCAL_SEPARATION_URL=http://vocal-separation:8001
@@ -24,7 +24,7 @@ services:
   vocal-separation:
     image: ghcr.io/jjsmackay/flipsync/vocal-separation:latest
     volumes:
-      - ${DATA_ROOT:-./data}:/data
+      - ${DATA_ROOT:-data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
     deploy:
       resources:
@@ -40,7 +40,7 @@ services:
   diarisation:
     image: ghcr.io/jjsmackay/flipsync/diarisation:latest
     volumes:
-      - ${DATA_ROOT:-./data}:/data
+      - ${DATA_ROOT:-data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
@@ -58,7 +58,7 @@ services:
   transcription:
     image: ghcr.io/jjsmackay/flipsync/transcription:latest
     volumes:
-      - ${DATA_ROOT:-./data}:/data
+      - ${DATA_ROOT:-data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
     deploy:
       resources:
@@ -74,7 +74,7 @@ services:
   cleanup:
     image: ghcr.io/jjsmackay/flipsync/cleanup:latest
     volumes:
-      - ${DATA_ROOT:-./data}:/data
+      - ${DATA_ROOT:-data}:/data
     restart: unless-stopped
     networks:
       - flipsync
@@ -97,3 +97,11 @@ services:
 networks:
   flipsync:
     driver: bridge
+
+volumes:
+  # Project data (SQLite DBs, extracted audio, segments, exports). A named
+  # volume by default so it lives outside the compose working directory and
+  # survives compose down / a deploy tool re-cloning its stack dir. Override
+  # with DATA_ROOT to bind-mount a host path instead (e.g. ./data for local
+  # dev, or an absolute path). Unused when DATA_ROOT is set.
+  data:
