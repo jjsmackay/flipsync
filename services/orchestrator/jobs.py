@@ -540,6 +540,19 @@ async def _handle_vocal_separation(
     _auto_enqueue_diarisation(project_id, source_id)
 
 
+def has_active_diarisation_job(conn, source_id: str) -> bool:
+    """True if a queued/running diarisation job already exists for this source.
+
+    Guards enqueue sites (pipeline/continue, the post-separation chain) against
+    double-enqueueing diarisation for the same source.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM jobs WHERE source_id=? AND type='diarisation' AND status IN ('queued','running') LIMIT 1",
+        (source_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _auto_enqueue_diarisation(project_id: str, source_id: str) -> None:
     """After vocal separation succeeds, auto-enqueue diarisation for this source.
 
@@ -551,7 +564,8 @@ def _auto_enqueue_diarisation(project_id: str, source_id: str) -> None:
     conn = get_conn(project_id)
     project = conn.execute("SELECT reference_path FROM projects WHERE id=?", (project_id,)).fetchone()
     if project and project["reference_path"]:
-        enqueue(project_id, "diarisation", source_id=source_id)
+        if not has_active_diarisation_job(conn, source_id):
+            enqueue(project_id, "diarisation", source_id=source_id)
     else:
         _recompute_project_status(project_id)
 
@@ -559,6 +573,30 @@ def _auto_enqueue_diarisation(project_id: str, source_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Diarisation handler (calls external service)
 # ---------------------------------------------------------------------------
+
+
+def delete_source_segments(conn, project_id: str, source_id: str) -> None:
+    """Delete a source's segment rows and their on-disk WAVs (raw + export).
+
+    Does NOT commit — the caller owns the transaction. Shared by the reprocess
+    endpoint and the diarisation handler so segment deletion never orphans WAVs.
+    """
+    pdir = project_dir(project_id)
+    rows = conn.execute(
+        "SELECT raw_path, export_path FROM segments WHERE source_id=?", (source_id,)
+    ).fetchall()
+    for row in rows:
+        for rel in (row["raw_path"], row["export_path"]):
+            if rel:
+                f = pdir / rel
+                if f.exists():
+                    f.unlink()
+    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
+
+
+# Source statuses from which running diarisation is legitimate: freshly queued
+# (diarisation_pending) or a crash-recovery re-run (diarisation_running).
+_DIARISATION_SOURCE_STATUSES = ("diarisation_pending", "diarisation_running")
 
 
 async def _handle_diarisation(
@@ -571,6 +609,17 @@ async def _handle_diarisation(
     source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
     if source is None:
         _fail_job(project_id, job_id, "source_not_found")
+        _recompute_project_status(project_id)
+        return
+
+    if source["status"] not in _DIARISATION_SOURCE_STATUSES:
+        # Duplicate or stale job (double-enqueue, recovery after the source
+        # moved on): complete as a no-op without touching segments.
+        logger.info(
+            "Diarisation job %s is a no-op: source %s is in status '%s'",
+            job_id, source_id, source["status"],
+        )
+        _complete_job(project_id, job_id)
         _recompute_project_status(project_id)
         return
 
@@ -635,11 +684,12 @@ async def _handle_diarisation(
         return
 
     # Write segments to DB. Clear any pre-existing segments for this source
-    # first so a re-run (e.g. crash recovery) is idempotent and cannot hit a
-    # primary-key conflict or leave duplicate segments behind.
+    # first (rows AND their WAVs) so a re-run (e.g. crash recovery) is
+    # idempotent, cannot hit a primary-key conflict, and never orphans the
+    # previous run's audio files on disk.
     match_threshold = project["match_threshold"]
     now = _now()
-    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
+    delete_source_segments(conn, project_id, source_id)
     segments = result.get("segments", [])
     for seg in segments:
         seg_status = "pending" if seg["match_confidence"] >= match_threshold else "below_threshold"
@@ -648,13 +698,15 @@ async def _handle_diarisation(
             """
             INSERT INTO segments
                 (id, project_id, source_id, raw_path, start_secs, end_secs,
-                 speaker_label, match_confidence, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 speaker_label, match_confidence, speaker_match_confidence,
+                 status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 seg["id"], project_id, source_id, raw_path,
                 seg["start_secs"], seg["end_secs"],
                 seg["speaker_label"], seg["match_confidence"],
+                seg.get("speaker_match_confidence"),
                 seg_status, now, now,
             ),
         )
@@ -766,8 +818,16 @@ async def _handle_scout_speakers(
         return
 
     # Replace the project's candidate set with this scout's speakers. montage_path
-    # is stored relative to the project dir.
+    # is stored relative to the project dir. Collect the superseded scouts'
+    # job ids first so their montage directories can be removed after commit.
     now = _now()
+    old_scout_ids = [
+        r["scout_job_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT scout_job_id FROM speaker_candidates WHERE project_id=? AND scout_job_id != ?",
+            (project_id, job_id),
+        ).fetchall()
+    ]
     conn.execute("DELETE FROM speaker_candidates WHERE project_id=?", (project_id,))
     for sp in result.get("speakers", []):
         conn.execute(
@@ -784,6 +844,13 @@ async def _handle_scout_speakers(
             ),
         )
     conn.commit()
+
+    # Best-effort removal of superseded montage directories (kept only for the
+    # candidate set they backed; the current scan's montages remain until the
+    # next scan or project deletion so the user can re-pick).
+    pdir = project_dir(project_id)
+    for old_id in old_scout_ids:
+        shutil.rmtree(pdir / "reference_candidates" / old_id, ignore_errors=True)
 
     _complete_job(project_id, job_id)
     _recompute_project_status(project_id)

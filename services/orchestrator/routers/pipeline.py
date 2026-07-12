@@ -3,13 +3,14 @@
 from typing import Optional
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from db import project_dir, require_project, utc_now
+from db import require_project, utc_now
 from errors import AppError
-from jobs import enqueue
+from jobs import delete_source_segments, enqueue, has_active_diarisation_job
 from state_machines import validate_source_transition
-from status import invalidate_export
+from status import invalidate_export, recompute_project_status
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["pipeline"])
 
@@ -72,14 +73,28 @@ async def continue_pipeline(project_id: str):
         (project_id,),
     ).fetchall()
 
-    if not pending_sources:
+    # Idempotence: a double-click (or retry) must not enqueue a second
+    # diarisation job for a source that already has one queued/running.
+    to_enqueue = [s for s in pending_sources if not has_active_diarisation_job(conn, s["id"])]
+    active_jobs = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND type='diarisation' AND status IN ('queued','running')",
+        (project_id,),
+    ).fetchone()[0]
+
+    if not pending_sources and active_jobs == 0:
         raise AppError(
             409, "no_pending_sources",
             "No sources in diarisation_pending status. Run vocal separation first.",
         )
 
+    if not to_enqueue:
+        # Everything eligible is already queued/running — report current state
+        # instead of erroring or double-enqueueing.
+        recompute_project_status(project_id)
+        return JSONResponse(status_code=200, content={"enqueued_jobs": []})
+
     enqueued = []
-    for s in pending_sources:
+    for s in to_enqueue:
         job_id = enqueue(project_id, "diarisation", source_id=s["id"])
         enqueued.append({"id": job_id, "type": "diarisation", "source_id": s["id"]})
 
@@ -150,7 +165,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
                 f"Cannot re-run vocal separation from source status '{current_status}'.",
                 {"from": current_status, "to": "separation_pending"},
             )
-        _delete_source_segments(conn, project_id, source_id)
+        delete_source_segments(conn, project_id, source_id)
         conn.execute(
             "UPDATE sources SET status='separation_pending', vocals_path=NULL, separation_error=NULL, diarisation_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
@@ -169,7 +184,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
                 f"Cannot re-run speaker matching from source status '{current_status}'.",
                 {"from": current_status, "to": "diarisation_pending"},
             )
-        _delete_source_segments(conn, project_id, source_id)
+        delete_source_segments(conn, project_id, source_id)
         conn.execute(
             "UPDATE sources SET status='diarisation_pending', diarisation_error=NULL, updated_at=? WHERE id=?",
             (now, source_id),
@@ -187,21 +202,6 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     invalidate_export(project_id)
 
     return {"enqueued_jobs": enqueued}
-
-
-def _delete_source_segments(conn, project_id: str, source_id: str) -> None:
-    """Delete a source's segment rows and their on-disk WAVs (raw + export)."""
-    pdir = project_dir(project_id)
-    rows = conn.execute(
-        "SELECT raw_path, export_path FROM segments WHERE source_id=?", (source_id,)
-    ).fetchall()
-    for row in rows:
-        for rel in (row["raw_path"], row["export_path"]):
-            if rel:
-                f = pdir / rel
-                if f.exists():
-                    f.unlink()
-    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
 
 
 # ---------------------------------------------------------------------------

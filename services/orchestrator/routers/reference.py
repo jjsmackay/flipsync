@@ -20,6 +20,7 @@ router = APIRouter(prefix="/projects/{project_id}/reference", tags=["reference"]
 
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 MIN_DURATION_SECS = 5.0
+_FFPROBE_TIMEOUT_SECS = 10.0
 
 
 def _wave_duration(path: str) -> float:
@@ -38,6 +39,7 @@ async def _get_duration(path: str) -> float:
     Tries ffprobe (any format) via an async subprocess, falls back to the wave
     module for WAV files (works in test environments without ffprobe).
     """
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error",
@@ -47,15 +49,55 @@ async def _get_duration(path: str) -> float:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_FFPROBE_TIMEOUT_SECS)
         val = float(stdout.decode().strip())
         if val > 0:
             return val
     except Exception:
-        pass
+        # ffprobe missing, hung, or emitted junk. Kill a still-running process
+        # before falling back — a timed-out wait_for leaves it alive otherwise.
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
 
     # Fallback: WAV header read, offloaded to a thread to stay non-blocking.
     return await asyncio.to_thread(_wave_duration, path)
+
+
+async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav, *, keep_source: bool = False) -> float:
+    """Duration-gate `staged_wav`, install it as reference.wav, record its
+    provenance, and recompute project status (a project resting in
+    awaiting_reference moves on once a reference exists).
+
+    Shared by the upload and diarise+pick paths so the finalisation steps
+    cannot drift. The gate runs before installation, so a too-short candidate
+    never destroys an existing valid reference. Returns the duration.
+    """
+    duration = await _get_duration(str(staged_wav))
+    if duration < MIN_DURATION_SECS:
+        raise AppError(
+            422, "reference_too_short",
+            f"Reference clip must be at least {MIN_DURATION_SECS} seconds. Provided clip is {duration:.1f} seconds.",
+            {"duration_secs": duration, "minimum_secs": MIN_DURATION_SECS},
+        )
+
+    dest = project_dir(project_id) / "reference.wav"
+    if keep_source:
+        # Candidate montages stay on disk so the user can re-pick.
+        await asyncio.to_thread(shutil.copyfile, str(staged_wav), str(dest))
+    else:
+        os.replace(staged_wav, dest)
+
+    conn.execute(
+        "UPDATE projects SET reference_path='reference.wav', reference_origin=?, updated_at=? WHERE id=?",
+        (json.dumps(origin), utc_now(), project_id),
+    )
+    conn.commit()
+    recompute_project_status(project_id)
+    return duration
 
 
 @router.post("")
@@ -63,7 +105,6 @@ async def upload_reference(project_id: str, file: UploadFile = File(...)):
     conn = require_project(project_id)
 
     pdir = project_dir(project_id)
-    dest = pdir / "reference.wav"
     # Write to a temp file first so a failed/too-short upload never destroys the
     # existing valid reference. Only an atomic rename replaces it.
     tmp = pdir / f".reference.{uuid.uuid4().hex}.tmp"
@@ -76,25 +117,10 @@ async def upload_reference(project_id: str, file: UploadFile = File(...)):
                     break
                 await out.write(chunk)
 
-        duration = await _get_duration(str(tmp))
-
-        if duration < MIN_DURATION_SECS:
-            raise AppError(
-                422, "reference_too_short",
-                f"Reference clip must be at least {MIN_DURATION_SECS} seconds. Uploaded clip is {duration:.1f} seconds.",
-                {"duration_secs": duration, "minimum_secs": MIN_DURATION_SECS},
-            )
-
-        os.replace(tmp, dest)
+        duration = await _finalise_reference(conn, project_id, {"type": "uploaded"}, tmp)
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
-
-    conn.execute(
-        "UPDATE projects SET reference_path='reference.wav', reference_origin=?, updated_at=? WHERE id=?",
-        (json.dumps({"type": "uploaded"}), utc_now(), project_id),
-    )
-    conn.commit()
 
     return {"reference_path": "reference.wav", "duration_secs": duration}
 
@@ -133,12 +159,31 @@ async def scout_speakers(project_id: str, body: ScoutRequest):
     return {"job_id": job_id, "type": "scout_speakers"}
 
 
+def _candidate_speakers(conn, project_id: str) -> list[dict]:
+    """Serialise the project's current speaker_candidates rows."""
+    candidates = conn.execute(
+        "SELECT * FROM speaker_candidates WHERE project_id=? ORDER BY total_secs DESC",
+        (project_id,),
+    ).fetchall()
+    return [
+        {
+            "speaker_label": c["speaker_label"],
+            "total_secs": c["total_secs"],
+            "segment_count": c["segment_count"],
+            "sample_url": f"/projects/{project_id}/reference/scout/samples/{c['speaker_label']}",
+        }
+        for c in candidates
+    ]
+
+
 @router.get("/scout")
 async def get_scout(project_id: str):
     conn = require_project(project_id)
 
+    # created_at has second resolution; rowid breaks ties deterministically in
+    # favour of the most recently inserted job.
     job = conn.execute(
-        "SELECT * FROM jobs WHERE project_id=? AND type='scout_speakers' ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM jobs WHERE project_id=? AND type='scout_speakers' ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (project_id,),
     ).fetchone()
     if job is None:
@@ -153,28 +198,17 @@ async def get_scout(project_id: str):
         }
 
     if job["status"] in ("failed", "cancelled"):
+        # A failed re-scan must not hide candidates from an earlier successful
+        # scan — they are still pickable, so return them alongside the failure.
         return {
             "status": "failed",
             "source_id": job["source_id"],
             "error": job["error"],
-            "speakers": [],
+            "speakers": _candidate_speakers(conn, project_id),
         }
 
     # complete
-    candidates = conn.execute(
-        "SELECT * FROM speaker_candidates WHERE project_id=? ORDER BY total_secs DESC",
-        (project_id,),
-    ).fetchall()
-    speakers = [
-        {
-            "speaker_label": c["speaker_label"],
-            "total_secs": c["total_secs"],
-            "segment_count": c["segment_count"],
-            "sample_url": f"/projects/{project_id}/reference/scout/samples/{c['speaker_label']}",
-        }
-        for c in candidates
-    ]
-    return {"status": "complete", "source_id": job["source_id"], "speakers": speakers}
+    return {"status": "complete", "source_id": job["source_id"], "speakers": _candidate_speakers(conn, project_id)}
 
 
 @router.get("/scout/samples/{speaker_label}")
@@ -206,29 +240,12 @@ async def select_speaker(project_id: str, body: SelectRequest):
     if cand is None:
         raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
 
-    pdir = project_dir(project_id)
-    montage = pdir / cand["montage_path"]
-    duration = await _get_duration(str(montage))
-    if duration < MIN_DURATION_SECS:
-        raise AppError(
-            422, "reference_too_short",
-            f"Reference must be at least {MIN_DURATION_SECS} seconds. Candidate montage is {duration:.1f} seconds.",
-            {"duration_secs": duration, "minimum_secs": MIN_DURATION_SECS},
-        )
-
-    dest = pdir / "reference.wav"
-    await asyncio.to_thread(shutil.copyfile, str(montage), str(dest))
-
-    origin = json.dumps({
+    montage = project_dir(project_id) / cand["montage_path"]
+    origin = {
         "type": "diarise_pick",
         "source_id": cand["source_id"],
         "speaker_label": cand["speaker_label"],
-    })
-    conn.execute(
-        "UPDATE projects SET reference_path='reference.wav', reference_origin=?, updated_at=? WHERE id=?",
-        (origin, utc_now(), project_id),
-    )
-    conn.commit()
-    recompute_project_status(project_id)
+    }
+    duration = await _finalise_reference(conn, project_id, origin, montage, keep_source=True)
 
     return {"reference_path": "reference.wav", "duration_secs": duration}
