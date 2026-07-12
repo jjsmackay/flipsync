@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from errors import AppError, app_error_handler
-from jobs import recover_jobs
+from jobs import recover_jobs, shutdown_runners
 from routers import projects, sources, reference, pipeline, segments
 from service_client import SERVICE_URLS, check_health, close_client
 
@@ -43,6 +43,11 @@ async def lifespan(app: FastAPI):
     app.state.background_tasks = tasks
 
     yield
+
+    # Cancel any per-project job runner tasks still awaiting new work before
+    # the event loop closes (an uncancelled pending task raises "Event loop is
+    # closed" when garbage-collected after the loop is gone).
+    await shutdown_runners()
 
     # Cleanup HTTP client on shutdown
     await close_client()
