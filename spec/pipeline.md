@@ -96,9 +96,13 @@ The orchestrator uses project defaults for v1. Parameter tuning is a future UI f
 
 ### Phase 2 — Speaker matching
 
-The service extracts a speaker embedding from the reference clip using pyannote's embedding model. For each diarised speaker label, it computes an **average embedding** across all segments attributed to that speaker. It then computes cosine similarity between the reference embedding and each speaker's average embedding, assigning the resulting score to every segment belonging to that speaker.
+The service extracts a speaker embedding from the reference clip using pyannote's embedding model, then scores **each segment individually**: it extracts an embedding for the segment (same embedding model, cropped to the segment's time range) and sets that segment's `match_confidence` to the cosine similarity between the segment's own embedding and the reference embedding. Per-segment scoring exists because a diarisation cluster can mix two speakers — a single cluster-averaged score would smear across all of that cluster's segments and mislead auto-approve banding, which trusts `match_confidence` per segment.
 
-Each segment receives a `match_confidence` score between 0.0 and 1.0. The full set of segments — all speakers, all confidence levels — is returned to the orchestrator in the job completion response. Nothing is discarded at this stage.
+The cluster-level score is kept as a **secondary signal**. For each diarised speaker label, the service computes an average embedding across all segments attributed to that speaker (reusing the per-segment embeddings — no extra extraction) and scores it against the reference the same way. This per-cluster score is reported on every segment as `speaker_match_confidence`, so reviewers can see both "this clip sounds like the target" (`match_confidence`) and "this cluster overall matches the target" (`speaker_match_confidence`).
+
+**Short-segment fallback.** Embeddings extracted from very short windows are noisy. For segments shorter than 1.0 s, the per-segment embedding is not trusted: `match_confidence` falls back to the segment's cluster score (i.e. equals `speaker_match_confidence`). The same fallback applies when per-segment embedding extraction fails — an extraction failure on one segment must never fail the job. (With the default `min_segment_duration` of 1.0 s no sub-second segments survive the duration filter, but the parameter can be lowered.)
+
+Each segment receives `match_confidence` and `speaker_match_confidence` scores between 0.0 and 1.0. The full set of segments — all speakers, all confidence levels — is returned to the orchestrator in the job completion response. Nothing is discarded at this stage.
 
 The orchestrator writes all segments to the database. Segments below the project's `match_threshold` are stored with status `below_threshold`; others with status `pending`. The user can lower the threshold to surface borderline matches.
 

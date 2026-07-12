@@ -287,6 +287,42 @@ def test_run_job_generic_failure_has_message():
 
 
 # ---------------------------------------------------------------------------
+# Test: completed-job poll response carries both confidence fields per segment
+# ---------------------------------------------------------------------------
+
+
+def test_completed_job_response_includes_both_confidences(client):
+    import main
+
+    job_id = str(uuid.uuid4())
+    _seed_running_job(main, job_id)
+
+    segment = {
+        "id": str(uuid.uuid4()),
+        "start_secs": 0.0,
+        "end_secs": 2.5,
+        "speaker_label": "SPEAKER_00",
+        "match_confidence": 0.91,
+        "speaker_match_confidence": 0.88,
+        "wav_path": "/data/projects/p1/segments/raw/x.wav",
+    }
+
+    with patch("main._load_models"), patch(
+        "diariser.run_diarisation", return_value=([segment], 0.42)
+    ):
+        main._run_job(job_id, MagicMock())
+
+    resp = client.get(f"/jobs/{job_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "complete"
+    assert len(data["segments"]) == 1
+    seg = data["segments"][0]
+    assert seg["match_confidence"] == 0.91
+    assert seg["speaker_match_confidence"] == 0.88
+
+
+# ---------------------------------------------------------------------------
 # Test: finished-job store is bounded; running jobs are retained
 # ---------------------------------------------------------------------------
 
@@ -356,6 +392,7 @@ def test_full_pipeline_with_mocks(sample_wav_path, reference_wav_path, output_di
         assert "end_secs" in seg
         assert "speaker_label" in seg
         assert "match_confidence" in seg
+        assert "speaker_match_confidence" in seg
         assert "wav_path" in seg
         # Full UUID (not truncated)
         assert len(seg["id"]) == 36
