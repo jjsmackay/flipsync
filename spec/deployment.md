@@ -36,7 +36,7 @@ services:
     ports:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
     environment:
       - DATA_DIR=/data
       - VOCAL_SEPARATION_URL=http://vocal-separation:8001
@@ -56,7 +56,7 @@ services:
   vocal-separation:
     image: ghcr.io/jjsmackay/flipsync/vocal-separation:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
     deploy:
       resources:
@@ -72,7 +72,7 @@ services:
   diarisation:
     image: ghcr.io/jjsmackay/flipsync/diarisation:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
@@ -90,7 +90,7 @@ services:
   transcription:
     image: ghcr.io/jjsmackay/flipsync/transcription:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
     deploy:
       resources:
@@ -106,7 +106,7 @@ services:
   cleanup:
     image: ghcr.io/jjsmackay/flipsync/cleanup:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
     restart: unless-stopped
     networks:
       - flipsync
@@ -130,7 +130,9 @@ networks:
 
 ### Notes on this configuration
 
-**Shared `/data` volume.** All services mount the same `./data` directory on the host. This is how services read each other's output — the vocal separation service writes to `/data/projects/{id}/audio/vocals/`, and the diarisation service reads from the same path. No inter-service file transfer. No shared memory. Files on disk are the interface.
+**Shared `/data` volume.** All services mount the same host directory (`${DATA_ROOT:-./data}`) at `/data`. This is how services read each other's output — the vocal separation service writes to `/data/projects/{id}/audio/vocals/`, and the diarisation service reads from the same path. No inter-service file transfer. No shared memory. Files on disk are the interface.
+
+**`DATA_ROOT` — keep project data outside the deploy clone.** `DATA_ROOT` defaults to `./data`, relative to the compose working directory, which is fine for local dev. **But if a deploy tool runs compose from a git clone it manages** (Komodo, Portainer git stacks, etc.), a re-clone or "destroy" of that stack directory deletes a relative `./data` along with it — taking every project's SQLite DB, audio, and exports. On such hosts, set `DATA_ROOT` to an **absolute path outside the clone** (e.g. `/opt/flipsync-data`) so persistent data is decoupled from the ephemeral checkout. Model caches (`MODELS_ROOT`) are already kept outside the clone for the same reason.
 
 **Model caches are bind mounts under `${MODELS_ROOT:-/mnt/models/flipsync}/`**, not named Docker volumes. This host reserves a dedicated disk at `/mnt/models` for model caches across services (Ollama, whisperx-asr, etc.) — using the same mount keeps FlipSync's ~5 GB of model downloads off the (often much smaller) disk backing Docker's default volume storage, and keeps them visible/manageable directly from the host filesystem. `MODELS_ROOT` is an optional `.env` override for hosts without that mount (e.g. local dev — point it at a plain directory under `./data`). Models are downloaded once on first run and cached permanently; `docker compose down` doesn't touch them.
 
@@ -149,6 +151,7 @@ Create a `.env` file at the repo root before first run: `cp .env.example .env`. 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `HF_TOKEN` | yes | — | HuggingFace token for pyannote model download (diarisation only) |
+| `DATA_ROOT` | no | `./data` | Host dir for project data. Set to an absolute path outside any deploy-tool git clone (see note above) |
 | `MODELS_ROOT` | no | `/mnt/models/flipsync` | Host dir for the demucs/pyannote/whisper caches |
 | `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
 | `FRONTEND_PORT` | no | `3000` | Host port for the UI |
