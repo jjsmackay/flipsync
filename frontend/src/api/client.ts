@@ -12,20 +12,11 @@ import type {
   Job,
 } from '../types/api'
 
-declare global {
-  interface Window {
-    // Written to /runtime-config.js by the container entrypoint from
-    // ORCHESTRATOR_PORT, since a Vite-built bundle can't read container env
-    // at runtime the way import.meta.env.VITE_* is baked in at build time.
-    __ORCHESTRATOR_PORT__?: string
-  }
-}
-
-// When VITE_API_URL is unset (the default in the shipped compose), talk to the
-// orchestrator on the same host the UI was served from, so LAN access works (SC8).
-const BASE_URL =
-  (import.meta.env.VITE_API_URL as string | undefined) ||
-  `http://${window.location.hostname}:${window.__ORCHESTRATOR_PORT__ || '8000'}`
+// When VITE_API_URL is unset (the default in the shipped compose), API calls go
+// to a same-origin /api path, which the frontend's vite server proxies to the
+// orchestrator (see vite.config.ts). Same-origin means no CORS and no mixed
+// content when the UI is served over https behind a reverse proxy.
+const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) || '/api'
 
 // ---- Error type ----
 

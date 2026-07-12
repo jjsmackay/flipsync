@@ -85,7 +85,9 @@ services:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
       - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-}
-      - ORCHESTRATOR_PORT=${ORCHESTRATOR_PORT:-8000}
+      # The UI calls the orchestrator via a same-origin /api path that vite
+      # proxies here — no public orchestrator port or CORS needed for the UI.
+      - ORCHESTRATOR_PROXY_TARGET=http://orchestrator:8000
     depends_on:
       - orchestrator
     restart: unless-stopped

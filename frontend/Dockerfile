@@ -11,4 +11,4 @@ COPY . .
 RUN pnpm run build
 
 EXPOSE 3000
-CMD ["/bin/sh", "-c", "printf 'window.__ORCHESTRATOR_PORT__=\"%s\";' \"${ORCHESTRATOR_PORT:-8000}\" > /app/dist/runtime-config.js && exec pnpm run preview -- --host 0.0.0.0 --port 3000"]
+CMD ["pnpm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "3000"]
