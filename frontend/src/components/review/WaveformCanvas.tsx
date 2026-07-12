@@ -228,7 +228,7 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
         loadingRef.current = false
         draw()
       })
-  }, [audioBlob, resolved]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [audioBlob]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
