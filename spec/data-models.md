@@ -489,5 +489,4 @@ Migration log:
 | 005 | `005_semantic_source_statuses.sql` | Renames positional step1/step2 column names and source statuses to `separation`/`diarisation` |
 | 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
 | 007 | `007_scout_pool.sql` | Rebuilds `speaker_candidates`: replaces `montage_path` with `pool_json` (curatable per-turn scout pool). Candidate rows are transient, so the table is dropped and recreated |
-
-v1.5 additionally adds the `models` table and the `jobs.progress_detail` column via migration. Both are additive.
+| 008 | `008_xtts_models.sql` | v1.5: adds the `models` table and the `jobs.progress_detail` column. Both additive |

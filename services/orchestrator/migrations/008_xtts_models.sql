@@ -1,4 +1,4 @@
--- Migration 003: XTTS-v2 fine-tuning support (v1.5).
+-- Migration 008: XTTS-v2 fine-tuning support (v1.5).
 -- Adds the models table (one row per fine-tuned XTTS-v2 model) and a
 -- progress_detail column on jobs for rich long-running-job progress
 -- (fine-tune epoch/loss/ETA). Both changes are additive.
