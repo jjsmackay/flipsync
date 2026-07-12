@@ -59,10 +59,10 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
   }
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-5 space-y-5">
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-5 space-y-5">
       {/* Match threshold */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Match threshold
           <span className="ml-2 font-mono text-blue-600">{matchThreshold.toFixed(2)}</span>
         </label>
@@ -75,17 +75,17 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
           onChange={(e) => { setMatchThreshold(parseFloat(e.target.value)); setSaved(false) }}
           className="w-full accent-blue-600"
         />
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
           Segments below this speaker-match score are held as below threshold. Changing it
           re-evaluates every segment immediately.
         </p>
       </div>
 
-      <hr className="border-gray-100" />
+      <hr className="border-gray-100 dark:border-gray-800" />
 
       {/* Auto-approve toggle */}
       <div>
-        <label className="flex items-center gap-2 text-sm font-medium text-gray-700 cursor-pointer select-none">
+        <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer select-none">
           <input
             type="checkbox"
             checked={autoApproveEnabled}
@@ -94,9 +94,9 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
           />
           Auto-approve
         </label>
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
           Segments that clear both thresholds below move straight to
-          <span className="mx-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-teal-100 text-teal-700">
+          <span className="mx-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
             auto-approved
           </span>
           — included in export and approved duration, but freely demotable in review.
@@ -105,7 +105,7 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
 
       <div className={autoApproveEnabled ? '' : 'opacity-50 pointer-events-none'}>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Auto-approve match threshold
             <span className="ml-2 font-mono text-teal-700">{autoApproveMatchThreshold.toFixed(2)}</span>
           </label>
@@ -122,7 +122,7 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
         </div>
 
         <div className="mt-3">
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
             Auto-approve transcript threshold
             <span className="ml-2 font-mono text-teal-700">{autoApproveTranscriptThreshold.toFixed(2)}</span>
           </label>
@@ -140,12 +140,12 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
       </div>
 
       {error && (
-        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+        <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">
           {error}
         </p>
       )}
       {saved && !dirty && (
-        <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+        <p className="text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg px-3 py-2">
           Saved — segment statuses have been re-evaluated.
         </p>
       )}
@@ -155,7 +155,7 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
           type="button"
           onClick={handleReset}
           disabled={!dirty || saving}
-          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
         >
           Reset
         </button>

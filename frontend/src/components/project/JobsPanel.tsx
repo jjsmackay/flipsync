@@ -50,10 +50,10 @@ export function JobsPanel({ activeJobs, failedJobs, onRetry, retryingJobId }: Jo
   return (
     <div className="space-y-3">
       {activeJobs.map((job) => (
-        <div key={job.id} className="bg-blue-50 border border-blue-100 rounded-lg p-3">
+        <div key={job.id} className="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium text-blue-800">{jobLabel(job.type)}</span>
-            <span className="text-xs text-blue-500 capitalize">{job.status}</span>
+            <span className="text-sm font-medium text-blue-800 dark:text-blue-300">{jobLabel(job.type)}</span>
+            <span className="text-xs text-blue-500 dark:text-blue-400 capitalize">{job.status}</span>
           </div>
           {job.progress !== null && (
             <ProgressBar value={job.progress} color="blue" />
@@ -62,15 +62,15 @@ export function JobsPanel({ activeJobs, failedJobs, onRetry, retryingJobId }: Jo
       ))}
 
       {visibleFailed.map((job) => (
-        <div key={job.id} className="bg-red-50 border border-red-100 rounded-lg p-3">
+        <div key={job.id} className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium text-red-800">{jobLabel(job.type)}</span>
+            <span className="text-sm font-medium text-red-800 dark:text-red-300">{jobLabel(job.type)}</span>
             {job.completed_at && (
-              <span className="text-xs text-red-400">{formatTime(job.completed_at)}</span>
+              <span className="text-xs text-red-400 dark:text-red-500">{formatTime(job.completed_at)}</span>
             )}
           </div>
           {job.error && (
-            <p className="text-xs text-red-600 mt-1">{job.error}</p>
+            <p className="text-xs text-red-600 dark:text-red-400 mt-1">{job.error}</p>
           )}
           <div className="flex items-center gap-2 mt-2">
             {onRetry && (
@@ -86,7 +86,7 @@ export function JobsPanel({ activeJobs, failedJobs, onRetry, retryingJobId }: Jo
             <button
               type="button"
               onClick={() => dismiss(job.id)}
-              className="text-xs px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-100"
+              className="text-xs px-2 py-1 rounded border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30"
             >
               Dismiss
             </button>

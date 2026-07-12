@@ -12,6 +12,7 @@ import { BulkOperations } from '../components/review/BulkOperations'
 import { Timeline } from '../components/review/Timeline'
 import { KeyboardHelp } from '../components/review/KeyboardHelp'
 import { ExportButton } from '../components/export/ExportButton'
+import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { formatDuration } from '../utils/format'
 
 
@@ -210,22 +211,22 @@ export function ReviewQueuePage() {
     (project?.stats.total_segments ?? 0) > 0
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
+    <div className="h-screen flex flex-col bg-gray-50 dark:bg-gray-900 overflow-hidden">
       {/* Top bar */}
-      <div className="flex items-center gap-4 px-4 py-3 bg-white border-b border-gray-200 shrink-0">
-        <Link to={`/projects/${projectId}`} className="text-gray-400 hover:text-gray-600 text-sm">
+      <div className="flex items-center gap-4 px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shrink-0">
+        <Link to={`/projects/${projectId}`} className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 text-sm">
           ← {project?.name ?? 'Dashboard'}
         </Link>
-        <span className="text-gray-300">|</span>
+        <span className="text-gray-300 dark:text-gray-600">|</span>
         {project && (
-          <span className="text-sm text-gray-600">
+          <span className="text-sm text-gray-600 dark:text-gray-400">
             {formatDuration(project.stats.approved_duration_secs)} / {formatDuration(project.config.target_duration_secs)} approved
           </span>
         )}
-        <span className="text-gray-300">|</span>
-        <span className="text-sm text-gray-500">{pagination.total} segments</span>
+        <span className="text-gray-300 dark:text-gray-600">|</span>
+        <span className="text-sm text-gray-500 dark:text-gray-400">{pagination.total} segments</span>
         <div className="ml-auto flex items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer select-none">
+          <label className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={autoPlay}
@@ -234,20 +235,21 @@ export function ReviewQueuePage() {
             />
             Auto-play
           </label>
-          <button onClick={() => setShowHelp(h => !h)} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">? Shortcuts</button>
+          <button onClick={() => setShowHelp(h => !h)} className="text-xs px-2 py-1 border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300">? Shortcuts</button>
+          <ThemeToggle />
           {project && <ExportButton project={project} onStarted={() => void refetchProject()} />}
         </div>
       </div>
 
       {/* Banners */}
       {activeTranscription && (
-        <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-700 shrink-0">
+        <div className="px-4 py-2 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-100 dark:border-blue-800 text-xs text-blue-700 dark:text-blue-400 shrink-0">
           Transcription in progress
           {activeTranscription.progress !== null ? ` — ${Math.round(activeTranscription.progress)}% complete` : '…'}
         </div>
       )}
       {lowCoverage && (
-        <div className="px-4 py-2 bg-amber-50 border-b border-amber-100 text-xs text-amber-700 shrink-0">
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-100 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-400 shrink-0">
           Some source files have low target speaker coverage. Check the dashboard for details. Your dataset may be thinner than expected.
         </div>
       )}
@@ -267,8 +269,8 @@ export function ReviewQueuePage() {
       {/* Two-panel layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left: list */}
-        <div className="w-80 flex-none flex flex-col border-r border-gray-200 bg-white overflow-hidden">
-          <div className="p-2 border-b border-gray-100 shrink-0">
+        <div className="w-80 flex-none flex flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
+          <div className="p-2 border-b border-gray-100 dark:border-gray-800 shrink-0">
             <BulkOperations
               projectId={projectId!}
               onApplied={() => { setRefreshKey(k => k + 1); void refetchProject() }}
@@ -277,17 +279,17 @@ export function ReviewQueuePage() {
           </div>
           <div className="flex-1 overflow-y-auto">
             {segmentsLoading && segments.length === 0 && (
-              <div className="text-center py-8 text-gray-400 text-sm">Loading…</div>
+              <div className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>
             )}
             {fetchError && (
-              <div className="m-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+              <div className="m-3 text-sm text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
                 {fetchError}
               </div>
             )}
             {!segmentsLoading && !fetchError && segments.length === 0 && (
               showCompletion && project ? (
-                <div className="px-4 py-8 text-sm text-gray-500 text-center space-y-2">
-                  <p className="font-medium text-gray-700">You've reviewed all segments in this filter.</p>
+                <div className="px-4 py-8 text-sm text-gray-500 dark:text-gray-400 text-center space-y-2">
+                  <p className="font-medium text-gray-700 dark:text-gray-300">You've reviewed all segments in this filter.</p>
                   <p>
                     {project.stats.approved_count} approved, {project.stats.rejected_count} rejected,{' '}
                     {project.stats.maybe_count} in Maybe.
@@ -295,14 +297,14 @@ export function ReviewQueuePage() {
                   {project.stats.maybe_count > 0 && (
                     <button
                       onClick={() => setFilter({ status: 'maybe' })}
-                      className="text-indigo-600 hover:text-indigo-800 underline"
+                      className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 underline"
                     >
                       View the Maybe pile
                     </button>
                   )}
                 </div>
               ) : (
-                <div className="text-center py-8 text-gray-400 text-sm px-4">
+                <div className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm px-4">
                   No segments match the current filters. Try widening the confidence threshold or changing the status filter.
                 </div>
               )
@@ -317,19 +319,19 @@ export function ReviewQueuePage() {
             ))}
           </div>
           {pagination.pages > 1 && (
-            <div className="px-4 py-2 border-t border-gray-100 shrink-0 flex items-center justify-between text-sm">
+            <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-800 shrink-0 flex items-center justify-between text-sm">
               <button
                 onClick={() => setFilter({ page: filter.page - 1 })}
                 disabled={filter.page <= 1}
-                className="text-gray-400 hover:text-gray-700 disabled:opacity-30"
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-30"
               >
                 ← Prev
               </button>
-              <span className="text-gray-500 text-xs">{filter.page} / {pagination.pages}</span>
+              <span className="text-gray-500 dark:text-gray-400 text-xs">{filter.page} / {pagination.pages}</span>
               <button
                 onClick={() => setFilter({ page: filter.page + 1 })}
                 disabled={filter.page >= pagination.pages}
-                className="text-gray-400 hover:text-gray-700 disabled:opacity-30"
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 disabled:opacity-30"
               >
                 Next →
               </button>
@@ -351,7 +353,7 @@ export function ReviewQueuePage() {
               autoPlay={autoPlay}
             />
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-400">
+            <div className="flex items-center justify-center h-full text-gray-400 dark:text-gray-500">
               {segments.length === 0 ? 'No segments to review' : 'Select a segment'}
             </div>
           )}
