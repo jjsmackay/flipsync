@@ -14,6 +14,7 @@ following the pattern in test_reference_from_video.py.
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,15 +69,17 @@ def _insert_scout_job(conn, project_id, source_id, status="complete", created_at
     return job_id
 
 
-def _insert_candidate(conn, project_id, source_id, label, montage_path, scout_job_id,
-                      total_secs=30.0, segment_count=10):
+def _insert_candidate(conn, project_id, source_id, label, scout_job_id,
+                      pool=None, total_secs=30.0, segment_count=10):
+    if pool is None:
+        pool = [{"index": 0, "start": 0.0, "end": 10.0, "duration": 10.0}]
     conn.execute(
         """INSERT INTO speaker_candidates
-           (id, project_id, scout_job_id, source_id, speaker_label, montage_path,
+           (id, project_id, scout_job_id, source_id, speaker_label, pool_json,
             total_secs, segment_count, created_at)
            VALUES (?,?,?,?,?,?,?,?,?)""",
         (str(uuid.uuid4()), project_id, scout_job_id, source_id,
-         label, montage_path, total_secs, segment_count, _now()),
+         label, json.dumps(pool), total_secs, segment_count, _now()),
     )
     conn.commit()
 
@@ -312,8 +315,7 @@ class TestScoutStatusReporting:
 
         ok_job = _insert_scout_job(conn, project, source_id, status="complete",
                                    created_at="2026-01-01T00:00:00Z")
-        _insert_candidate(conn, project, source_id, "SPEAKER_00",
-                          f"reference_candidates/{ok_job}/SPEAKER_00.wav", ok_job)
+        _insert_candidate(conn, project, source_id, "SPEAKER_00", ok_job)
         _insert_scout_job(conn, project, source_id, status="failed",
                           created_at="2026-01-02T00:00:00Z", error="gpu_oom")
 
@@ -324,8 +326,8 @@ class TestScoutStatusReporting:
         assert body["error"] == "gpu_oom"
         labels = [s["speaker_label"] for s in body["speakers"]]
         assert labels == ["SPEAKER_00"]
-        assert body["speakers"][0]["sample_url"] == \
-            f"/projects/{project}/reference/scout/samples/SPEAKER_00"
+        assert body["speakers"][0]["pool"][0]["sample_url"] == \
+            f"/projects/{project}/reference/scout/samples/SPEAKER_00/0"
 
     def test_same_second_tiebreak_prefers_latest_insert(self, client, project):
         import db
@@ -335,8 +337,7 @@ class TestScoutStatusReporting:
         ts = "2026-01-01T00:00:00Z"
 
         ok_job = _insert_scout_job(conn, project, source_id, status="complete", created_at=ts)
-        _insert_candidate(conn, project, source_id, "SPEAKER_00",
-                          f"reference_candidates/{ok_job}/SPEAKER_00.wav", ok_job)
+        _insert_candidate(conn, project, source_id, "SPEAKER_00", ok_job)
         _insert_scout_job(conn, project, source_id, status="failed", created_at=ts,
                           error="boom")
 
@@ -368,7 +369,7 @@ class TestScoutMontageCleanup:
         async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
             return {"job_id": job_id, "status": "complete", "mode": "scout",
                     "speakers": [{"speaker_label": "SPEAKER_00",
-                                  "montage_path": "/x/a.wav",
+                                  "pool": [{"index": 0, "start": 0.0, "end": 20.0, "duration": 20.0}],
                                   "total_secs": 20.0, "segment_count": 5}]}
 
         pdir = db.project_dir(project)
@@ -378,11 +379,12 @@ class TestScoutMontageCleanup:
 
             job1_dir = pdir / "reference_candidates" / job1
             job1_dir.mkdir(parents=True, exist_ok=True)
-            (job1_dir / "SPEAKER_00.wav").write_bytes(b"RIFF")
+            (job1_dir / "SPEAKER_00" / "0.wav").parent.mkdir(parents=True, exist_ok=True)
+            (job1_dir / "SPEAKER_00" / "0.wav").write_bytes(b"RIFF")
 
             job2 = _enqueue_and_run(project, "scout_speakers", source_id=source_id)
 
-        # Old scan's montage dir is gone; candidates reference the new scan.
+        # Old scan's pool dir is gone; candidates reference the new scan.
         assert not job1_dir.exists()
         cands = conn.execute(
             "SELECT scout_job_id FROM speaker_candidates WHERE project_id=?", (project,)

@@ -285,8 +285,10 @@ Enqueue a reference-less diarisation pass ("scout") over one source, to surface 
 
 **Request:**
 ```json
-{ "source_id": "…" }
+{ "source_id": "…", "expected_speaker_count": 2 }
 ```
+
+`expected_speaker_count` is optional. When provided, it is forwarded to the diarisation service as `num_speakers`, forcing pyannote to that exact speaker count (the fix for a cluster that has merged two people). Omit it to use the default 1–10 range.
 
 **Response 202:**
 ```json
@@ -294,6 +296,8 @@ Enqueue a reference-less diarisation pass ("scout") over one source, to surface 
 ```
 
 **Response 422 `vocals_not_ready`** if the source has no vocals stem (step 1 has not completed for it).
+
+**Response 422 `invalid_speaker_count`** if `expected_speaker_count` is provided and less than 1.
 
 **Response 404** if `source_id` does not exist.
 
@@ -315,14 +319,22 @@ Return the status of the latest scout job for the project and, once complete, it
   "source_id": "…",
   "speakers": [
     { "speaker_label": "SPEAKER_00", "total_secs": 412.6, "segment_count": 173,
-      "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_00" },
+      "pool": [
+        { "index": 0, "start": 63.2, "end": 88.0, "duration": 24.8,
+          "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_00/0" },
+        { "index": 1, "start": 12.0, "end": 30.5, "duration": 18.5,
+          "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_00/1" }
+      ] },
     { "speaker_label": "SPEAKER_01", "total_secs": 88.2, "segment_count": 41,
-      "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_01" }
+      "pool": [
+        { "index": 0, "start": 5.0, "end": 11.0, "duration": 6.0,
+          "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_01/0" }
+      ] }
   ]
 }
 ```
 
-`speakers` is sorted by `total_secs` descending — the target speaker is usually the most talkative.
+`speakers` is sorted by `total_secs` descending — the target speaker is usually the most talkative. Each candidate's `pool` is its bounded curation set (longest-first); the reference is assembled from these turns minus any the user excludes on select.
 
 `sample_url` is orchestrator-relative (like `audio_url` on segments). Clients resolve it against their API base — the frontend prefixes its same-origin `/api` proxy path.
 
@@ -335,24 +347,28 @@ Return the status of the latest scout job for the project and, once complete, it
 
 ---
 
-#### `GET /projects/{project_id}/reference/scout/samples/{speaker_label}`
+#### `GET /projects/{project_id}/reference/scout/samples/{speaker_label}/{index}`
 
-Stream the montage WAV for a candidate speaker so the browser can play it. Reads `montage_path` from `speaker_candidates` for the latest scout. Full file, no `Range` header support, matching the segment-audio streaming convention (`GET /segments/{segment_id}/audio`).
+Stream one pool turn WAV for a candidate speaker so the browser can play it. Resolves to `reference_candidates/{scout_job_id}/{speaker_label}/{index}.wav` for the latest scout. Full file, no `Range` header support, matching the segment-audio streaming convention (`GET /segments/{segment_id}/audio`).
 
 **Response 200:** `audio/wav`, `Content-Length` header set.
 
 **Response 404 `unknown_speaker`** if the label is not in the current candidate set.
 
+**Response 404 `unknown_segment`** if `index` is not a turn in that candidate's pool.
+
 ---
 
 #### `POST /projects/{project_id}/reference/scout/select`
 
-Adopt a candidate speaker as the reference. Copies the candidate's `montage_path` to `projects/{id}/reference.wav`, sets `reference_path`, and sets `reference_origin` to `{"type": "diarise_pick", "source_id": "…", "speaker_label": "…"}`. Does **not** auto-run step 2 — mirrors the upload endpoint's "does not automatically re-run diarisation" behaviour.
+Adopt a candidate speaker as the reference. The orchestrator assembles `reference.wav` from the candidate's pool turns minus any in `excluded_indices` — longest-first up to a 30 s cap, concatenated via the stdlib `wave` module — sets `reference_path`, and sets `reference_origin` to `{"type": "diarise_pick", "source_id": "…", "speaker_label": "…", "excluded_indices": […], "included_indices": […]}`. Does **not** auto-run step 2 — mirrors the upload endpoint's "does not automatically re-run diarisation" behaviour.
 
 **Request:**
 ```json
-{ "speaker_label": "SPEAKER_02" }
+{ "speaker_label": "SPEAKER_02", "excluded_indices": [1] }
 ```
+
+`excluded_indices` is optional (default `[]`). An empty list assembles the full montage (longest-first up to the cap) — identical to the previous behaviour. Listing indices leaves those wrong-voice turns out; the next-longest kept turns backfill the reference toward the cap.
 
 **Response 200:**
 ```json
@@ -364,7 +380,7 @@ Adopt a candidate speaker as the reference. Copies the candidate's `montage_path
 
 **Response 404 `unknown_speaker`** if the label is not in the current candidate set.
 
-**Response 422** if the candidate's montage is under the 5-second minimum (same floor the upload endpoint enforces — a speaker with so little talk time is not a plausible target; the UI should also disable **Use this voice** on cards whose `total_secs` is under 5):
+**Response 422 `reference_too_short`** if the assembled reference is under the 5-second minimum — either because too many turns were excluded (none left) or the kept turns total under the floor (same floor the upload endpoint enforces). The UI should also disable **Use this voice** while the live reference length is under 5 s:
 ```json
 {
   "error": "reference_too_short",
@@ -786,12 +802,14 @@ Returns 200 when the service is ready. Note: on first run, the service downloads
     "min_segment_duration": 1.0,
     "min_speakers": 1,
     "max_speakers": 10,
-    "montage_max_secs": 30.0
+    "num_speakers": 2,
+    "pool_max_secs": 90.0,
+    "pool_max_turns": 20
   }
 }
 ```
 
-`montage_max_secs` (default 30.0) caps the length of each per-speaker montage WAV. In scout mode the service runs diarisation to produce anonymous speaker clusters exactly as in match mode, but skips the reference embedding / cosine-similarity step entirely. Instead of per-segment WAVs it writes one montage WAV per speaker to `output_dir` at `{speaker_label}.wav` — that speaker's segments concatenated longest-first up to `montage_max_secs`. No `match_confidence` or `speaker_match_confidence` is computed and no per-segment WAVs are written.
+In scout mode the service runs diarisation to produce anonymous speaker clusters exactly as in match mode, but skips the reference embedding / cosine-similarity step entirely. `num_speakers` (optional) forces pyannote to that exact count when set (ignoring `min`/`max`). For each speaker it writes a **bounded pool of individual turn WAVs** to `output_dir/{speaker_label}/{index}.wav` — the speaker's turns taken whole, longest-first, until the pool reaches `pool_max_secs` (default 90.0) or `pool_max_turns` (default 20). No `match_confidence` or `speaker_match_confidence` is computed and no montage is written; the reference is assembled downstream by the orchestrator from the pool.
 
 **Speaker matching method (match mode):** The service extracts a single speaker embedding from the reference clip, plus one embedding per diarised segment. Each segment's `match_confidence` is the cosine similarity between its own embedding and the reference embedding. The per-speaker **average embedding** (computed from the same per-segment embeddings) is scored against the reference too and reported on every segment as `speaker_match_confidence` — a secondary cluster-level signal. Segments shorter than 1.0 s, or whose embedding extraction fails, fall back to the cluster score for `match_confidence`. See `spec/pipeline.md` §Phase 2 for detail.
 
@@ -836,15 +854,20 @@ On completion (scout mode):
   "speakers": [
     {
       "speaker_label": "SPEAKER_00",
-      "montage_path": "/data/projects/{project_id}/reference_candidates/{job_id}/SPEAKER_00.wav",
       "total_secs": 412.6,
-      "segment_count": 173
+      "segment_count": 173,
+      "pool": [
+        { "index": 0, "start": 63.2, "end": 88.0, "duration": 24.8 },
+        { "index": 1, "start": 12.0, "end": 30.5, "duration": 18.5 }
+      ]
     },
     {
       "speaker_label": "SPEAKER_01",
-      "montage_path": "/data/projects/{project_id}/reference_candidates/{job_id}/SPEAKER_01.wav",
       "total_secs": 88.2,
-      "segment_count": 41
+      "segment_count": 41,
+      "pool": [
+        { "index": 0, "start": 5.0, "end": 11.0, "duration": 6.0 }
+      ]
     }
   ],
   "error": null

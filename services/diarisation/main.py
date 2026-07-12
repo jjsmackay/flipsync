@@ -78,7 +78,13 @@ class DiariseParams(BaseModel):
     min_segment_duration: float = 1.0
     min_speakers: int = 1
     max_speakers: int = 10
-    montage_max_secs: float = 30.0
+    # Scout-only. When set, pyannote is forced to this exact speaker count and
+    # min/max are ignored. Left None for match mode and default scouts.
+    num_speakers: Optional[int] = None
+    # Scout-only. Bound the per-speaker curation pool so a long source is no
+    # more overwhelming than a short one.
+    pool_max_secs: float = 90.0
+    pool_max_turns: int = 20
 
 
 class JobRequest(BaseModel):
@@ -166,7 +172,9 @@ def _run_job(job_id: str, request: JobRequest):
                 min_segment_duration=request.params.min_segment_duration,
                 min_speakers=request.params.min_speakers,
                 max_speakers=request.params.max_speakers,
-                montage_max_secs=request.params.montage_max_secs,
+                num_speakers=request.params.num_speakers,
+                pool_max_secs=request.params.pool_max_secs,
+                pool_max_turns=request.params.pool_max_turns,
                 progress_callback=_progress,
             )
             _jobs[job_id].update(

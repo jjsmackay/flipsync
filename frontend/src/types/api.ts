@@ -98,11 +98,21 @@ export type ReferenceOrigin =
   | { type: 'uploaded' }
   | { type: 'diarise_pick'; source_id: string; speaker_label: string }
 
+export interface PoolTurn {
+  index: number
+  start: number
+  end: number
+  duration: number
+  sample_url: string
+}
+
 export interface SpeakerCandidate {
   speaker_label: string
   total_secs: number
   segment_count: number
-  sample_url: string
+  // Bounded pool of individual turn slices for curation. The reference is built
+  // from these (longest-first up to 30 s) minus any the user excludes.
+  pool: PoolTurn[]
 }
 
 export type ScoutStatus =

@@ -181,14 +181,14 @@ CREATE TABLE speaker_candidates (
     scout_job_id   TEXT NOT NULL REFERENCES jobs(id),
     source_id      TEXT NOT NULL REFERENCES sources(id),
     speaker_label  TEXT NOT NULL,          -- SPEAKER_00 etc, local to the scouted source
-    montage_path   TEXT NOT NULL,          -- reference_candidates/{scout_job_id}/{speaker_label}.wav
+    pool_json      TEXT NOT NULL,          -- JSON list of {index,start,end,duration} — the curation pool
     total_secs     REAL NOT NULL,          -- total talk time for this speaker in the scouted source
     segment_count  INTEGER NOT NULL,       -- number of segments attributed to this speaker
     created_at     TEXT NOT NULL
 );
 ```
 
-`montage_path` is relative to the project directory, matching the convention used by other path columns (`audio_path`, `raw_path`, etc).
+`pool_json` is the bounded curation pool for the candidate: a JSON array of `{index, start, end, duration}` turn descriptors, longest-first. The turn slice WAVs themselves live at `reference_candidates/{scout_job_id}/{speaker_label}/{index}.wav` — paths are **derived** from `scout_job_id` + `speaker_label` + `index`, not stored. `total_secs`/`segment_count` cover the speaker's full talk time in the source, not just the pool.
 
 **Rows are replaced on a new scout.** Running a fresh `scout_speakers` job for a project deletes all existing `speaker_candidates` rows for that `project_id` and inserts the new set. **Rows are kept after a pick.** Selecting a candidate as the reference (`POST /reference/scout/select`) does not delete `speaker_candidates` rows — the user can re-pick a different speaker from the same scout without re-scouting.
 
@@ -438,3 +438,4 @@ Migration log:
 | 004 | `004_reference_from_video.sql` | `projects.reference_origin` + the `speaker_candidates` table (reference acquisition from source video) |
 | 005 | `005_semantic_source_statuses.sql` | Renames positional step1/step2 column names and source statuses to `separation`/`diarisation` |
 | 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
+| 007 | `007_scout_pool.sql` | Rebuilds `speaker_candidates`: replaces `montage_path` with `pool_json` (curatable per-turn scout pool). Candidate rows are transient, so the table is dropped and recreated |

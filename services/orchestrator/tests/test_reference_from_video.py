@@ -48,7 +48,17 @@ def _insert_scout_job(conn, project_id, source_id, status="complete"):
     return job_id
 
 
-def _insert_candidate(conn, project_id, source_id, label, montage_path, total_secs=30.0,
+def _pool(*durations):
+    """Build a pool turn list from a sequence of durations (sequential times)."""
+    pool = []
+    t = 0.0
+    for i, d in enumerate(durations):
+        pool.append({"index": i, "start": t, "end": t + d, "duration": d})
+        t += d + 0.5
+    return pool
+
+
+def _insert_candidate(conn, project_id, source_id, label, pool, total_secs=30.0,
                       segment_count=10, scout_job_id=None):
     # speaker_candidates.scout_job_id has a FK to jobs(id); create a job row if
     # the caller didn't supply one.
@@ -56,13 +66,22 @@ def _insert_candidate(conn, project_id, source_id, label, montage_path, total_se
         scout_job_id = _insert_scout_job(conn, project_id, source_id)
     conn.execute(
         """INSERT INTO speaker_candidates
-           (id, project_id, scout_job_id, source_id, speaker_label, montage_path,
+           (id, project_id, scout_job_id, source_id, speaker_label, pool_json,
             total_secs, segment_count, created_at)
            VALUES (?,?,?,?,?,?,?,?,?)""",
         (str(uuid.uuid4()), project_id, scout_job_id, source_id,
-         label, montage_path, total_secs, segment_count, _now()),
+         label, json.dumps(pool), total_secs, segment_count, _now()),
     )
     conn.commit()
+    return scout_job_id
+
+
+def _write_pool_slices(pdir, scout_job_id, label, indices, fixture="test_audio.wav"):
+    """Copy a fixture WAV into each pool slice path the endpoints read."""
+    for i in indices:
+        dest = pdir / "reference_candidates" / scout_job_id / label / f"{i}.wav"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(FIXTURES_DIR / fixture, dest)
 
 
 def _run_job(project_id, job_id):
@@ -225,10 +244,10 @@ class TestScoutHandler:
                 "job_id": job_id, "status": "complete", "mode": "scout",
                 "speakers": [
                     {"speaker_label": "SPEAKER_00",
-                     "montage_path": f"/data/x/SPEAKER_00.wav",
+                     "pool": [{"index": 0, "start": 0.0, "end": 12.0, "duration": 12.0}],
                      "total_secs": 120.0, "segment_count": 40},
                     {"speaker_label": "SPEAKER_01",
-                     "montage_path": f"/data/x/SPEAKER_01.wav",
+                     "pool": [{"index": 0, "start": 1.0, "end": 6.0, "duration": 5.0}],
                      "total_secs": 30.0, "segment_count": 8},
                 ],
             }
@@ -243,22 +262,48 @@ class TestScoutHandler:
         assert captured["service"] == "diarisation"
         payload = captured["payload"]
         assert payload["reference_path"] is None
+        # No expected count set → the default range, no num_speakers.
+        assert "num_speakers" not in payload["params"]
         source = conn.execute("SELECT vocals_path FROM sources WHERE id=?", (source_id,)).fetchone()
         assert payload["input_path"] == f"{prefix}/projects/{project}/{source['vocals_path']}"
         assert payload["output_dir"] == f"{prefix}/projects/{project}/reference_candidates/{job_id}/"
 
-        # Candidates inserted with montage_path relative to the project dir.
+        # Candidates inserted with their pool stored as JSON.
         cands = conn.execute(
             "SELECT * FROM speaker_candidates WHERE project_id=? ORDER BY total_secs DESC",
             (project,),
         ).fetchall()
         assert [c["speaker_label"] for c in cands] == ["SPEAKER_00", "SPEAKER_01"]
-        assert cands[0]["montage_path"] == f"reference_candidates/{job_id}/SPEAKER_00.wav"
+        assert json.loads(cands[0]["pool_json"]) == [
+            {"index": 0, "start": 0.0, "end": 12.0, "duration": 12.0}
+        ]
         assert cands[0]["source_id"] == source_id
+        assert cands[0]["scout_job_id"] == job_id
 
         # Source status is never touched by a scout.
         src = conn.execute("SELECT status FROM sources WHERE id=?", (source_id,)).fetchone()
         assert src["status"] == "diarisation_pending"
+
+    def test_scout_forwards_expected_speaker_count(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending",
+                                   vocals_path="audio/vocals/v.wav")
+        captured = {}
+
+        async def mock_submit(service, payload):
+            captured["payload"] = payload
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete", "mode": "scout", "speakers": []}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "scout_speakers", source_id=source_id,
+                             params={"expected_speaker_count": 3})
+
+        assert captured["payload"]["params"]["num_speakers"] == 3
 
     def test_scout_replaces_previous_candidates(self, client, project, isolated_data_dir):
         import db
@@ -267,9 +312,9 @@ class TestScoutHandler:
                                    vocals_path="audio/vocals/v.wav")
 
         speakers_by_run = [
-            [{"speaker_label": "SPEAKER_00", "montage_path": "/x/a.wav",
+            [{"speaker_label": "SPEAKER_00", "pool": [{"index": 0, "start": 0.0, "end": 10.0, "duration": 10.0}],
               "total_secs": 10.0, "segment_count": 2}],
-            [{"speaker_label": "SPEAKER_09", "montage_path": "/x/b.wav",
+            [{"speaker_label": "SPEAKER_09", "pool": [{"index": 0, "start": 0.0, "end": 50.0, "duration": 50.0}],
               "total_secs": 50.0, "segment_count": 20}],
         ]
         run = {"i": 0}
@@ -368,9 +413,9 @@ class TestScoutEndpoints:
             (job_id, project, source_id, "scout_speakers", "complete", _now()),
         )
         conn.commit()
-        _insert_candidate(conn, project, source_id, "SPEAKER_01", "reference_candidates/j/SPEAKER_01.wav",
-                          total_secs=30.0, segment_count=8, scout_job_id=job_id)
-        _insert_candidate(conn, project, source_id, "SPEAKER_00", "reference_candidates/j/SPEAKER_00.wav",
+        j1 = _insert_candidate(conn, project, source_id, "SPEAKER_01", _pool(6.0),
+                               total_secs=30.0, segment_count=8, scout_job_id=job_id)
+        _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(12.0, 8.0),
                           total_secs=120.0, segment_count=40, scout_job_id=job_id)
 
         resp = client.get(f"/projects/{project}/reference/scout")
@@ -380,26 +425,37 @@ class TestScoutEndpoints:
         assert body["source_id"] == source_id
         labels = [s["speaker_label"] for s in body["speakers"]]
         assert labels == ["SPEAKER_00", "SPEAKER_01"]  # sorted by total_secs desc
-        assert body["speakers"][0]["sample_url"] == \
-            f"/projects/{project}/reference/scout/samples/SPEAKER_00"
+        top = body["speakers"][0]
+        assert len(top["pool"]) == 2
+        assert top["pool"][0]["sample_url"] == \
+            f"/projects/{project}/reference/scout/samples/SPEAKER_00/0"
+        assert top["pool"][1]["sample_url"] == \
+            f"/projects/{project}/reference/scout/samples/SPEAKER_00/1"
 
     def test_sample_unknown_speaker_returns_404(self, client, project):
-        resp = client.get(f"/projects/{project}/reference/scout/samples/SPEAKER_99")
+        resp = client.get(f"/projects/{project}/reference/scout/samples/SPEAKER_99/0")
         assert resp.status_code == 404
         assert resp.json()["error"] == "unknown_speaker"
+
+    def test_sample_unknown_index_returns_404(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+        _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(10.0))
+
+        resp = client.get(f"/projects/{project}/reference/scout/samples/SPEAKER_00/9")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "unknown_segment"
 
     def test_sample_streams_wav(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         pdir = db.project_dir(project)
-        montage_rel = "reference_candidates/j1/SPEAKER_00.wav"
-        montage_abs = pdir / montage_rel
-        montage_abs.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(FIXTURES_DIR / "test_audio.wav", montage_abs)
-        _insert_candidate(conn, project, source_id, "SPEAKER_00", montage_rel)
+        scout_job_id = _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(10.0))
+        _write_pool_slices(pdir, scout_job_id, "SPEAKER_00", [0])
 
-        resp = client.get(f"/projects/{project}/reference/scout/samples/SPEAKER_00")
+        resp = client.get(f"/projects/{project}/reference/scout/samples/SPEAKER_00/0")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "audio/wav"
 
@@ -414,11 +470,9 @@ class TestScoutEndpoints:
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         pdir = db.project_dir(project)
-        montage_rel = "reference_candidates/j1/SPEAKER_00.wav"
-        montage_abs = pdir / montage_rel
-        montage_abs.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(FIXTURES_DIR / "test_audio_short.wav", montage_abs)  # 3s
-        _insert_candidate(conn, project, source_id, "SPEAKER_00", montage_rel, total_secs=3.0)
+        # A single ~3s pool turn → assembled reference is under the 5s minimum.
+        scout_job_id = _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(3.0), total_secs=3.0)
+        _write_pool_slices(pdir, scout_job_id, "SPEAKER_00", [0], fixture="test_audio_short.wav")
 
         resp = client.post(f"/projects/{project}/reference/scout/select",
                            json={"speaker_label": "SPEAKER_00"})
@@ -428,16 +482,24 @@ class TestScoutEndpoints:
         assert body["detail"]["minimum_secs"] == 5.0
         assert "duration_secs" in body["detail"]
 
+    def test_select_all_excluded_returns_422(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+        _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(10.0, 8.0), total_secs=120.0)
+
+        resp = client.post(f"/projects/{project}/reference/scout/select",
+                           json={"speaker_label": "SPEAKER_00", "excluded_indices": [0, 1]})
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "reference_too_short"
+
     def test_select_happy_path_sets_reference_and_origin(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
         pdir = db.project_dir(project)
-        montage_rel = "reference_candidates/j1/SPEAKER_02.wav"
-        montage_abs = pdir / montage_rel
-        montage_abs.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(FIXTURES_DIR / "test_audio.wav", montage_abs)  # 10s
-        _insert_candidate(conn, project, source_id, "SPEAKER_02", montage_rel, total_secs=120.0)
+        scout_job_id = _insert_candidate(conn, project, source_id, "SPEAKER_02", _pool(10.0), total_secs=120.0)
+        _write_pool_slices(pdir, scout_job_id, "SPEAKER_02", [0])  # 10s slice
 
         resp = client.post(f"/projects/{project}/reference/scout/select",
                            json={"speaker_label": "SPEAKER_02"})
@@ -449,7 +511,49 @@ class TestScoutEndpoints:
         p = conn.execute("SELECT reference_path, reference_origin FROM projects WHERE id=?", (project,)).fetchone()
         assert p["reference_path"] == "reference.wav"
         origin = json.loads(p["reference_origin"])
-        assert origin == {"type": "diarise_pick", "source_id": source_id, "speaker_label": "SPEAKER_02"}
+        assert origin == {
+            "type": "diarise_pick", "source_id": source_id, "speaker_label": "SPEAKER_02",
+            "excluded_indices": [], "included_indices": [0],
+        }
+
+    def test_select_excludes_wrong_voice_turn(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+        pdir = db.project_dir(project)
+        # Two turns; exclude the longest (index 0). Reference builds from index 1.
+        scout_job_id = _insert_candidate(conn, project, source_id, "SPEAKER_00", _pool(12.0, 8.0), total_secs=120.0)
+        _write_pool_slices(pdir, scout_job_id, "SPEAKER_00", [0, 1])
+
+        resp = client.post(f"/projects/{project}/reference/scout/select",
+                           json={"speaker_label": "SPEAKER_00", "excluded_indices": [0]})
+        assert resp.status_code == 200
+        p = conn.execute("SELECT reference_origin FROM projects WHERE id=?", (project,)).fetchone()
+        origin = json.loads(p["reference_origin"])
+        assert origin["excluded_indices"] == [0]
+        assert origin["included_indices"] == [1]
+
+    def test_scout_endpoint_rejects_zero_speaker_count(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+
+        resp = client.post(f"/projects/{project}/reference/scout",
+                           json={"source_id": source_id, "expected_speaker_count": 0})
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "invalid_speaker_count"
+
+    def test_scout_endpoint_stores_expected_count_on_job(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project, "diarisation_pending", vocals_path="audio/vocals/v.wav")
+
+        resp = client.post(f"/projects/{project}/reference/scout",
+                           json={"source_id": source_id, "expected_speaker_count": 2})
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+        job = conn.execute("SELECT params FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert json.loads(job["params"])["expected_speaker_count"] == 2
 
 
 # ========================================================================
