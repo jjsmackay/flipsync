@@ -1,20 +1,10 @@
 fastapi==0.115.0
 uvicorn==0.30.6
-faster-whisper==1.0.3
-# faster_whisper/utils.py imports requests directly for model downloads.
-# huggingface_hub 1.x dropped requests as a transitive dependency (moved to
-# httpx), so it's no longer pulled in implicitly and must be declared here.
-requests==2.34.2
-# Pinned <4.5: ctranslate2 4.5+ requires cuDNN 9, whereas 4.4.x needs cuDNN 8.
-# faster-whisper 1.0.3 is compatible with this range. CUDA availability is
-# detected via ctranslate2.get_cuda_device_count(); torch is no longer a
-# dependency (it was imported solely for cuda.is_available()).
-ctranslate2<4.5
-# The ctranslate2 4.4.x wheel bundles ONLY the cuDNN front-end stub, not the
-# modular sub-libraries (libcudnn_ops_infer.so.8, libcudnn_cnn_infer.so.8, ...)
-# that get dlopen'd at the first GPU inference — so on a bare python:3.11-slim
-# base the process dies mid-transcription with "Could not load library
-# libcudnn_ops_infer.so.8". Install the full cuDNN 8 runtime (pulls
-# nvidia-cublas-cu12 / nvidia-cuda-nvrtc-cu12 transitively) and put it on
-# LD_LIBRARY_PATH via the Dockerfile so the lazy dlopen resolves.
-nvidia-cudnn-cu12==8.9.7.29
+faster-whisper==1.2.1
+# ctranslate2 4.5+ links against system CUDA 12 + cuDNN 9 (provided by the base
+# image) instead of bundling cuDNN, and its wheel no longer carries the
+# executable-stack ELF flag. That lets this image drop three earlier
+# workarounds: the nvidia-cudnn-cu12 wheel, the LD_LIBRARY_PATH juggling, and
+# fix_execstack.py. faster-whisper 1.2.1 permits ctranslate2<5 and no longer
+# imports `requests` directly (uses huggingface_hub), so that pin is gone too.
+ctranslate2==4.8.1
