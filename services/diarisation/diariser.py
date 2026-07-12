@@ -14,6 +14,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Segments shorter than this produce noisy embeddings — their match_confidence
+# falls back to the cluster-level score instead of their own embedding.
+SHORT_SEGMENT_FALLBACK_SECS = 1.0
+
 
 class DiarisationError(Exception):
     """Base for diarisation failures that carry a stable error code."""
@@ -227,27 +231,32 @@ def run_diarisation(
     logger.info("Extracting reference embedding from %s", reference_path)
     reference_embedding = extract_embedding(embedding_model, reference_path)
 
+    # Extract one embedding per segment (single sequential pass). Each embedding
+    # is used twice: for the segment's own match_confidence and for the
+    # cluster-average speaker_match_confidence — no double extraction.
+    for turn in raw_turns:
+        try:
+            turn["embedding"] = extract_segment_embedding(
+                embedding_model, input_path, turn["start"], turn["end"]
+            )
+        except Exception as exc:
+            # Per-segment failure never fails the job — fall back to cluster score.
+            logger.warning(
+                "Could not extract embedding for %s [%.2f-%.2f]: %s",
+                turn["speaker_label"], turn["start"], turn["end"], exc,
+            )
+            turn["embedding"] = None
+
     # Group turns by speaker
     speakers: dict[str, list[dict]] = {}
     for turn in raw_turns:
         label = turn["speaker_label"]
         speakers.setdefault(label, []).append(turn)
 
-    # Compute per-speaker average embedding
+    # Compute per-speaker average embedding from the successful per-segment embeddings
     speaker_embeddings: dict[str, np.ndarray] = {}
     for label, turns in speakers.items():
-        embeddings = []
-        for turn in turns:
-            try:
-                emb = extract_segment_embedding(
-                    embedding_model, input_path, turn["start"], turn["end"]
-                )
-                embeddings.append(emb)
-            except Exception as exc:
-                logger.warning(
-                    "Could not extract embedding for %s [%.2f-%.2f]: %s",
-                    label, turn["start"], turn["end"], exc,
-                )
+        embeddings = [t["embedding"] for t in turns if t["embedding"] is not None]
         if embeddings:
             avg = np.mean(np.stack(embeddings, axis=0), axis=0)
             speaker_embeddings[label] = avg
@@ -255,11 +264,25 @@ def run_diarisation(
             logger.warning("No embeddings for speaker %s; assigning zero confidence", label)
             speaker_embeddings[label] = np.zeros_like(reference_embedding)
 
-    # Compute cosine similarity for each speaker, clamped to the spec's [0, 1] range.
+    # Cluster-level cosine similarity per speaker, clamped to the spec's [0, 1] range.
+    # Reported on every segment as the secondary `speaker_match_confidence` signal.
     speaker_confidence: dict[str, float] = {
         label: clamp_confidence(cosine_similarity(reference_embedding, emb))
         for label, emb in speaker_embeddings.items()
     }
+
+    # Per-segment match_confidence: the segment's OWN embedding vs the reference.
+    # Fall back to the cluster score for sub-second segments (noisy embeddings)
+    # and for segments whose embedding extraction failed.
+    for turn in raw_turns:
+        cluster_score = speaker_confidence.get(turn["speaker_label"], 0.0)
+        duration = turn["end"] - turn["start"]
+        if turn["embedding"] is None or duration < SHORT_SEGMENT_FALLBACK_SECS:
+            turn["match_confidence"] = cluster_score
+        else:
+            turn["match_confidence"] = clamp_confidence(
+                cosine_similarity(reference_embedding, turn["embedding"])
+            )
 
     logger.info("Speaker confidences: %s", speaker_confidence)
     _progress(50)
@@ -289,7 +312,8 @@ def run_diarisation(
             "start_secs": turn["start"],
             "end_secs": turn["end"],
             "speaker_label": label,
-            "match_confidence": speaker_confidence.get(label, 0.0),
+            "match_confidence": turn["match_confidence"],
+            "speaker_match_confidence": speaker_confidence.get(label, 0.0),
             "wav_path": wav_path,
         })
 

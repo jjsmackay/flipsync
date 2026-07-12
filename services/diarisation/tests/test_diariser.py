@@ -115,6 +115,210 @@ def test_match_confidence_clamped_in_pipeline(sample_wav_path, reference_wav_pat
 
 
 # ---------------------------------------------------------------------------
+# Test: per-segment match scoring vs cluster-level speaker_match_confidence
+# ---------------------------------------------------------------------------
+
+
+def _mock_turn(start: float, end: float):
+    from unittest.mock import MagicMock
+
+    turn = MagicMock()
+    turn.start = start
+    turn.end = end
+    return turn
+
+
+def _mock_pipeline_for(tracks):
+    from unittest.mock import MagicMock
+
+    diarization = MagicMock()
+    diarization.itertracks.return_value = tracks
+    return MagicMock(return_value=diarization)
+
+
+def test_per_segment_score_differs_from_cluster(sample_wav_path, reference_wav_path, output_dir):
+    """A mixed cluster gets one averaged cluster score, but each segment keeps
+    its own embedding's score as match_confidence."""
+    from unittest.mock import MagicMock, patch
+    from diariser import run_diarisation
+
+    mock_pipeline = _mock_pipeline_for([
+        (_mock_turn(0.0, 3.0), None, "SPEAKER_00"),
+        (_mock_turn(4.0, 7.0), None, "SPEAKER_00"),
+    ])
+
+    ref_emb = np.array([1.0, 0.0])
+    emb_match = np.array([1.0, 0.0])   # cosine vs ref = 1.0
+    emb_off = np.array([0.0, 1.0])     # cosine vs ref = 0.0
+    # cluster average = [0.5, 0.5] → cosine vs ref = 1/sqrt(2)
+    expected_cluster = 1.0 / math.sqrt(2.0)
+
+    with patch("diariser.extract_embedding", return_value=ref_emb), patch(
+        "diariser.extract_segment_embedding", side_effect=[emb_match, emb_off]
+    ):
+        segments, _ = run_diarisation(
+            pipeline=mock_pipeline,
+            embedding_model=MagicMock(),
+            input_path=sample_wav_path,
+            reference_path=reference_wav_path,
+            output_dir=output_dir,
+            min_segment_duration=1.0,
+        )
+
+    assert len(segments) == 2
+    seg_a, seg_b = segments
+
+    # Per-segment scores follow each segment's OWN embedding
+    assert abs(seg_a["match_confidence"] - 1.0) < 1e-6
+    assert abs(seg_b["match_confidence"] - 0.0) < 1e-6
+
+    # Cluster score is the averaged-embedding similarity, identical on both
+    assert abs(seg_a["speaker_match_confidence"] - expected_cluster) < 1e-6
+    assert abs(seg_b["speaker_match_confidence"] - expected_cluster) < 1e-6
+
+    # And the per-segment score genuinely differs from the cluster score
+    assert seg_a["match_confidence"] != seg_a["speaker_match_confidence"]
+    assert seg_b["match_confidence"] != seg_b["speaker_match_confidence"]
+
+
+def test_sub_second_segment_falls_back_to_cluster_score(sample_wav_path, reference_wav_path, output_dir):
+    """Segments under 1.0 s use the cluster score — their own embedding is too noisy."""
+    from unittest.mock import MagicMock, patch
+    from diariser import run_diarisation
+
+    mock_pipeline = _mock_pipeline_for([
+        (_mock_turn(0.0, 0.6), None, "SPEAKER_00"),   # 0.6 s — below fallback threshold
+        (_mock_turn(2.0, 5.0), None, "SPEAKER_00"),   # 3.0 s — scored individually
+    ])
+
+    ref_emb = np.array([1.0, 0.0])
+    emb_off = np.array([0.0, 1.0])     # short segment's own embedding (would score 0.0)
+    emb_match = np.array([1.0, 0.0])
+    expected_cluster = 1.0 / math.sqrt(2.0)
+
+    with patch("diariser.extract_embedding", return_value=ref_emb), patch(
+        "diariser.extract_segment_embedding", side_effect=[emb_off, emb_match]
+    ):
+        segments, _ = run_diarisation(
+            pipeline=mock_pipeline,
+            embedding_model=MagicMock(),
+            input_path=sample_wav_path,
+            reference_path=reference_wav_path,
+            output_dir=output_dir,
+            min_segment_duration=0.5,   # let the sub-second segment through
+        )
+
+    assert len(segments) == 2
+    short_seg = next(s for s in segments if s["end_secs"] == 0.6)
+    long_seg = next(s for s in segments if s["end_secs"] == 5.0)
+
+    # Short segment: own embedding ignored, cluster score used
+    assert abs(short_seg["match_confidence"] - expected_cluster) < 1e-6
+    assert short_seg["match_confidence"] == short_seg["speaker_match_confidence"]
+
+    # Long segment: scored on its own embedding
+    assert abs(long_seg["match_confidence"] - 1.0) < 1e-6
+
+
+def test_embedding_failure_falls_back_to_cluster_score(sample_wav_path, reference_wav_path, output_dir):
+    """A per-segment embedding failure gets the cluster score and never fails the job."""
+    from unittest.mock import MagicMock, patch
+    from diariser import run_diarisation
+
+    mock_pipeline = _mock_pipeline_for([
+        (_mock_turn(0.0, 3.0), None, "SPEAKER_00"),   # extraction will fail
+        (_mock_turn(4.0, 7.0), None, "SPEAKER_00"),   # extraction succeeds
+    ])
+
+    ref_emb = np.array([1.0, 0.0])
+    emb_match = np.array([1.0, 0.0])
+    # Cluster average is built from successful embeddings only → [1, 0] → score 1.0
+
+    with patch("diariser.extract_embedding", return_value=ref_emb), patch(
+        "diariser.extract_segment_embedding",
+        side_effect=[RuntimeError("window too small"), emb_match],
+    ):
+        segments, _ = run_diarisation(
+            pipeline=mock_pipeline,
+            embedding_model=MagicMock(),
+            input_path=sample_wav_path,
+            reference_path=reference_wav_path,
+            output_dir=output_dir,
+            min_segment_duration=1.0,
+        )
+
+    # Job completed with both segments despite the extraction failure
+    assert len(segments) == 2
+    failed_seg = next(s for s in segments if s["end_secs"] == 3.0)
+    ok_seg = next(s for s in segments if s["end_secs"] == 7.0)
+
+    assert abs(failed_seg["match_confidence"] - 1.0) < 1e-6
+    assert failed_seg["match_confidence"] == failed_seg["speaker_match_confidence"]
+    assert abs(ok_seg["match_confidence"] - 1.0) < 1e-6
+
+
+def test_all_embeddings_failed_yields_zero_confidence(sample_wav_path, reference_wav_path, output_dir):
+    """If every extraction for a speaker fails, both scores are 0.0 and the job still completes."""
+    from unittest.mock import MagicMock, patch
+    from diariser import run_diarisation
+
+    mock_pipeline = _mock_pipeline_for([
+        (_mock_turn(0.0, 3.0), None, "SPEAKER_00"),
+    ])
+
+    ref_emb = np.array([1.0, 0.0])
+
+    with patch("diariser.extract_embedding", return_value=ref_emb), patch(
+        "diariser.extract_segment_embedding", side_effect=RuntimeError("boom")
+    ):
+        segments, _ = run_diarisation(
+            pipeline=mock_pipeline,
+            embedding_model=MagicMock(),
+            input_path=sample_wav_path,
+            reference_path=reference_wav_path,
+            output_dir=output_dir,
+            min_segment_duration=1.0,
+        )
+
+    assert len(segments) == 1
+    assert segments[0]["match_confidence"] == 0.0
+    assert segments[0]["speaker_match_confidence"] == 0.0
+
+
+def test_segment_dict_includes_both_confidence_fields(sample_wav_path, reference_wav_path, output_dir):
+    """Every returned segment carries both match_confidence and speaker_match_confidence in [0, 1]."""
+    from unittest.mock import MagicMock, patch
+    from diariser import run_diarisation
+
+    mock_pipeline = _mock_pipeline_for([
+        (_mock_turn(0.0, 3.0), None, "SPEAKER_00"),
+        (_mock_turn(4.0, 6.0), None, "SPEAKER_01"),
+    ])
+
+    ref_emb = np.array([1.0, 0.0])
+
+    with patch("diariser.extract_embedding", return_value=ref_emb), patch(
+        "diariser.extract_segment_embedding",
+        side_effect=[np.array([0.9, 0.1]), np.array([-0.5, 0.5])],
+    ):
+        segments, _ = run_diarisation(
+            pipeline=mock_pipeline,
+            embedding_model=MagicMock(),
+            input_path=sample_wav_path,
+            reference_path=reference_wav_path,
+            output_dir=output_dir,
+            min_segment_duration=1.0,
+        )
+
+    assert len(segments) == 2
+    for seg in segments:
+        assert "match_confidence" in seg
+        assert "speaker_match_confidence" in seg
+        assert 0.0 <= seg["match_confidence"] <= 1.0
+        assert 0.0 <= seg["speaker_match_confidence"] <= 1.0
+
+
+# ---------------------------------------------------------------------------
 # Test: coverage_ratio calculation
 # ---------------------------------------------------------------------------
 

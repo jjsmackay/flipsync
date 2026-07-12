@@ -18,9 +18,12 @@ SEGMENT_TRANSITIONS: dict[str, set[str]] = {
     "auto_approved": {"approved", "rejected", "maybe", "pending", "clipping_warning"},
     "below_threshold": {"pending"},
     "clipping_warning": {"approved", "rejected"},
-    # Terminal states — no outgoing transitions
+    # rejected can return to pending (user un-rejects; misclick recovery).
+    "rejected": {"pending"},
+    # Terminal state — no outgoing transitions. Records a fact about the
+    # audio (silent after trimming), not a reviewer decision, so it is not
+    # eligible for the rejected -> pending undo.
     "auto_rejected": set(),
-    "rejected": set(),
 }
 
 # Transitions valid from bulk actions (subset of all transitions)
@@ -29,7 +32,7 @@ BULK_ACTION_SOURCES: dict[str, set[str]] = {
     "approve": {"pending", "maybe", "clipping_warning", "auto_approved"},
     "reject": {"pending", "maybe", "clipping_warning", "approved", "auto_approved"},
     "maybe": {"pending", "approved", "auto_approved"},
-    "pending": {"maybe", "auto_approved"},
+    "pending": {"maybe", "auto_approved", "rejected"},
 }
 
 

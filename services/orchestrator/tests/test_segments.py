@@ -222,6 +222,30 @@ class TestPatchSegment:
         resp = client.patch(f"/projects/{project}/segments/bad-id", json={"status": "approved"})
         assert resp.status_code == 404
 
+    def test_rejected_to_pending_returns_200(self, client, project):
+        """Misclick recovery: a rejected segment can be un-rejected back to pending."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg_id = _insert_segment(conn, project, source_id, status="rejected")
+
+        resp = client.patch(f"/projects/{project}/segments/{seg_id}", json={"status": "pending"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "pending"
+        updated = conn.execute("SELECT status FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert updated["status"] == "pending"
+
+    def test_auto_rejected_to_pending_returns_409(self, client, project):
+        """auto_rejected stays terminal — it's a fact about the audio, not undoable."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        seg_id = _insert_segment(conn, project, source_id, status="auto_rejected")
+
+        resp = client.patch(f"/projects/{project}/segments/{seg_id}", json={"status": "pending"})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "invalid_transition"
+
 
 class TestBulkAction:
     def test_bulk_approve(self, client, project):
@@ -263,6 +287,24 @@ class TestBulkAction:
 
         assert conn.execute("SELECT status FROM segments WHERE id=?", (approved_id,)).fetchone()[0] == "approved"
         assert conn.execute("SELECT status FROM segments WHERE id=?", (maybe_id,)).fetchone()[0] == "pending"
+
+    def test_bulk_pending_action_affects_rejected_when_filtered(self, client, project):
+        """Bulk un-reject: 'pending' action reaches 'rejected' segments when explicitly filtered."""
+        import db
+        conn = db.get_conn(project)
+        source_id = _insert_source(conn, project)
+        rejected_id = _insert_segment(conn, project, source_id, status="rejected")
+        approved_id = _insert_segment(conn, project, source_id, status="approved")
+
+        resp = client.post(f"/projects/{project}/segments/bulk", json={
+            "action": "pending",
+            "filter": {"status": "rejected"},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["affected_count"] == 1
+
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (rejected_id,)).fetchone()[0] == "pending"
+        assert conn.execute("SELECT status FROM segments WHERE id=?", (approved_id,)).fetchone()[0] == "approved"
 
     def test_bulk_invalid_action_returns_422(self, client, project):
         resp = client.post(f"/projects/{project}/segments/bulk", json={"action": "vanish"})

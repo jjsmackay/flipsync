@@ -464,7 +464,7 @@ Apply an action to multiple segments at once.
 }
 ```
 
-`action` must be `approve`, `reject`, `maybe`, or `pending`. Each action respects the segment status transition rules — it only affects segments whose current status allows that transition. For example, `approve` only affects segments in `pending`, `maybe`, `auto_approved`, or `clipping_warning` status; `pending` only affects segments in `maybe` or `auto_approved` status (the `below_threshold` → `pending` transition is handled by the threshold re-evaluation in `PATCH /projects`, not by bulk actions). Segments in ineligible statuses are silently skipped. The filter uses the same parameters as `GET /segments`. A bulk `approve` with `filter: {"status": "auto_approved"}` is the "confirm all auto-approved" operation.
+`action` must be `approve`, `reject`, `maybe`, or `pending`. Each action respects the segment status transition rules — it only affects segments whose current status allows that transition. For example, `approve` only affects segments in `pending`, `maybe`, `auto_approved`, or `clipping_warning` status; `pending` only affects segments in `maybe`, `auto_approved`, or `rejected` status (the `below_threshold` → `pending` transition is handled by the threshold re-evaluation in `PATCH /projects`, not by bulk actions). Segments in ineligible statuses are silently skipped. The filter uses the same parameters as `GET /segments`. A bulk `approve` with `filter: {"status": "auto_approved"}` is the "confirm all auto-approved" operation.
 
 **Response 200:**
 ```json
@@ -645,7 +645,7 @@ Returns 200 when the service is ready. Note: on first run, the service downloads
 
 **Response 202:** `{ "job_id": "..." }`
 
-**Speaker matching method:** The service extracts a single speaker embedding from the reference clip. For each diarised speaker label, it collects all segments attributed to that speaker and computes an **average embedding** across those segments. The cosine similarity between the reference embedding and each speaker's average embedding determines per-speaker match confidence. This average is then assigned to every individual segment belonging to that speaker. (A future refinement could compute per-segment embeddings for more granular scoring, but per-speaker averaging is sufficient and faster for v1.)
+**Speaker matching method:** The service extracts a single speaker embedding from the reference clip, plus one embedding per diarised segment. Each segment's `match_confidence` is the cosine similarity between its own embedding and the reference embedding. The per-speaker **average embedding** (computed from the same per-segment embeddings) is scored against the reference too and reported on every segment as `speaker_match_confidence` — a secondary cluster-level signal. Segments shorter than 1.0 s, or whose embedding extraction fails, fall back to the cluster score for `match_confidence`. See `spec/pipeline.md` §Phase 2 for detail.
 
 **Segment WAV files:** The service creates the `output_dir` if it doesn't exist. Each segment is written as `{output_dir}/{segment_id}.wav` where `segment_id` is the full UUID (not truncated). The service generates UUIDs for segments — the orchestrator uses these as primary keys when writing to the database.
 
@@ -665,6 +665,7 @@ On completion:
       "end_secs": 146.88,
       "speaker_label": "SPEAKER_00",
       "match_confidence": 0.91,
+      "speaker_match_confidence": 0.88,
       "wav_path": "/data/projects/{project_id}/segments/raw/7f3c2a1b-4d5e-6f7a-8b9c-0d1e2f3a4b5c.wav"
     }
   ],
@@ -672,6 +673,8 @@ On completion:
   "error": null
 }
 ```
+
+`match_confidence` is the segment's own embedding scored against the reference; `speaker_match_confidence` is the cluster-level (per-speaker average embedding) score for the speaker that segment belongs to — a secondary signal, identical across all segments of the same speaker label. For segments shorter than 1.0 s or whose embedding extraction failed, `match_confidence` equals `speaker_match_confidence` (cluster fallback).
 
 The orchestrator writes all segments to the database from this response. It copies `wav_path` to the `raw_path` column. Segments with `match_confidence` below `project.match_threshold` are written with status `below_threshold`; others with status `pending`. The orchestrator also updates the source's `coverage_ratio` column from the response.
 

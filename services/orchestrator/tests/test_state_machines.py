@@ -56,12 +56,13 @@ class TestSegmentTransitions:
     def test_clipping_warning_to_rejected(self):
         assert validate_segment_transition("clipping_warning", "rejected") is True
 
+    def test_rejected_to_pending_is_valid(self):
+        """Misclick recovery: a rejected segment can be un-rejected back to pending."""
+        assert validate_segment_transition("rejected", "pending") is True
+
     # Invalid transitions
     def test_rejected_to_approved_is_invalid(self):
         assert validate_segment_transition("rejected", "approved") is False
-
-    def test_rejected_to_pending_is_invalid(self):
-        assert validate_segment_transition("rejected", "pending") is False
 
     def test_rejected_to_maybe_is_invalid(self):
         assert validate_segment_transition("rejected", "maybe") is False
@@ -96,11 +97,16 @@ class TestSegmentTransitions:
                 assert validate_segment_transition(from_status, to_status), \
                     f"Expected {from_status} -> {to_status} to be valid"
 
-    def test_rejected_has_no_valid_transitions(self):
-        assert SEGMENT_TRANSITIONS["rejected"] == set()
+    def test_rejected_only_transitions_to_pending(self):
+        assert SEGMENT_TRANSITIONS["rejected"] == {"pending"}
 
     def test_auto_rejected_has_no_valid_transitions(self):
+        """auto_rejected records a fact about the audio (silent after trim),
+        not a reviewer decision — it stays terminal even though rejected
+        can now be un-done."""
         assert SEGMENT_TRANSITIONS["auto_rejected"] == set()
+        for to_status in ("pending", "approved", "rejected", "maybe"):
+            assert validate_segment_transition("auto_rejected", to_status) is False
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +228,10 @@ class TestBulkActionSources:
         assert "maybe" in BULK_ACTION_SOURCES["reject"]
         assert "approved" in BULK_ACTION_SOURCES["reject"]
 
-    def test_pending_action_only_moves_maybe(self):
+    def test_pending_action_allowed_statuses(self):
         assert "maybe" in BULK_ACTION_SOURCES["pending"]
+        assert "auto_approved" in BULK_ACTION_SOURCES["pending"]
+        assert "rejected" in BULK_ACTION_SOURCES["pending"]
         assert "approved" not in BULK_ACTION_SOURCES["pending"]
         assert "below_threshold" not in BULK_ACTION_SOURCES["pending"]
 
@@ -253,4 +261,4 @@ class TestAutoApprovedTransitions:
         assert "auto_approved" in BULK_ACTION_SOURCES["maybe"]
 
     def test_bulk_pending_includes_auto_approved(self):
-        assert BULK_ACTION_SOURCES["pending"] == {"maybe", "auto_approved"}
+        assert BULK_ACTION_SOURCES["pending"] == {"maybe", "auto_approved", "rejected"}

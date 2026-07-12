@@ -260,13 +260,14 @@ auto_approved    -> clipping_warning (after cleanup step flags it)
 below_threshold  -> pending          (when user lowers match threshold)
 clipping_warning -> approved         (user accepts the risk)
 clipping_warning -> rejected
+rejected         -> pending          (user un-rejects; misclick recovery)
 ```
 
 `auto_approved` behaves like `approved` for export and duration statistics, but is visually distinct in the UI and freely demotable. Only the system moves segments *into* `auto_approved`, and only from `pending`; the `PATCH /segments` endpoint rejects user requests to set it (409).
 
 `auto_rejected` is a terminal state with no exit. These segments were silent after trimming — they contain no usable audio. If the user re-runs step 2 for the source, all segments (including `auto_rejected`) for that source are deleted and new segments are created from scratch.
 
-`rejected` is also terminal for user-initiated transitions. A rejected segment can only return to review if the source is reprocessed (which deletes and recreates all segments for that source). This is intentional — reject means reject.
+`rejected` can be returned to `pending` by the user (undo). This exists purely as misclick recovery — reject is a single keystroke in the review flow, and without an undo the only way back is reprocessing the entire source. `auto_rejected` remains terminal: it records a fact about the audio (silent after trimming), not a reviewer decision, so there is nothing to "undo."
 
 The orchestrator rejects any transition not in this list.
 
