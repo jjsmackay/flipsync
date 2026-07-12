@@ -1243,6 +1243,27 @@ async def _handle_export(
         _recompute_project_status(project_id)
         return
 
+    # Refuse to build an export that would silently omit approved-but-
+    # untranscribed segments (the manifest drops NULL-transcript rows). The
+    # PATCH/bulk guards prevent new ones; this catches legacy data approved
+    # before those guards existed. Fail loudly with the offending ids.
+    untranscribed = [
+        seg["id"]
+        for seg in approved
+        if seg["transcript"] is None and seg["transcript_edited"] is None
+    ]
+    if untranscribed:
+        preview = ", ".join(untranscribed[:5])
+        more = "" if len(untranscribed) <= 5 else f" (+{len(untranscribed) - 5} more)"
+        _fail_job(
+            project_id,
+            job_id,
+            f"untranscribed_approved_segments: {len(untranscribed)} approved "
+            f"segment(s) have no transcript: {preview}{more}. Transcribe or reject them.",
+        )
+        _recompute_project_status(project_id)
+        return
+
     pdir = project_dir(project_id)
     data_prefix = _data_prefix()
     export_dir = pdir / "export"

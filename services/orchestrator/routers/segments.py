@@ -55,6 +55,11 @@ VALID_ORDERS = {"asc", "desc"}
 DEFAULT_STATUS_FILTER = ("pending", "maybe")
 
 
+def _has_no_transcript(seg) -> bool:
+    """True when a segment has neither a machine nor a user-edited transcript."""
+    return seg["transcript"] is None and seg["transcript_edited"] is None
+
+
 @router.get("")
 async def list_segments(
     project_id: str,
@@ -214,6 +219,15 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
                 f"Cannot transition from '{seg['status']}' to '{body.status}'.",
                 {"from": seg["status"], "to": body.status},
             )
+        # An approved segment must carry a transcript — export builds the manifest
+        # from COALESCE(transcript_edited, transcript) and silently omits NULLs, so
+        # approving an untranscribed segment would drop it from the dataset unseen.
+        if body.status == "approved" and _has_no_transcript(seg):
+            raise AppError(
+                409, "no_transcript",
+                "Cannot approve a segment with no transcript. Transcribe it first.",
+                {"segment_id": segment_id},
+            )
         updates["status"] = body.status
 
     # Distinguish an absent field (no change) from an explicit null (clear the
@@ -317,6 +331,19 @@ async def bulk_action(project_id: str, body: BulkRequest):
         params.append(f.max_duration)
 
     where = " AND ".join(conditions)
+
+    # Approving requires a transcript (see PATCH guard). Count the transcript-less
+    # matches so the caller can surface them, then exclude them from the UPDATE.
+    skipped_no_transcript = 0
+    if body.action == "approve":
+        skipped_no_transcript = conn.execute(
+            f"SELECT COUNT(*) FROM segments WHERE {where} "
+            "AND transcript IS NULL AND transcript_edited IS NULL",
+            params,
+        ).fetchone()[0]
+        conditions.append("(transcript IS NOT NULL OR transcript_edited IS NOT NULL)")
+        where = " AND ".join(conditions)
+
     now = utc_now()
     result = conn.execute(
         f"UPDATE segments SET status=?, updated_at=? WHERE {where}",
@@ -328,4 +355,4 @@ async def bulk_action(project_id: str, body: BulkRequest):
     if affected > 0:
         invalidate_export(project_id)
 
-    return {"affected_count": affected}
+    return {"affected_count": affected, "skipped_no_transcript": skipped_no_transcript}

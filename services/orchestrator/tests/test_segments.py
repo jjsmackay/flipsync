@@ -192,7 +192,7 @@ class TestPatchSegment:
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project)
-        seg_id = _insert_segment(conn, project, source_id, status="pending")
+        seg_id = _insert_segment(conn, project, source_id, status="pending", transcript="hello")
 
         resp = client.patch(f"/projects/{project}/segments/{seg_id}", json={"status": "approved"})
         assert resp.status_code == 200
@@ -253,7 +253,8 @@ class TestBulkAction:
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project)
         for _ in range(5):
-            _insert_segment(conn, project, source_id, status="pending", confidence=0.95)
+            _insert_segment(conn, project, source_id, status="pending", confidence=0.95,
+                            transcript="words")
 
         resp = client.post(f"/projects/{project}/segments/bulk", json={
             "action": "approve",
@@ -332,7 +333,10 @@ class TestAutoApprovedStatus:
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project)
-        seg = _insert_segment(conn, project, source_id, status="auto_approved")
+        # auto_approved always carries a transcript; include one so the
+        # approve target isn't blocked by the no-transcript guard.
+        seg = _insert_segment(conn, project, source_id, status="auto_approved",
+                              transcript="auto text")
 
         resp = client.patch(f"/projects/{project}/segments/{seg}", json={"status": target})
         assert resp.status_code == 200
@@ -411,7 +415,8 @@ class TestBulkAutoApproved:
         import db
         conn = db.get_conn(project)
         source_id = _insert_source(conn, project)
-        seg = _insert_segment(conn, project, source_id, status="auto_approved")
+        seg = _insert_segment(conn, project, source_id, status="auto_approved",
+                              transcript="auto text")
 
         resp = client.post(f"/projects/{project}/segments/bulk",
                            json={"action": "approve", "filter": {"status": "auto_approved"}})
