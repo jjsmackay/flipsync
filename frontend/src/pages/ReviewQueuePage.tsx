@@ -14,6 +14,7 @@ import { KeyboardHelp } from '../components/review/KeyboardHelp'
 import { ExportButton } from '../components/export/ExportButton'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { formatDuration } from '../utils/format'
+import { isWorkQueueFilter } from '../utils/reviewFilters'
 
 
 export function ReviewQueuePage() {
@@ -201,8 +202,9 @@ export function ReviewQueuePage() {
   const lowCoverage = sources.some(s => s.low_coverage_warning)
 
   // "All reviewed" completion state: the work queue (pending/maybe) is empty but the
-  // project does have segments.
-  const isWorkQueue = filter.status.includes('pending') || filter.status.includes('maybe')
+  // project does have segments. Set comparison, not substring — 'All' plus restrictive
+  // secondary filters must show the no-match state, not "You've reviewed all segments".
+  const isWorkQueue = isWorkQueueFilter(filter.status)
   const showCompletion =
     !segmentsLoading &&
     !fetchError &&

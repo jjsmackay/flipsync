@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useProjectPolling } from '../hooks/useProjectPolling'
-import { reprocessSource, runTranscription, triggerExport, ApiError } from '../api/client'
+import { reprocessSource, runTranscription, triggerExport, startScout, ApiError } from '../api/client'
 import type { FailedJob } from '../types/api'
+import { retryPlan } from '../utils/retry'
 import { FailedJobsPanel } from '../components/project/FailedJobsPanel'
 import { StatsPanel } from '../components/project/StatsPanel'
 import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel'
@@ -75,18 +76,30 @@ export function ProjectDashboardPage() {
   }
 
   async function handleRetryJob(job: FailedJob) {
-    if (!projectId) return
+    const plan = retryPlan(job)
+    if (!projectId || !plan) return
     setReprocessError(null)
     setRetryingJobId(job.id)
     try {
-      if (job.type === 'transcription_bulk' || job.type === 'transcription') {
+      if (plan.kind === 'transcription') {
         await runTranscription(projectId)
-      } else if (job.type === 'export') {
+      } else if (plan.kind === 'export') {
         await triggerExport(projectId)
-      } else if (job.source_id) {
-        // vocal_separation / extract_audio re-run separation; diarisation re-runs itself.
-        const steps = job.type === 'diarisation' ? ['diarisation'] : ['separation']
-        await reprocessSource(projectId, job.source_id, steps, undefined, true)
+      } else if (plan.kind === 'scout') {
+        await startScout(projectId, plan.sourceId)
+      } else {
+        // Reprocess retries go through the same confirm flow as a manual
+        // reprocess: submit without confirm, surface the invalidation dialog
+        // on 409 rather than silently wiping approvals.
+        try {
+          await submitReprocess(plan.sourceId, plan.steps, false)
+        } catch (err) {
+          if (err instanceof ApiError && err.error === 'would_invalidate_approvals') {
+            setReprocessConfirm({ sourceId: plan.sourceId, steps: plan.steps, message: err.message })
+            return
+          }
+          throw err
+        }
       }
       void refetch()
     } catch (err) {
