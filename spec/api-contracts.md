@@ -662,6 +662,128 @@ Download the export archive as a `.tar.gz` file.
 
 ---
 
+### Models (v1.5)
+
+#### `POST /projects/{project_id}/models`
+
+Trigger an XTTS-v2 fine-tune. Runs a dataset build, then submits a `finetune` job to the XTTS service.
+
+**Request (all fields optional; defaults shown):**
+```json
+{
+  "dataset": { "mode": "approved", "min_confidence": null },
+  "params": { "epochs": 10, "batch_size": 3, "grad_accum": 1, "learning_rate": 5e-6 }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dataset.mode` | string | `approved` | `approved`: segments with status `approved`. `auto`: segments with `match_confidence >= min_confidence` and status not `rejected`/`auto_rejected` (review not required) |
+| `dataset.min_confidence` | float | 0.85 | `auto` mode only: match-confidence floor. Ignored in `approved` mode |
+| `params.epochs` | int | 10 | Training epochs |
+| `params.batch_size` | int | 3 | Per-step batch size |
+| `params.grad_accum` | int | 1 | Gradient accumulation steps |
+| `params.learning_rate` | float | 5e-6 | Learning rate |
+
+Dataset filters apply in both modes: segments outside 1–11 seconds and segments flagged `cleanup_error` are excluded. Drop counts are recorded in the dataset manifest so a thin dataset is visible, not silent.
+
+**Response 409** `insufficient_dataset` if the selected segments total under 300 seconds. `detail`: `{ "selected_duration_secs": 214.7, "required_secs": 300 }`.
+**Response 409** `finetune_in_progress` if a model for this project is `pending` or `training`.
+**Response 503** `xtts_unavailable` if the XTTS service is not deployed or unhealthy.
+
+**Response 202:**
+```json
+{
+  "model": { "id": "...", "status": "pending", "dataset_mode": "approved" },
+  "enqueued_jobs": [
+    { "id": "...", "type": "dataset_build" },
+    { "id": "...", "type": "finetune" }
+  ]
+}
+```
+
+---
+
+#### `GET /projects/{project_id}/models`
+
+List models for a project.
+
+**Response 200:** `{ "models": [ ... ] }` — full rows as defined in `data-models.md` §models.
+
+---
+
+#### `DELETE /projects/{project_id}/models/{model_id}`
+
+Delete a model row and its checkpoint directory.
+
+**Response 409** `model_training` if the model is `pending` or `training` — cancel the job first.
+**Response 204** on success.
+
+---
+
+### Previews (v1.5)
+
+#### `POST /projects/{project_id}/previews`
+
+Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
+
+**Request:**
+```json
+{
+  "text": "This is what the cloned voice sounds like.",
+  "model_id": null,
+  "conditioning": { "source": "segments_cleaned", "segment_count": 5 }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `text` | string | required | 1–500 characters |
+| `model_id` | string or null | null | Fine-tuned model to synthesise with; null = base model zero-shot |
+| `conditioning.source` | string | best available | `reference_clip`, `segments_raw`, or `segments_cleaned`. Default resolves to the best available stage (cleaned > raw > reference) |
+| `conditioning.segment_count` | int | 5 | Segment sources only: top-N segments by match confidence, duration 2–12 s |
+
+The orchestrator resolves the conditioning source to absolute WAV paths. The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
+
+**Response 409** `conditioning_unavailable` if the requested source has no audio yet (e.g. `segments_raw` before diarisation has run).
+**Response 409** `model_not_ready` if `model_id` refers to a model that is not `ready`.
+**Response 503** `xtts_unavailable` if the XTTS service is not deployed or unhealthy.
+
+**Response 202:** `{ "enqueued_job": { "id": "...", "type": "preview" } }` — the preview id is the job id.
+
+---
+
+#### `GET /projects/{project_id}/previews`
+
+List recent previews (derived from `preview` jobs).
+
+**Query params:** `limit` (default 20).
+
+**Response 200:**
+```json
+{
+  "previews": [
+    {
+      "id": "...",
+      "status": "complete",
+      "text": "...",
+      "model_id": null,
+      "conditioning": { "source": "segments_cleaned", "segment_count": 5 },
+      "created_at": "2026-07-12T04:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+#### `GET /projects/{project_id}/previews/{preview_id}/audio`
+
+**Response 404** until the preview job completes.
+**Response 200:** `audio/wav`, full file (no Range support, consistent with segment audio).
+
+---
+
 ### Jobs
 
 #### `GET /projects/{project_id}/jobs`
@@ -1079,10 +1201,127 @@ The orchestrator updates segment statuses from this response: `auto_rejected` se
 
 ---
 
+### XTTS Service (port 8005) — v1.5
+
+#### `GET /health`
+
+**Response 200:** `{ "status": "ok" }`
+
+**Response 503** `cpml_not_accepted` if `XTTS_ACCEPT_CPML` is not set. The service still starts and serves this from `/health` (and from `POST /jobs`) until the licence is accepted and the container restarted — a live, diagnosable 503 rather than a crash loop. The orchestrator treats the failing health check as an unhealthy service, will not submit jobs, and the Models/Previews endpoints return 503 `xtts_unavailable`.
+
+#### `POST /jobs`
+
+Two job types, discriminated by `type`.
+
+**Request (`finetune`):**
+```json
+{
+  "job_id": "...",
+  "type": "finetune",
+  "manifest_path": "/data/projects/{project_id}/models/{model_id}/dataset.json",
+  "output_dir": "/data/projects/{project_id}/models/{model_id}",
+  "params": {
+    "epochs": 10,
+    "batch_size": 3,
+    "grad_accum": 1,
+    "learning_rate": 5e-6,
+    "language": "en",
+    "eval_split": 0.1
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `job_id` | string | yes | UUID assigned by orchestrator |
+| `manifest_path` | string | yes | Dataset manifest. Same schema as the export manifest, except `audio_file` values are absolute paths |
+| `output_dir` | string | yes | Directory for the checkpoint bundle; created if missing |
+| `params.language` | string | yes | From project settings |
+| `params.eval_split` | float | no | Fraction of segments held out for eval (default 0.1) |
+
+The service converts the manifest to a Coqui formatter CSV, splits train/eval, and runs the XTTS-v2 `GPTTrainer` recipe. Remaining params as documented on `POST /projects/{id}/models`.
+
+**Request (`synthesise`):**
+```json
+{
+  "job_id": "...",
+  "type": "synthesise",
+  "text": "This is what the cloned voice sounds like.",
+  "language": "en",
+  "reference_wavs": ["/data/projects/{project_id}/segments/raw/7f3c2a1b-1234-5678-9abc-def012345678.wav"],
+  "checkpoint_dir": null,
+  "output_path": "/data/projects/{project_id}/previews/{job_id}.wav",
+  "params": { "temperature": 0.65 }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `reference_wavs` | array | yes | 1–10 WAV paths for speaker conditioning latents |
+| `checkpoint_dir` | string or null | no | Fine-tuned checkpoint bundle; null = base model (zero-shot) |
+| `output_path` | string | yes | Absolute path for the output WAV; parent dir created if missing |
+| `params.temperature` | float | no | Sampling temperature (default 0.65) |
+
+**Response 202:** `{ "job_id": "..." }`
+
+---
+
+#### `GET /jobs/{job_id}`
+
+**Running (`finetune`):**
+```json
+{
+  "job_id": "...",
+  "status": "running",
+  "progress": {
+    "phase": "training",
+    "epoch": 3,
+    "total_epochs": 10,
+    "step": 412,
+    "total_steps": 1380,
+    "train_loss": 2.84,
+    "eval_loss": 3.01,
+    "eta_secs": 5400
+  },
+  "result": null,
+  "error": null
+}
+```
+
+`phase` is one of `preparing` (model download, manifest→CSV conversion), `training`, `packaging`.
+
+**Complete (`finetune`):**
+```json
+{
+  "job_id": "...",
+  "status": "complete",
+  "result": {
+    "checkpoint_dir": "/data/projects/{project_id}/models/{model_id}",
+    "model_path": ".../model.pth",
+    "config_path": ".../config.json",
+    "vocab_path": ".../vocab.json",
+    "speaker_latents_path": ".../speaker_latents.pt",
+    "final_eval_loss": 2.71
+  },
+  "error": null
+}
+```
+
+**Complete (`synthesise`):** `result` is `{ "output_path": "...", "duration_secs": 4.2 }`.
+
+**Failure modes (`finetune`):**
+
+- **VRAM preflight failure** (before training starts): `status: "failed"`, `error: "insufficient_vram: 12 GB required, 8 GB available"`. Not retryable.
+- **CUDA OOM during training:** `status: "failed"`, `error: "cuda_oom"`, plus `"retry_with": { "batch_size": 1, "grad_accum": 3 }`. The orchestrator resubmits once with the suggested values — the same pattern as vocal separation's `retry_with_chunk_secs`. A second OOM is terminal.
+
+---
+
 ## Polling behaviour
 
 The browser polls `GET /projects/{project_id}` every 3 seconds when any job is active. When no jobs are active, polling stops. The UI resumes polling when the user triggers a pipeline action.
 
 The orchestrator polls processing services every 2 seconds per active job. This is an internal concern — the browser never polls services directly.
+
+**v1.5 exception:** `finetune` jobs run for hours and are polled every 10 seconds. The orchestrator maps the service's progress object to a 0–100 value for `jobs.progress` and persists the full object to `jobs.progress_detail` so the dashboard survives refreshes.
 
 **Future:** WebSocket or SSE for push-based progress updates is a natural v2 improvement. The polling architecture is deliberately simple for v1 and the upgrade path is additive (new endpoint, same data shape).

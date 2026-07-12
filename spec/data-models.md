@@ -106,7 +106,8 @@ CREATE TABLE segments (
     project_id              TEXT NOT NULL REFERENCES projects(id),
     source_id               TEXT NOT NULL REFERENCES sources(id),
     raw_path                TEXT NOT NULL,      -- segments/raw/{id}.wav
-    export_path             TEXT,               -- export/{id}.wav, set after cleanup
+    export_path             TEXT,               -- export/{id}.wav, set after export cleanup
+    cleaned_path            TEXT,               -- cleaned/{id}.wav, dataset cleanup cache (migration 009)
 
     -- Diarisation
     start_secs              REAL NOT NULL,
@@ -169,6 +170,37 @@ CREATE TABLE jobs (
     completed_at    TEXT
 );
 ```
+
+**v1.5 addition:** a `progress_detail TEXT` column (JSON, nullable) is added by migration — rich progress for long-running jobs (fine-tune epoch/loss/ETA). `progress` remains the 0–100 integer.
+
+---
+
+### `models` (v1.5)
+
+One row per XTTS-v2 fine-tuned model.
+
+```sql
+CREATE TABLE models (
+    id                    TEXT PRIMARY KEY,   -- UUID
+    project_id            TEXT NOT NULL REFERENCES projects(id),
+    status                TEXT NOT NULL,      -- see Model status
+    dataset_mode          TEXT NOT NULL,      -- approved | auto
+    min_confidence        REAL,               -- auto mode only; NULL for approved
+    segment_count         INTEGER,            -- set after dataset build
+    dataset_duration_secs REAL,               -- set after dataset build
+    dataset_manifest_path TEXT,               -- models/{id}/dataset.json
+    checkpoint_dir        TEXT,               -- models/{id}/, set when ready
+    params                TEXT,               -- JSON hyperparameters
+    eval_loss             REAL,               -- final eval loss, set when ready
+    error                 TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL
+);
+```
+
+**Dataset manifest** (`models/{id}/dataset.json`): same schema as the export manifest, with two differences — `audio_file` values are absolute paths (the inter-service interface), and a `selection` block records `{ mode, min_confidence, dropped: { too_short, too_long, flagged } }` so every model documents exactly what it was trained on.
+
+**Dataset build** selects segments (`approved` mode = status `approved` or `auto_approved`; `auto` mode = confidence floor, status not `rejected`/`auto_rejected`), runs cleanup for any segment lacking cleaned dataset audio, then writes the manifest. Segments in `clipping_warning` status are excluded from `approved`-mode datasets (training quality), unlike export. Cleaned dataset WAVs live in the project's `cleaned/` directory (`cleaned/{id}.wav`), tracked by `segments.cleaned_path` — a cache fully decoupled from `export/` and `export_path`, so re-exports never delete dataset audio and dataset builds never pollute the live export set. Dataset cleanup **never mutates segment review status**: on success or clipping the WAV is recorded in `cleaned_path` (clipped audio is included in datasets); on an FFmpeg error or silent-after-trim the row is left untouched and the segment simply drops out of the dataset. Export is a separate path with its own staged cleanup into `export/`.
 
 ---
 
@@ -323,6 +355,20 @@ The orchestrator rejects any transition not in this list.
 
 ---
 
+### Model status (v1.5)
+
+| Value | Meaning |
+|-------|---------|
+| `pending` | Row created; dataset build queued or running |
+| `training` | `finetune` job running on the XTTS service |
+| `ready` | Checkpoint written; usable for previews |
+| `failed` | Dataset build or training failed; `error` holds the message |
+| `cancelled` | User cancelled the job |
+
+Transitions: `pending → training | failed | cancelled`; `training → ready | failed | cancelled`. Deleting a model removes the row and its checkpoint directory; deletion is rejected (409) while `pending` or `training`.
+
+---
+
 ### Job types
 
 | Value | Triggered by | Execution |
@@ -334,6 +380,9 @@ The orchestrator rejects any transition not in this list.
 | `transcription_bulk` | Step 2 complete or user triggers | External service (port 8003) |
 | `transcription_segment` | User re-transcribes a single segment | External service (port 8003) |
 | `export` | User triggers export | External service (port 8004) for cleanup, then in-process for manifest + archive |
+| `dataset_build` (v1.5) | Fine-tune trigger | External service (port 8004) for segments lacking cleaned audio, then in-process manifest write |
+| `finetune` (v1.5) | User triggers fine-tune | External service (port 8005) |
+| `preview` (v1.5) | User requests preview synthesis | External service (port 8005) |
 
 `extract_audio` and the manifest/archive phase of `export` run as FFmpeg subprocesses inside the orchestrator. They follow the same job lifecycle (create row, update progress, mark complete/failed) but do not involve polling an external service — the orchestrator runs the subprocess in a background `asyncio` task and updates the job row directly on completion.
 
@@ -441,3 +490,6 @@ Migration log:
 | 005 | `005_semantic_source_statuses.sql` | Renames positional step1/step2 column names and source statuses to `separation`/`diarisation` |
 | 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
 | 007 | `007_scout_pool.sql` | Rebuilds `speaker_candidates`: replaces `montage_path` with `pool_json` (curatable per-turn scout pool). Candidate rows are transient, so the table is dropped and recreated |
+| 008 | `008_whisper_tuning.sql` | Whisper transcription tuning as project config (`transcription_batch_size`, `transcription_compute_type`) |
+| 009 | `009_xtts_models.sql` | v1.5: adds the `models` table and the `jobs.progress_detail` column. Both additive |
+| 010 | `010_cleaned_path.sql` | v1.5: `segments.cleaned_path TEXT NULL` — dataset cleanup cache (`cleaned/{id}.wav`), decoupling dataset builds from `export/`/`export_path` |

@@ -22,6 +22,7 @@ SERVICE_URLS: dict[str, str] = {
     "diarisation": os.environ.get("DIARISATION_URL", "http://diarisation:8002"),
     "transcription": os.environ.get("TRANSCRIPTION_URL", "http://transcription:8003"),
     "cleanup": os.environ.get("CLEANUP_URL", "http://cleanup:8004"),
+    "xtts": os.environ.get("XTTS_URL", "http://xtts:8005"),
 }
 
 # Shared async client — created lazily, reused across requests.
@@ -80,6 +81,22 @@ async def probe_health(service_name: str) -> bool:
     async with httpx.AsyncClient(timeout=5) as client:
         resp = await client.get(f"{url}/health")
         return resp.status_code == 200
+
+
+async def is_healthy(service_name: str, timeout_secs: float = 3.0) -> bool:
+    """Single GET /health probe. Returns True iff the service responds 200.
+
+    Used as a readiness gate for the optional XTTS service (Models/Previews
+    endpoints), which is profile-gated and may be absent. Unlike check_health,
+    this does not retry — it is a point-in-time liveness check.
+    """
+    url = get_service_url(service_name)
+    client = _get_client()
+    try:
+        resp = await client.get(f"{url}/health", timeout=timeout_secs)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
 async def submit_job(service_name: str, payload: dict) -> dict:

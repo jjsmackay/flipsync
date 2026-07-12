@@ -184,6 +184,45 @@ describe('deriveStage', () => {
     expect(deriveStage(p)).toBe('export')
   })
 
+  // --- Voice jobs must not regress the stage while training runs ---
+
+  it('stays on export (not process) while a dataset_build job runs', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      activeJobs: [{ type: 'dataset_build' }],
+    })
+    expect(deriveStage(p)).toBe('export')
+  })
+
+  it('stays on export (not process) while a finetune job runs', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      activeJobs: [{ type: 'finetune' }],
+    })
+    expect(deriveStage(p)).toBe('export')
+  })
+
+  it('stays on export (not process) while a preview job runs', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      activeJobs: [{ type: 'preview' }],
+    })
+    expect(deriveStage(p)).toBe('export')
+  })
+
+  it('stays on review (not process) while a finetune job runs alongside pending segments', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      activeJobs: [{ type: 'finetune' }],
+      pendingCount: 3,
+    })
+    expect(deriveStage(p)).toBe('review')
+  })
+
   it('prefers process over review when a new source is added mid-review', () => {
     const p = makeProject({
       sourceStatuses: ['complete', 'uploaded'],

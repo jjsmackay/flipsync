@@ -30,6 +30,19 @@ const PROCESSING_SOURCE_STATUSES = new Set([
   'diarisation_failed',
 ])
 
+// Job types that don't belong to the Process stage even while active: scout jobs
+// belong to Speaker, export jobs to Export, and the voice (dataset/train/preview)
+// jobs run independently of — and can far outlast — the extract/separate/diarise/
+// transcribe/cleanup pipeline, so they must not pull the stage strip back to
+// Process while the project sits in Review or Export.
+const NON_PIPELINE_JOB_TYPES = new Set([
+  'export',
+  'scout_speakers',
+  'dataset_build',
+  'finetune',
+  'preview',
+])
+
 export function deriveStage(project: ProjectDetail): Stage {
   const sources = project.stats.source_coverage
   if (sources.length === 0) return 'upload'
@@ -42,11 +55,7 @@ export function deriveStage(project: ProjectDetail): Stage {
   // Everything downstream of a committed reference is the pipeline proper.
   if (!project.reference_path) return 'speaker'
 
-  // Scout jobs belong to the Speaker stage and export jobs to Export — only
-  // the pipeline proper counts as Process.
-  const processingJobs = project.active_jobs.filter(
-    (j) => j.type !== 'export' && j.type !== 'scout_speakers',
-  )
+  const processingJobs = project.active_jobs.filter((j) => !NON_PIPELINE_JOB_TYPES.has(j.type))
   if (processingJobs.length > 0) return 'process'
 
   if (sources.some((s) => PROCESSING_SOURCE_STATUSES.has(s.status))) return 'process'

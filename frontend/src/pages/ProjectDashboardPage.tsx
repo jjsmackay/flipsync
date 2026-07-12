@@ -12,6 +12,7 @@ import { NextActionCard } from '../components/project/NextActionCard'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
+import { VoiceSection } from '../components/voice/VoiceSection'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -201,6 +202,14 @@ export function ProjectDashboardPage() {
       {hasSegments && (
         <Section title="Segments">
           <StatsPanel stats={project.stats} config={project.config} />
+        </Section>
+      )}
+
+      {/* Voice (XTTS-v2) — same gate as Segments; deliberately outside the
+          NextActionCard guided flow, which stays pipeline-focused */}
+      {hasSegments && (
+        <Section title="Voice">
+          <VoiceSection project={project} refetch={() => void refetch()} />
         </Section>
       )}
 

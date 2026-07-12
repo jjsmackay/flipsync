@@ -97,10 +97,19 @@ def recompute_project_status(project_id: str) -> None:
     if project is None:
         return
 
+    # Voice jobs (dataset_build/finetune/preview) are excluded here so a
+    # running fine-tune leaves the project in 'review'/'exported' and export
+    # can still be enqueued. They remain visible in active_jobs API responses
+    # and still block project deletion — only this status computation ignores
+    # them. Imported lazily: jobs.py imports this module at load time.
+    from jobs import VOICE_JOB_TYPES
+
+    voice_placeholders = ",".join("?" * len(VOICE_JOB_TYPES))
     sources = conn.execute("SELECT status FROM sources WHERE project_id=?", (project_id,)).fetchall()
     active_jobs = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND status IN ('queued','running')",
-        (project_id,),
+        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND status IN ('queued','running')"
+        f" AND type NOT IN ({voice_placeholders})",
+        (project_id, *VOICE_JOB_TYPES),
     ).fetchone()[0]
 
     has_sources = len(sources) > 0

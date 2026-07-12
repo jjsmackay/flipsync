@@ -159,6 +159,7 @@ Create a `.env` file at the repo root before first run: `cp .env.example .env`. 
 | `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
 | `FRONTEND_PORT` | no | `3000` | Host port for the UI |
 | `CORS_ORIGINS` | no | `http://localhost:3000,http://127.0.0.1:3000` | Browser origins allowed to call the orchestrator directly |
+| `XTTS_ACCEPT_CPML` | only with `--profile xtts` | — | CPML licence acceptance; the XTTS service refuses to start without it (see §XTTS service) |
 
 Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.
 
@@ -260,6 +261,31 @@ To stop idle upstream services squatting on GPU memory the current stage needs, 
 The unload runs on each service's single-worker job executor, so it can never overlap a running job, and a job arriving during the idle window cancels a pending unload rather than losing its model mid-run. `/health` stays green throughout — readiness means "loaded successfully at least once", not "resident right now" — so the orchestrator keeps submitting normally.
 
 Transcription is deliberately excluded: it's the last GPU stage, so nothing waits behind its model, and holding it avoids reload churn across a batch of segments.
+
+---
+
+## XTTS service (v1.5, opt-in)
+
+The XTTS-v2 service is not started by default. It is gated behind a Compose profile and a licence-acceptance environment variable:
+
+```bash
+# .env
+XTTS_ACCEPT_CPML=1   # accepts the Coqui Public Model Licence (non-commercial)
+
+docker compose --profile xtts up -d
+```
+
+If `XTTS_ACCEPT_CPML` is unset the service still starts but reports unhealthy: `/health` returns 503 with error `cpml_not_accepted`, and the orchestrator will not submit jobs to it. Set the variable and restart the container to accept the licence. FlipSync distributes no XTTS weights; they download on first use into `${MODELS_ROOT:-/mnt/models/flipsync}/xtts`.
+
+| Concern | Value |
+|---------|-------|
+| Internal port | 8005 (not exposed to host) |
+| GPU | Same reservation pattern as vocal separation / diarisation |
+| VRAM — preview (`synthesise`) | ~6 GB |
+| VRAM — fine-tune | 16 GB recommended; 12 GB minimum (batch 1 + gradient accumulation, slower) |
+| Model cache | `${MODELS_ROOT}/xtts:/root/.local/share/tts` |
+
+The service runs a VRAM preflight before fine-tuning and fails fast with `insufficient_vram` rather than hitting a CUDA OOM mid-training. A fine-tune occupies the GPU for hours; the GPU-sharing caveats above apply with more force while one is running.
 
 ---
 

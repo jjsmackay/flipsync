@@ -1,4 +1,4 @@
-import type { ProjectStatus, SourceStatus } from '../types/api'
+import type { ModelStatus, ProjectStatus, SourceStatus } from '../types/api'
 
 // Single source of user-facing names for internal identifiers. Internal
 // statuses and job types stay technical (they match the API and DB); anything
@@ -27,6 +27,21 @@ export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
   exported: 'Exported',
 }
 
+// Model statuses reuse names that mean something else elsewhere ('ready' is a
+// grey not-started project; 'pending' is an unreviewed segment), so they get a
+// scoped map + lookup rather than entries in the generic statusLabel chain.
+export const MODEL_STATUS_LABELS: Record<ModelStatus, string> = {
+  pending: 'Queued',
+  training: 'Training',
+  ready: 'Ready',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+}
+
+export function modelStatusLabel(status: ModelStatus): string {
+  return MODEL_STATUS_LABELS[status]
+}
+
 export const JOB_LABELS: Record<string, string> = {
   extract_audio: 'Extracting audio',
   vocal_separation: 'Separating vocals',
@@ -37,6 +52,9 @@ export const JOB_LABELS: Record<string, string> = {
   transcription_segment: 'Transcribing segment',
   cleanup: 'Cleaning up audio',
   export: 'Exporting dataset',
+  dataset_build: 'Building dataset',
+  finetune: 'Fine-tuning voice',
+  preview: 'Synthesising preview',
 }
 
 export function jobLabel(type: string): string {

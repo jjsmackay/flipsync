@@ -84,7 +84,7 @@ Dependencies:
 | FFmpeg | LGPL/GPL | Called as a subprocess; no licence conflict with Apache 2.0 |
 | XTTS-v2 | CPML | Coqui Public Model Licence; review before any commercial use |
 
-XTTS-v2 is a v1.5+ dependency. Its CPML licence requires review before FlipSync enables it in any context that could be considered commercial. This is documented as an open question until v1.5 planning begins.
+XTTS-v2 is a v1.5 dependency, gated at deploy time. The xtts service is an opt-in Docker Compose profile; FlipSync distributes no model weights, and the service refuses to start unless the operator sets `XTTS_ACCEPT_CPML=1`, accepting the Coqui Public Model Licence (non-commercial) directly. FlipSync itself remains Apache 2.0. Operators in any context that could be considered commercial must review CPML before enabling the profile.
 
 ---
 

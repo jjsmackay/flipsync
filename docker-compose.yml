@@ -11,6 +11,7 @@ services:
       - DIARISATION_URL=http://diarisation:8002
       - TRANSCRIPTION_URL=http://transcription:8003
       - CLEANUP_URL=http://cleanup:8004
+      - XTTS_URL=http://xtts:8005
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       - vocal-separation
@@ -82,6 +83,31 @@ services:
     image: ghcr.io/jjsmackay/flipsync/cleanup:latest
     volumes:
       - ${DATA_ROOT:-data}:/data
+    restart: unless-stopped
+    networks:
+      - flipsync
+
+  # XTTS-v2 fine-tune + synthesis (v1.5). Profile-gated: it only starts with
+  # `--profile xtts` because the base stack runs without voice cloning and the
+  # image is large. Not in orchestrator depends_on for the same reason — the
+  # Models/Previews endpoints degrade to 503 when the container is absent.
+  xtts:
+    image: ghcr.io/jjsmackay/flipsync/xtts:latest
+    profiles: ["xtts"]
+    volumes:
+      - ${DATA_ROOT:-data}:/data
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/xtts:/root/.local/share/tts
+    environment:
+      # XTTS-v2 is under the Coqui Public Model License; the service refuses to
+      # start until the operator accepts by setting this to 1.
+      - XTTS_ACCEPT_CPML=${XTTS_ACCEPT_CPML:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     restart: unless-stopped
     networks:
       - flipsync

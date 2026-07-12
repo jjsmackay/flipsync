@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+# coqui-tts is the Idiap-maintained fork of the discontinued Coqui TTS; it pulls
+# torch and the `trainer` package and ships the XTTS-v2 GPTTrainer recipe.
+coqui-tts
+soundfile

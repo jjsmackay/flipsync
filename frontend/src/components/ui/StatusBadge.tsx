@@ -1,7 +1,7 @@
-import type { ProjectStatus, SegmentStatus, SourceStatus } from '../../types/api'
-import { statusLabel } from '../../utils/labels'
+import type { ModelStatus, ProjectStatus, SegmentStatus, SourceStatus } from '../../types/api'
+import { modelStatusLabel, statusLabel } from '../../utils/labels'
 
-type AnyStatus = ProjectStatus | SegmentStatus | SourceStatus
+type AnyStatus = ProjectStatus | SegmentStatus | SourceStatus | ModelStatus
 
 const STATUS_STYLES: Record<string, string> = {
   new: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
@@ -31,6 +31,18 @@ const STATUS_STYLES: Record<string, string> = {
   extraction_failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
 }
 
+// Model statuses collide with project/segment statuses that mean something
+// different ('ready' project = grey not-started; 'ready' model = green trained;
+// 'pending' segment = unreviewed; 'pending' model = queued), so they resolve
+// through a scoped map selected by kind="model" instead of STATUS_STYLES.
+const MODEL_STATUS_STYLES: Record<ModelStatus, string> = {
+  pending: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  training: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  ready: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+  failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+  cancelled: 'bg-gray-200 text-gray-500 dark:bg-gray-700 dark:text-gray-400',
+}
+
 const STATUS_DOT: Record<string, string> = {
   approved: 'bg-green-500',
   rejected: 'bg-red-500',
@@ -45,24 +57,29 @@ const STATUS_DOT: Record<string, string> = {
 interface StatusBadgeProps {
   status: AnyStatus
   dot?: boolean
+  /** Scope the style/label lookup for statuses whose names collide across domains. */
+  kind?: 'model'
 }
 
-export function StatusBadge({ status, dot = false }: StatusBadgeProps) {
-  const style = STATUS_STYLES[status] ?? 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+export function StatusBadge({ status, dot = false, kind }: StatusBadgeProps) {
+  const style =
+    (kind === 'model' ? MODEL_STATUS_STYLES[status as ModelStatus] : STATUS_STYLES[status]) ??
+    'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+  const label = kind === 'model' ? modelStatusLabel(status as ModelStatus) : statusLabel(status)
   const dotStyle = STATUS_DOT[status]
 
   if (dot && dotStyle) {
     return (
       <span
         className={`inline-block w-2.5 h-2.5 rounded-full ${dotStyle}`}
-        title={statusLabel(status)}
+        title={label}
       />
     )
   }
 
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${style}`}>
-      {statusLabel(status)}
+      {label}
     </span>
   )
 }

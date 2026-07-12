@@ -55,7 +55,13 @@ Scout jobs belong to the Speaker stage and export jobs to the Export stage, so n
    - `transcription_segment` — retry calls the per-segment rerun endpoint when the failed job carries a segment id; if it doesn't, no Retry is shown (never a silent no-op).
 5. **Videos** (sources) — filename, human status label, speaker coverage (— until diarisation completes), per-row ⋯ menu with **Re-run from vocal separation** (`steps: ["separation", "diarisation"]`) and **Re-run speaker matching** (`steps: ["diarisation"]`), plus an inline compact **+ Add video** upload button. Hidden while the project has no sources.
 6. **Segments** (stats) — compact grid: approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target (duration includes auto-approved). Hidden until segments exist.
-7. **Settings** — collapsed disclosure: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
+7. **Voice** (v1.5, XTTS) — directly below Segments, hidden until segments exist (same gate as Segments — an empty project has nothing to train on). Three sub-panels:
+   - **Train** — approved-audio progress toward the recommended 30 min floor; a **Train voice model** button that is disabled with a visible reason while approved audio is under the 300 s dataset minimum; a confirm step choosing the dataset mode (Reviewed vs Train without review with a confidence floor). While a `dataset_build`/`finetune` job runs, a progress card (epoch/step/losses/ETA) replaces the train affordance.
+   - **Models** — trained model rows: shared status badge (Queued/Training/Ready/Failed/Cancelled), dataset mode, duration/segment count/eval loss, delete with confirm (blocked while training).
+   - **Preview** — one text box + conditioning source, then side-by-side zero-shot (base model) and fine-tuned columns generating the same text for A/B listening. Polling for a generating preview is bounded (~10 min) and surfaces a timeout error pointing at the failed-job alerts.
+
+   The Voice section is deliberately **outside** the NextActionCard guided flow — the single next action stays pipeline-focused (upload → speaker → process → review → export); voice training is a post-review activity entered from its own section.
+8. **Settings** — collapsed disclosure: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
 
 The dashboard is the place for pipeline operations and error recovery. The review queue is for segment decisions only.
 
