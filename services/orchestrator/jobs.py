@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import socket
 import tarfile
 import uuid
 import weakref
@@ -34,6 +36,16 @@ _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 GPU_JOB_TYPES = frozenset(
     {"vocal_separation", "diarisation", "scout_speakers", "transcription_bulk", "transcription_segment"}
 )
+
+# Which processing service each GPU job type talks to. Must mirror the
+# service names used by each handler's submit path (_submit_with_retry).
+GPU_JOB_SERVICES: dict[str, str] = {
+    "vocal_separation": "vocal_separation",
+    "diarisation": "diarisation",
+    "scout_speakers": "diarisation",
+    "transcription_bulk": "transcription",
+    "transcription_segment": "transcription",
+}
 
 # The global GPU lock is created lazily per event loop: an asyncio.Lock binds
 # to the loop it is first awaited on, and tests run each case in a fresh loop
@@ -67,18 +79,86 @@ _SUBMIT_RETRY_BASE_SECS = 1.0
 _SUBMIT_RETRY_MAX_SECS = 30.0
 _SUBMIT_RETRY_TIMEOUT_SECS = 300.0
 
+# GPU jobs wait for their target service to report healthy BEFORE taking the
+# host-wide GPU lock: first-boot model downloads can take far longer than the
+# submit retry window, and waiting inside the lock would stall every other
+# project's GPU work. Timeout is env-configurable (read at call time); the
+# poll interval is a module constant so tests can shrink it.
+_SERVICE_READY_POLL_SECS = 5.0
+_SERVICE_READY_TIMEOUT_DEFAULT_SECS = 1800.0
+
+
+def _service_ready_timeout_secs() -> float:
+    raw = os.environ.get("SERVICE_READY_TIMEOUT_SECS", "")
+    try:
+        return float(raw) if raw else _SERVICE_READY_TIMEOUT_DEFAULT_SECS
+    except ValueError:
+        return _SERVICE_READY_TIMEOUT_DEFAULT_SECS
+
+
+def _is_dns_failure(exc: BaseException) -> bool:
+    """True if the exception chain bottoms out in a DNS resolution failure."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, socket.gaierror):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
+async def wait_for_service_ready(service_name: str) -> bool:
+    """Poll the service's GET /health until it reports healthy.
+
+    Returns True once healthy, False if the readiness window
+    (SERVICE_READY_TIMEOUT_SECS, default 1800 s) expires. A DNS resolution
+    failure means the service hostname does not exist in this environment
+    (unit tests, partial deployments) — gating is skipped (returns True) and
+    the submit path's own bounded retry surfaces any real connectivity error.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + _service_ready_timeout_secs()
+    while True:
+        try:
+            if await service_client.probe_health(service_name):
+                return True
+        except Exception as exc:
+            if _is_dns_failure(exc):
+                return True
+        if loop.time() >= deadline:
+            return False
+        await asyncio.sleep(min(_SERVICE_READY_POLL_SECS, max(deadline - loop.time(), 0.01)))
+
 
 async def _submit_with_retry(service_name: str, payload: dict) -> dict:
     """Submit a job, retrying with bounded exponential backoff while the service
     is unreachable (connection/timeout errors). A reachable service returning an
-    HTTP error status propagates immediately — only transport failures retry."""
+    HTTP error status propagates immediately — only transport failures retry.
+
+    Exception: a 409 ``job_exists`` means the service already accepted this
+    job_id (e.g. a retry after a submit that timed out client-side but was
+    delivered) — that is treated as a successful submit so the caller proceeds
+    to poll the original job instead of failing it.
+    """
     loop = asyncio.get_event_loop()
     deadline = loop.time() + _SUBMIT_RETRY_TIMEOUT_SECS
     delay = _SUBMIT_RETRY_BASE_SECS
     while True:
         try:
             return await service_client.submit_job(service_name, payload)
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                try:
+                    body = exc.response.json()
+                except Exception:
+                    body = {}
+                if body.get("error") == "job_exists":
+                    logger.info(
+                        "Service %s already has job %s; treating as submitted",
+                        service_name, payload.get("job_id"),
+                    )
+                    return body
             raise
         except (httpx.TransportError, ConnectionError, OSError) as exc:
             remaining = deadline - loop.time()
@@ -221,6 +301,18 @@ async def _execute_job(project_id: str, job_id: str) -> None:
 
     try:
         if job_type in GPU_JOB_TYPES:
+            # Wait for the target service to be healthy BEFORE taking the
+            # host-wide GPU lock, so a service that is still booting (first-run
+            # model downloads can take tens of minutes) never stalls other
+            # projects' GPU work behind the lock.
+            service_name = GPU_JOB_SERVICES[job_type]
+            if not await wait_for_service_ready(service_name):
+                _fail_job(
+                    project_id, job_id,
+                    f"service_unavailable: {service_name} did not become healthy "
+                    f"within {int(_service_ready_timeout_secs())}s",
+                )
+                return
             # Host-wide GPU gate: held for the full duration of the handler so
             # no two GPU jobs (across any projects) ever run concurrently.
             async with _gpu_lock():
@@ -955,19 +1047,26 @@ def _apply_transcription_results(
 async def _handle_export(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
-    """Export pipeline: submit cleanup for approved segments, write manifest, package archive."""
+    """Export pipeline: submit cleanup for exportable segments, write manifest,
+    package archive.
 
-
+    The new export is staged in export_tmp/ and only replaces the previous
+    export/ (WAVs, manifest.json, archive, export_path rows, exported_at)
+    once cleanup has succeeded — a failed re-export leaves the previous
+    export fully intact and still downloadable.
+    """
     conn = get_conn(project_id)
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
 
-    # Get all approved segments (auto_approved is treated identically here)
+    # Exportable = approved (auto_approved is treated identically) plus
+    # clipping_warning: keep-unless-rejected semantics — clipping segments
+    # export with the flag recorded in the manifest. Cleanup re-flags them.
     approved = conn.execute(
         """
         SELECT seg.*, src.filename AS source_filename
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
-        WHERE seg.project_id=? AND seg.status IN ('approved', 'auto_approved')
+        WHERE seg.project_id=? AND seg.status IN ('approved', 'auto_approved', 'clipping_warning')
         """,
         (project_id,),
     ).fetchall()
@@ -980,122 +1079,152 @@ async def _handle_export(
     pdir = project_dir(project_id)
     data_prefix = _data_prefix()
     export_dir = pdir / "export"
+    staging_dir = pdir / "export_tmp"
+    archive_path = pdir / "export.tar.gz"
+    archive_tmp = pdir / "export.tar.gz.tmp"
 
-    # Re-export regenerates export/ from scratch: clear any previous WAVs and
-    # manifest, and reset export_path so the manifest reflects only this run
-    # (no orphan WAVs from a since-rejected segment).
-    if export_dir.exists():
-        for f in export_dir.iterdir():
-            if f.is_file():
-                f.unlink()
-    export_dir.mkdir(exist_ok=True)
-    conn.execute("UPDATE segments SET export_path=NULL WHERE project_id=?", (project_id,))
-    conn.commit()
-
-    # Build cleanup payload
-    cleanup_segments = []
-    for seg in approved:
-        cleanup_segments.append({
-            "id": seg["id"],
-            "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
-            "output_path": f"{data_prefix}/projects/{project_id}/export/{seg['id']}.wav",
-        })
-
-    cleanup_payload = {
-        "job_id": job_id,
-        "segments": cleanup_segments,
-        "params": {
-            "target_lufs": project["target_lufs"],
-            "true_peak_dbtp": -2.0,
-            "lra": 7.0,
-            "highpass_hz": 80,
-            "silence_threshold_db": -50.0,
-            "silence_min_duration_secs": 0.1,
-            "clipping_threshold_db": -0.1,
-            "clipping_min_consecutive_samples": 3,
-            "output_sample_rate": 22050,
-            "output_channels": 1,
-        },
-    }
+    # Clear any stale staging left by an earlier failed/interrupted export,
+    # then stage this run's WAVs in export_tmp/.
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    staging_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        await _submit_with_retry("cleanup", cleanup_payload)
-    except Exception as exc:
-        _fail_job(project_id, job_id, f"cleanup_submit_failed: {exc}")
-        _recompute_project_status(project_id)
-        return
+        # Build cleanup payload — outputs land in the staging directory.
+        cleanup_segments = []
+        for seg in approved:
+            cleanup_segments.append({
+                "id": seg["id"],
+                "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
+                "output_path": f"{data_prefix}/projects/{project_id}/export_tmp/{seg['id']}.wav",
+            })
 
-    def on_progress(result):
-        progress = result.get("progress", 0)
-        if progress:
-            _update_progress(project_id, job_id, progress)
+        cleanup_payload = {
+            "job_id": job_id,
+            "segments": cleanup_segments,
+            "params": {
+                "target_lufs": project["target_lufs"],
+                "true_peak_dbtp": -2.0,
+                "lra": 7.0,
+                "highpass_hz": 80,
+                "silence_threshold_db": -50.0,
+                "silence_min_duration_secs": 0.1,
+                "clipping_threshold_db": -0.1,
+                "clipping_min_consecutive_samples": 3,
+                "output_sample_rate": 22050,
+                "output_channels": 1,
+            },
+        }
 
-    result = await service_client.poll_until_complete("cleanup", job_id, on_progress=on_progress)
+        try:
+            await _submit_with_retry("cleanup", cleanup_payload)
+        except Exception as exc:
+            _fail_job(project_id, job_id, f"cleanup_submit_failed: {exc}")
+            _recompute_project_status(project_id)
+            return
 
-    if result["status"] == "failed":
-        _fail_job(project_id, job_id, result.get("error", "unknown_error"))
-        _recompute_project_status(project_id)
-        return
+        def on_progress(result):
+            progress = result.get("progress", 0)
+            if progress:
+                _update_progress(project_id, job_id, progress)
 
-    # Process cleanup results per segment
-    now = _now()
-    for seg_result in result.get("results", []):
-        seg_id = seg_result["id"]
+        result = await service_client.poll_until_complete("cleanup", job_id, on_progress=on_progress)
 
-        if seg_result.get("error"):
-            # FFmpeg error — auto_reject with cleanup_error flag
+        if result["status"] == "failed":
+            _fail_job(project_id, job_id, result.get("error", "unknown_error"))
+            _recompute_project_status(project_id)
+            return
+
+        # Cleanup succeeded — apply per-segment results and promote the staged
+        # export. All DB writes commit together at the end; any failure before
+        # then rolls back so the previous export's rows survive.
+        try:
+            now = _now()
             conn.execute(
-                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
-                (now, seg_id),
+                "UPDATE segments SET export_path=NULL WHERE project_id=?", (project_id,)
             )
-            _add_flag(conn, seg_id, f"cleanup_error: {seg_result['error']}")
+            for seg_result in result.get("results", []):
+                seg_id = seg_result["id"]
 
-        elif seg_result.get("auto_rejected"):
-            # Silent after trim
+                if seg_result.get("error"):
+                    # FFmpeg error — auto_reject with cleanup_error flag
+                    conn.execute(
+                        "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
+                        (now, seg_id),
+                    )
+                    _add_flag(conn, seg_id, f"cleanup_error: {seg_result['error']}")
+
+                elif seg_result.get("auto_rejected"):
+                    # Silent after trim
+                    conn.execute(
+                        "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
+                        (now, seg_id),
+                    )
+
+                elif seg_result.get("clipping_warning"):
+                    # Clipping detected — the cleaned WAV is still exported (with
+                    # the flag recorded in the manifest); set the column, the
+                    # status, AND export_path so the segment appears in the
+                    # manifest.
+                    conn.execute(
+                        """
+                        UPDATE segments
+                        SET status='clipping_warning', clipping_warning=1, export_path=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (f"export/{seg_id}.wav", now, seg_id),
+                    )
+
+                else:
+                    # Success — record export_path (final location after promotion)
+                    conn.execute(
+                        "UPDATE segments SET export_path=?, updated_at=? WHERE id=?",
+                        (f"export/{seg_id}.wav", now, seg_id),
+                    )
+
+            # Write manifest.json (from the uncommitted DB state on this same
+            # connection) into staging, and build the new archive alongside the
+            # old one, packaging exactly the manifest's WAVs.
+            audio_files = _write_manifest(
+                project_id, project, pdir, export_dir=staging_dir
+            )
+            _package_archive(
+                pdir, audio_files, export_dir=staging_dir, archive_path=archive_tmp
+            )
+
+            # Promote: replace the old export directory and archive, then
+            # commit the matching DB state.
+            if export_dir.exists():
+                shutil.rmtree(export_dir)
+            staging_dir.rename(export_dir)
+            os.replace(archive_tmp, archive_path)
+
+            # Mark project as exported and record when, so a later approval or
+            # source change can invalidate it (see status.invalidate_export).
             conn.execute(
-                "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
-                (now, seg_id),
+                "UPDATE projects SET status='exported', exported_at=?, updated_at=? WHERE id=?",
+                (now, now, project_id),
             )
+            conn.commit()
+        except BaseException:
+            # Keep the previous export's export_path rows and exported_at.
+            conn.rollback()
+            raise
 
-        elif seg_result.get("clipping_warning"):
-            # Clipping detected — the cleaned WAV is still exported (with the
-            # flag recorded in the manifest); set the column, the status, AND
-            # export_path so the segment appears in the manifest.
-            conn.execute(
-                """
-                UPDATE segments
-                SET status='clipping_warning', clipping_warning=1, export_path=?, updated_at=?
-                WHERE id=?
-                """,
-                (f"export/{seg_id}.wav", now, seg_id),
-            )
-
-        else:
-            # Success — record export_path
-            conn.execute(
-                "UPDATE segments SET export_path=?, updated_at=? WHERE id=?",
-                (f"export/{seg_id}.wav", now, seg_id),
-            )
-
-    conn.commit()
-
-    # Write manifest.json from DB, then package exactly the manifest's WAVs.
-    audio_files = _write_manifest(project_id, project, pdir)
-    _package_archive(pdir, audio_files)
-
-    _complete_job(project_id, job_id)
-
-    # Mark project as exported and record when, so a later approval/source change
-    # can invalidate it (see status.invalidate_export).
-    conn.execute(
-        "UPDATE projects SET status='exported', exported_at=?, updated_at=? WHERE id=?",
-        (_now(), _now(), project_id),
-    )
-    conn.commit()
+        _complete_job(project_id, job_id)
+    finally:
+        # Success renames staging away; on any failure remove leftovers so the
+        # previous export/ and archive remain the only visible state.
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        if archive_tmp.exists():
+            archive_tmp.unlink()
 
 
-def _write_manifest(project_id: str, project: Any, pdir: Path) -> list[str]:
-    """Write export/manifest.json from the database.
+def _write_manifest(
+    project_id: str, project: Any, pdir: Path, export_dir: Path | None = None
+) -> list[str]:
+    """Write manifest.json (into export_dir, default export/) from the database.
 
     Returns the list of audio filenames referenced by the manifest so the
     archive can be built to contain exactly those WAVs plus manifest.json.
@@ -1153,19 +1282,28 @@ def _write_manifest(project_id: str, project: Any, pdir: Path) -> list[str]:
         },
     }
 
-    manifest_path = pdir / "export" / "manifest.json"
+    target_dir = export_dir if export_dir is not None else pdir / "export"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = target_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
     return audio_files
 
 
-def _package_archive(pdir: Path, audio_files: list[str]) -> None:
-    """Package manifest.json plus exactly the manifest's WAVs into export.tar.gz.
+def _package_archive(
+    pdir: Path,
+    audio_files: list[str],
+    export_dir: Path | None = None,
+    archive_path: Path | None = None,
+) -> None:
+    """Package manifest.json plus exactly the manifest's WAVs into the archive.
 
     Building from the manifest (rather than globbing export/) guarantees the
     archive never contains orphan WAVs from a previous export.
     """
-    export_dir = pdir / "export"
-    archive_path = pdir / "export.tar.gz"
+    if export_dir is None:
+        export_dir = pdir / "export"
+    if archive_path is None:
+        archive_path = pdir / "export.tar.gz"
 
     with tarfile.open(archive_path, "w:gz") as tar:
         manifest = export_dir / "manifest.json"
