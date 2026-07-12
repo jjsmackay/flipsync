@@ -4,7 +4,7 @@ services:
     ports:
       - "${ORCHESTRATOR_PORT:-8000}:8000"
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
     environment:
       - DATA_DIR=/data
       - VOCAL_SEPARATION_URL=http://vocal-separation:8001
@@ -24,7 +24,7 @@ services:
   vocal-separation:
     image: ghcr.io/jjsmackay/flipsync/vocal-separation:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/demucs:/root/.cache/torch
     deploy:
       resources:
@@ -40,7 +40,7 @@ services:
   diarisation:
     image: ghcr.io/jjsmackay/flipsync/diarisation:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/pyannote:/root/.cache/torch
     environment:
       - HF_TOKEN=${HF_TOKEN}
@@ -58,7 +58,7 @@ services:
   transcription:
     image: ghcr.io/jjsmackay/flipsync/transcription:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
       - ${MODELS_ROOT:-/mnt/models/flipsync}/whisper:/root/.cache/huggingface
     deploy:
       resources:
@@ -74,7 +74,7 @@ services:
   cleanup:
     image: ghcr.io/jjsmackay/flipsync/cleanup:latest
     volumes:
-      - ./data:/data
+      - ${DATA_ROOT:-./data}:/data
     restart: unless-stopped
     networks:
       - flipsync
