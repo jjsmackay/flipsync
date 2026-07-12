@@ -23,6 +23,8 @@ jobs:
             context: services/transcription
           - service: cleanup
             context: services/cleanup
+          - service: xtts
+            context: services/xtts
           - service: frontend
             context: frontend
     steps:
