@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import type { Segment, SegmentStatus } from '../../types/api'
+import { useTheme } from '../../hooks/useTheme'
 
 interface TimelineProps {
   segments: Segment[]
@@ -9,7 +10,7 @@ interface TimelineProps {
   visibleRange?: [number, number]
 }
 
-const STATUS_COLORS: Record<SegmentStatus, string> = {
+const STATUS_COLORS_LIGHT: Record<SegmentStatus, string> = {
   approved: '#22c55e',
   auto_approved: '#14b8a6',
   rejected: '#ef4444',
@@ -19,6 +20,20 @@ const STATUS_COLORS: Record<SegmentStatus, string> = {
   clipping_warning: '#f97316',
   auto_rejected: '#fca5a5',
 }
+
+const STATUS_COLORS_DARK: Record<SegmentStatus, string> = {
+  approved: '#22c55e',
+  auto_approved: '#2dd4bf',
+  rejected: '#f87171',
+  maybe: '#fbbf24',
+  pending: '#64748b',
+  below_threshold: '#334155',
+  clipping_warning: '#fb923c',
+  auto_rejected: '#7f1d1d',
+}
+
+const BACKGROUND_LIGHT = '#f1f5f9'
+const BACKGROUND_DARK = '#1e293b'
 
 const SELECTED_COLOR = '#3b82f6'
 const CANVAS_HEIGHT = 32
@@ -33,6 +48,9 @@ export function Timeline({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [zoom, setZoom] = useState(1)
   const [offsetSecs, setOffsetSecs] = useState(0)
+  const { resolved } = useTheme()
+  const statusColors = resolved === 'dark' ? STATUS_COLORS_DARK : STATUS_COLORS_LIGHT
+  const background = resolved === 'dark' ? BACKGROUND_DARK : BACKGROUND_LIGHT
 
   // Effective visible window in seconds
   const windowDuration = totalDuration / zoom
@@ -51,7 +69,7 @@ export function Timeline({
     ctx.clearRect(0, 0, width, height)
 
     // Background
-    ctx.fillStyle = '#f1f5f9'
+    ctx.fillStyle = background
     ctx.fillRect(0, 0, width, height)
 
     const viewStart = clampedOffset
@@ -71,7 +89,7 @@ export function Timeline({
       // aren't invisible at season scale (spec: timeline component).
       const drawW = w < 2 ? 1 : Math.ceil(w)
 
-      ctx.fillStyle = seg.id === selectedSegmentId ? SELECTED_COLOR : STATUS_COLORS[seg.status]
+      ctx.fillStyle = seg.id === selectedSegmentId ? SELECTED_COLOR : statusColors[seg.status]
       ctx.fillRect(Math.floor(x), 0, drawW, height)
     }
 
@@ -92,7 +110,7 @@ export function Timeline({
         ctx.fillRect(rxEnd, 0, width - rxEnd, height)
       }
     }
-  }, [segments, totalDuration, selectedSegmentId, zoom, clampedOffset, windowDuration, visibleRange])
+  }, [segments, totalDuration, selectedSegmentId, zoom, clampedOffset, windowDuration, visibleRange, statusColors, background])
 
   function handleClick(e: React.MouseEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current

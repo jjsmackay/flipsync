@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useTheme } from '../../hooks/useTheme'
 
 interface WaveformCanvasProps {
   /** Decoded once by the parent and shared with the audio player so the segment
@@ -13,6 +14,11 @@ interface WaveformCanvasProps {
 const CANVAS_WIDTH = 600
 const CANVAS_HEIGHT = 80
 const FFT_SIZE = 256
+
+const COLORS = {
+  light: { bg: '#f9fafb', waveform: '#6366f1', empty: '#f3f4f6', emptyText: '#9ca3af' },
+  dark: { bg: '#111827', waveform: '#818cf8', empty: '#1f2937', emptyText: '#6b7280' },
+}
 
 // In-place iterative radix-2 Cooley–Tukey FFT.
 function fft(re: Float32Array, im: Float32Array) {
@@ -69,6 +75,8 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
   // Incremented on every blob change so a slow decode from a previous segment can't
   // overwrite the current one (stale-response guard).
   const tokenRef = useRef(0)
+  const { resolved } = useTheme()
+  const colors = COLORS[resolved]
 
   function drawPlayhead(ctx: CanvasRenderingContext2D) {
     if (duration > 0) {
@@ -83,13 +91,13 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
   }
 
   function drawWaveform(ctx: CanvasRenderingContext2D, samples: Float32Array) {
-    ctx.fillStyle = '#f9fafb'
+    ctx.fillStyle = colors.bg
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
 
     const mid = CANVAS_HEIGHT / 2
     const samplesPerPixel = Math.max(1, Math.floor(samples.length / CANVAS_WIDTH))
 
-    ctx.strokeStyle = '#6366f1' // indigo-500
+    ctx.strokeStyle = colors.waveform
     ctx.lineWidth = 1
 
     for (let x = 0; x < CANVAS_WIDTH; x++) {
@@ -174,9 +182,9 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
 
     const samples = samplesRef.current
     if (!samples) {
-      ctx.fillStyle = '#f3f4f6'
+      ctx.fillStyle = colors.empty
       ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
-      ctx.fillStyle = '#9ca3af'
+      ctx.fillStyle = colors.emptyText
       ctx.font = '13px sans-serif'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
@@ -220,11 +228,11 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
         loadingRef.current = false
         draw()
       })
-  }, [audioBlob]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [audioBlob, resolved]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     draw()
-  }, [currentTime, duration, showSpectrogram]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentTime, duration, showSpectrogram, resolved]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleClick(e: React.MouseEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current
@@ -241,7 +249,7 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
       width={CANVAS_WIDTH}
       height={CANVAS_HEIGHT}
       onClick={handleClick}
-      className="w-full rounded cursor-pointer bg-gray-50"
+      className="w-full rounded cursor-pointer bg-gray-50 dark:bg-gray-900"
       style={{ height: CANVAS_HEIGHT }}
     />
   )
