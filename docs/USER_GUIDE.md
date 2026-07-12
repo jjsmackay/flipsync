@@ -12,12 +12,12 @@ Everything here happens in the browser. There's no command line and no audio edi
 
 1. **Create a project** — one target speaker per project.
 2. **Upload source videos** — the files you want to extract dialogue from.
-3. **Upload a reference clip** — a short, clean sample of the target speaker's voice.
+3. **Set the speaker** — upload a short reference clip, **or** let FlipSync scan a video for speakers and pick your target by ear.
 4. **Run the pipeline** — separation → diarisation + matching → transcription → cleanup.
 5. **Review segments** — approve, defer, or reject each candidate in the review queue.
 6. **Export** — download a labelled WAV archive plus a training manifest.
 
-Steps 1–3 are setup. Step 4 runs unattended. Step 5 is where you'll spend most of your time. Step 6 is one click.
+The dashboard walks you through this as five stages — **Upload → Speaker → Process → Review → Export** — with a single "what's next" card showing the action the project needs right now. Steps 1–2 are setup, step 3 can happen before the run or as a pause partway through it (see below), step 4 runs unattended, step 5 is where you'll spend most of your time, and step 6 is one click.
 
 ---
 
@@ -43,48 +43,63 @@ Sensible starting point for voice cloning: aim for **30+ minutes** of approved, 
 
 On the project dashboard (`/projects/{id}`), add your video files. Common container formats work (`.mkv`, `.mp4`, and so on), and files up to **10 GB** each are accepted.
 
-As soon as a file finishes uploading, FlipSync extracts its audio track automatically — you don't trigger this. Each source moves through:
+As soon as a file finishes uploading, FlipSync extracts its audio track automatically — you don't trigger this. Each video shows a plain status in the list:
 
-- **extracting** → audio is being pulled from the video
-- **step1_pending** → ready for the pipeline
-- **extraction_failed** → something went wrong (bad file, unsupported codec); check the error on the dashboard
+- **Extracting audio** → the audio track is being pulled from the video
+- **Queued** → ready for the pipeline
+- **Extraction failed** → something went wrong (bad file, unsupported codec); check the error on the dashboard
 
-Wait for your sources to reach *step1_pending* before starting the pipeline. You can upload more sources later and re-run the pipeline for just those.
+Wait for your videos to reach *Queued* before starting the pipeline. You can upload more later and re-run the pipeline for just those.
 
 > **Large uploads:** video files are big. Uploads stream to disk as they arrive, so a 1–4 GB file is fine, but let each one finish before navigating away.
 
 ---
 
-## 3. Upload a reference clip
+## 3. Set the speaker
 
-This is the single most important input for match quality. Diarisation splits the audio by speaker; the reference clip is what FlipSync compares each speaker against to decide *which one is yours*.
+This is the single most important input for match quality. Diarisation splits the audio by speaker; the reference is what FlipSync compares each speaker against to decide *which one is yours*. There are two ways to provide it.
 
-Upload one audio clip of the target speaker on the dashboard. Requirements and tips:
+### Option A — upload a reference clip
+
+Upload one audio clip of the target speaker at the **Speaker** stage on the dashboard. Requirements and tips:
 
 - **Minimum 5 seconds.** Longer is better — 15–30 seconds of clean speech is ideal.
 - **One speaker only.** No overlapping dialogue, music, or effects. A clean solo line is worth more than a long noisy one.
 - **Representative.** Use audio of the same speaker in a similar recording condition to your sources.
 
-Replacing the reference clip does **not** automatically re-run matching — you'll need to re-run diarisation (step 2) for the new clip to take effect. So get a good clip in before your first pipeline run.
+### Option B — pick a speaker from a video
+
+No clean clip to hand? Start the pipeline anyway. Once vocal separation finishes, the dashboard pauses at the **Speaker** stage. In the *Find speakers* tab:
+
+1. Choose a video that's been separated and click **Scan for speakers**.
+2. FlipSync detects the speakers in that video and builds a short audio montage for each, listed by talk time — the target speaker is usually near the top.
+3. Play the montages until you find your speaker, then click **Use this voice**. The montage becomes the reference.
+4. Click **Continue** — processing resumes where it paused.
+
+A speaker with under 5 seconds of talk time can't be picked (same minimum as an uploaded clip). Scanning again replaces the previous candidate list, and you can re-pick a different speaker from the same scan without rescanning.
+
+Either way, replacing the reference does **not** automatically re-run matching — re-run speaker matching (per-video ⋯ menu) for the new reference to take effect on already-processed videos.
 
 ---
 
 ## 4. Run the pipeline
 
-On the dashboard, click **Start**. FlipSync runs four steps, in order, for each source:
+On the dashboard, click **Start processing**. FlipSync runs four steps, in order, for each source:
 
 1. **Vocal separation** (Demucs) — strips music and effects, isolates the vocal track. On the first run the models download (~5 GB total, cached afterwards), so the first job is slow.
 2. **Diarisation + speaker matching** (pyannote) — splits the vocal track by speaker and scores each speaker against your reference clip. Every segment gets a **speaker match** score.
 3. **Transcription** (faster-whisper) — transcribes the matched segments. The transcript is a review signal, not just a label: a borderline match with a clean, sensible transcript is often worth keeping.
 4. **Cleanup** (FFmpeg) — loudness-normalises, trims leading/trailing silence, filters low-frequency noise, and flags clipping.
 
-**Jobs run one at a time per project** — there's no parallel GPU work, so a full season takes a while. You don't need to babysit it; state is saved server-side and survives closed tabs and restarts.
+If no reference is set when you start, the pipeline runs vocal separation for every video and then pauses at the **Speaker** stage — set a speaker (upload or scan-and-pick, see above) and click **Continue**.
+
+**Jobs run one at a time per project, and GPU jobs one at a time across the whole machine** — there's no parallel GPU work, so a full season takes a while. You don't need to babysit it; state is saved server-side and survives closed tabs and restarts.
 
 Watch progress on the dashboard:
 
-- **Active job progress** shows the running step.
-- **Per-source status** shows each file's step 1/2 state, coverage ratio, and a low-coverage warning if the target speaker accounts for less than ~15% of that source.
-- **Recent failed jobs** list any failures with the error message and a **retry** action. Retrying re-runs just that step.
+- **The next-action card** shows the running job and its progress.
+- **The videos list** shows each file's status in plain terms (*Separating vocals*, *Matching speaker*, *Processed*), speaker coverage, and a low-coverage warning if the target speaker accounts for less than ~15% of that video.
+- **Failed-job alerts** show any failures with the error message and a **Retry** where retrying makes sense. A failed extraction means the file itself is the problem — remove that video and re-upload it. Retrying separation or speaker matching asks for confirmation first if it would discard approved segments.
 
 When the pipeline finishes, open the **review queue** from the dashboard.
 
@@ -119,7 +134,13 @@ Review is built to be driven from the keyboard. Keys are active whenever a segme
 | `Esc` | Cancel a transcript edit |
 | `?` | Show the shortcut overlay |
 
-After A/M/X, focus jumps to the next segment automatically, so you can work down the queue without touching the mouse. **Approve** = keep it in the dataset. **Maybe** = come back to it. **Reject** = drop it.
+After A/M/X, focus jumps to the next segment automatically, so you can work down the queue without touching the mouse. **Approve** = keep it in the dataset. **Maybe** = come back to it. **Reject** = drop it. (Rejected by mistake? Open the segment and click **Un-reject** to put it back to pending.)
+
+### Auto-approval
+
+By default, FlipSync approves the easy wins for you. When a segment's transcript lands, if both its speaker match and transcript confidence clear the auto-approve thresholds — and it carries no warnings — it moves to **auto-approved**, shown teal in the list and timeline. Auto-approved segments count towards the export and the duration progress bar, so you don't have to touch them; your review time goes to the uncertain middle instead (sort by *Uncertainty* to see the most borderline segments first).
+
+Every auto-approval is still yours to override: press `A` to confirm it as approved, or Maybe/Reject to demote it. The two thresholds, and the toggle to turn auto-approval off, live in the project settings on the dashboard — changing them re-sorts the pending/auto-approved split immediately. When you trust the batch, the **Confirm all auto-approved** bulk preset converts them to approved in one move.
 
 ### Editing transcripts
 
@@ -131,7 +152,7 @@ The filter bar narrows the list by status, source, minimum confidence, minimum d
 
 ### Bulk operations
 
-For the obvious cases, open **Bulk actions** above the list. Presets cover the common moves — approve all pending ≥ 0.90, reject all pending under 1.5–2.0 seconds, reset *maybe* back to pending — and a custom builder lets you filter by action, status, confidence, duration, and source with a **live preview count** before you apply. Do a bulk pass first, then hand-review what's left.
+For the obvious cases, open **Bulk actions** above the list. Presets cover the common moves — confirm all auto-approved, approve all pending ≥ 0.90, reject all pending under 1.5–2.0 seconds, reset *maybe* back to pending — and a custom builder lets you filter by action, status, confidence, duration, and source with a **live preview count** before you apply. The count reflects only segments the chosen action can legally touch (approving never touches rejected segments, for instance). Do a bulk pass first, then hand-review what's left.
 
 ### Tuning the threshold
 
@@ -141,16 +162,16 @@ If the queue looks thin, lower the **match threshold** on the dashboard. Segment
 
 ## 6. Export
 
-The **Export** button sits in the review queue header. It's greyed out until you have at least one approved segment.
+The **Export** button sits in the review queue header. It's greyed out until you have at least one approved or auto-approved segment — both are included in the export.
 
-Clicking it shows a confirmation panel with the approved count and total duration, plus cautions for any segments with clipping warnings or missing transcripts (the clipping caution links to a filtered view so you can review those first). Confirm, and FlipSync runs a final clean/normalise pass and builds the archive. When it's done, the panel becomes a **Download** link.
+Clicking it shows a confirmation panel with the counts (approved, and how many of those were auto-approved) and total duration, plus cautions for any segments with clipping warnings or missing transcripts (the clipping caution links to a filtered view so you can review those first). Confirm, and FlipSync runs a final clean/normalise pass and builds the archive. When it's done, the panel becomes a **Download** link.
 
 ### What you get
 
 - **Labelled WAV files** — 22.05 kHz mono, one per approved segment.
 - **`manifest.json`** — segment metadata and transcripts, formatted for **XTTS-v2** training with no post-processing.
 
-A segment approved without a transcript is excluded from the manifest unless you add one. Exporting again replaces the previous export.
+A segment approved without a transcript is excluded from the manifest unless you add one. Exporting again replaces the previous export — but only once the new one succeeds; a failed re-export leaves the previous archive intact and downloadable.
 
 ---
 
@@ -158,7 +179,7 @@ A segment approved without a transcript is excluded from the manifest unless you
 
 FlipSync is built to be iterative — any step can be re-run without losing your review decisions:
 
-- **Reprocess a source** (step 1 and/or step 2) from the dashboard, e.g. to try a different Demucs model on a noisy file. If this would discard approved segments, you'll be asked to confirm.
+- **Reprocess a video** (vocal separation and/or speaker matching) from its ⋯ menu on the dashboard, e.g. to try a different Demucs model on a noisy file. If this would discard approved segments, you'll be asked to confirm.
 - **Re-run transcription** for all untranscribed segments, or re-transcribe a single segment (your manual edits are preserved).
 - **Adjust the threshold** at any time to widen or narrow the review pool.
 
@@ -168,8 +189,9 @@ FlipSync is built to be iterative — any step can be re-run without losing your
 
 | Symptom | What to do |
 |---------|-----------|
+| **Pipeline paused — "Needs speaker"** | Vocal separation finished but there's no reference to match against. At the Speaker stage on the dashboard, upload a clip or scan a video and pick your speaker, then click **Continue**. |
 | **Thin dataset / low-coverage warning** | The target speaker is a small share of that source. Add more sources, or lower the match threshold and review the borderline segments. |
-| **Everything scores red** | Your reference clip is probably noisy or mixed. Replace it with a cleaner solo sample, then re-run step 2. |
+| **Everything scores red** | Your reference is probably noisy or mixed. Replace it with a cleaner solo sample (or scan and pick a different speaker), then re-run speaker matching. |
 | **A source failed extraction** | Check the error on the dashboard — usually an unsupported or corrupt file. Re-upload or re-encode it. |
 | **Clipping warnings on approved segments** | These flag possible distortion. Listen and decide; the warning icon stays even after re-approval because it's a fact about the audio, not a workflow state. |
 | **First job is very slow** | Models download on the first run (~5 GB) and cache to disk. Subsequent runs are fast. |

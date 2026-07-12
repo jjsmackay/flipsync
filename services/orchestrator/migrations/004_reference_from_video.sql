@@ -1,4 +1,4 @@
--- Migration 003: reference-from-video (diarise + pick)
+-- Migration 004: reference-from-video (diarise + pick)
 -- reference_origin: JSON provenance of the current reference; NULL if none set.
 ALTER TABLE projects ADD COLUMN reference_origin TEXT;
 

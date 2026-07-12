@@ -1,7 +1,7 @@
 # API Contracts
 
 **Status:** DRAFT  
-**Last updated:** 2026-04-03
+**Last updated:** 2026-07-13
 
 ---
 
@@ -315,14 +315,21 @@ Return the status of the latest scout job for the project and, once complete, it
   "source_id": "…",
   "speakers": [
     { "speaker_label": "SPEAKER_00", "total_secs": 412.6, "segment_count": 173,
-      "sample_url": "/api/projects/{id}/reference/scout/samples/SPEAKER_00" },
+      "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_00" },
     { "speaker_label": "SPEAKER_01", "total_secs": 88.2, "segment_count": 41,
-      "sample_url": "/api/projects/{id}/reference/scout/samples/SPEAKER_01" }
+      "sample_url": "/projects/{id}/reference/scout/samples/SPEAKER_01" }
   ]
 }
 ```
 
 `speakers` is sorted by `total_secs` descending — the target speaker is usually the most talkative.
+
+`sample_url` is orchestrator-relative (like `audio_url` on segments). Clients resolve it against their API base — the frontend prefixes its same-origin `/api` proxy path.
+
+**Response 200 (failed):** if the latest scout failed (or was cancelled), the response still carries any candidates from an earlier successful scan, so the UI can report the failure while keeping the previous speakers pickable:
+```json
+{ "status": "failed", "error": "…", "source_id": "…", "speakers": [ /* prior candidates, [] if none */ ] }
+```
 
 **Response 404 `no_scout`** if no scout has been run for the project.
 
@@ -509,6 +516,7 @@ When `count_only=true`, returns immediately without fetching segment data:
       "end_secs": 146.88,
       "duration_secs": 4.57,
       "match_confidence": 0.91,
+      "speaker_match_confidence": 0.88,
       "transcript": "Well, I'm sure I don't know what you mean.",
       "transcript_edited": null,
       "transcript_confidence": 0.88,
@@ -525,6 +533,8 @@ When `count_only=true`, returns immediately without fetching segment data:
   }
 }
 ```
+
+`speaker_match_confidence` is the cluster-level score persisted from diarisation (see the Diarisation Service response below) — `null` on segments diarised before migration 006. The single-segment representation returned by `PATCH /segments` includes it too.
 
 ---
 
@@ -658,6 +668,8 @@ List recent jobs for a project.
 These endpoints are called by the orchestrator only. Services bind on their internal ports and are not accessible from the host.
 
 All processing endpoints are async: they accept a job, return `202 Accepted`, and the orchestrator polls for completion.
+
+**Duplicate submissions.** `POST /jobs` on every service returns **409** `{"error": "job_exists", ...}` when the `job_id` is already known, rather than re-running or overwriting the job. The orchestrator treats that 409 as *already submitted* — the usual cause is a retry after a submit whose response timed out but whose request was accepted — and proceeds straight to polling. This makes submit-with-retry idempotent end to end.
 
 ---
 
@@ -813,7 +825,7 @@ On completion (match mode):
 
 `match_confidence` is the segment's own embedding scored against the reference; `speaker_match_confidence` is the cluster-level (per-speaker average embedding) score for the speaker that segment belongs to — a secondary signal, identical across all segments of the same speaker label. For segments shorter than 1.0 s or whose embedding extraction failed, `match_confidence` equals `speaker_match_confidence` (cluster fallback).
 
-The orchestrator writes all segments to the database from this response. It copies `wav_path` to the `raw_path` column. Segments with `match_confidence` below `project.match_threshold` are written with status `below_threshold`; others with status `pending`. The orchestrator also updates the source's `coverage_ratio` column from the response.
+The orchestrator writes all segments to the database from this response. It copies `wav_path` to the `raw_path` column and persists both scores (`match_confidence` and `speaker_match_confidence`). Segments with `match_confidence` below `project.match_threshold` are written with status `below_threshold`; others with status `pending`. The orchestrator also updates the source's `coverage_ratio` column from the response.
 
 On completion (scout mode):
 ```json

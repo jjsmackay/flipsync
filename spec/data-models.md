@@ -1,7 +1,7 @@
 # Data Models
 
 **Status:** DRAFT  
-**Last updated:** 2026-04-03
+**Last updated:** 2026-07-13
 
 ---
 
@@ -114,6 +114,7 @@ CREATE TABLE segments (
 
     -- Speaker matching
     match_confidence        REAL NOT NULL,      -- cosine similarity, 0.0-1.0
+    speaker_match_confidence REAL,              -- cluster-level score, NULL on pre-006 rows
 
     -- Transcription
     transcript              TEXT,               -- NULL until transcribed
@@ -132,13 +133,16 @@ CREATE TABLE segments (
 
 **Effective transcript:** the orchestrator always uses `COALESCE(transcript_edited, transcript)` when writing the export manifest. User edits take precedence; the original is preserved.
 
-**Segment rows are not immutable across transcription.** Bulk transcription may replace an untranscribed `pending`/`below_threshold` segment with two or more sentence-aligned child rows (new UUIDs, inheriting `source_id`, `speaker_label`, and `match_confidence` from the parent; the parent row and WAV are deleted). Reviewed segments are never replaced. See [Pipeline](pipeline.md) §Sentence-aligned re-segmentation.
+**Segment rows are not immutable across transcription.** Bulk transcription may replace an untranscribed `pending`/`below_threshold` segment with two or more sentence-aligned child rows (new UUIDs, inheriting `source_id`, `speaker_label`, and `match_confidence` from the parent; the parent row and WAV are deleted). Reviewed segments are never replaced. Eligibility is re-checked **at write time**, not just at job submission: when a `children` result lands, the parent must still be `pending`/`below_threshold` with `transcript` and `transcript_edited` NULL. If the user reviewed or edited it while the job ran, the parent is kept intact and the children's texts are joined into its `transcript` instead. See [Pipeline](pipeline.md) §Sentence-aligned re-segmentation.
+
+**`speaker_match_confidence`** (migration 006) persists the cluster-level score the diarisation service reports per segment — the per-speaker average embedding scored against the reference. Secondary review signal alongside the per-segment `match_confidence`; NULL on segments diarised before the column existed. Returned by `GET /segments`.
 
 **`clipping_warning` column vs `clipping_warning` status.** These are related but distinct. The `clipping_warning` INTEGER column is a persistent flag set by the cleanup service — it records "this segment's audio clips." The `clipping_warning` status is a review state that puts the segment back in the review queue. When the user re-approves a clipping segment (status → `approved`), the `clipping_warning` column remains `1` so the UI can still show the warning icon. The column is a fact about the audio; the status is a workflow state.
 
 **`flags` column.** JSON array of string tags for machine-generated annotations that don't warrant their own column. Current usage:
 - `"cleanup_error"` — FFmpeg failed on this segment during cleanup; the segment was auto-rejected. The error message is stored in the `flags` array as `"cleanup_error: <message>"`.
 - `"short_transcript"` — segment is under 2 seconds; transcript confidence score may be unreliable.
+- `"transcription_error: <message>"` — the transcription service reported a per-segment error. `transcript` is left NULL (never written as an empty string), so the segment stays eligible for future transcription runs; the flag is cleared when a later transcription succeeds.
 
 Future flags can be added without schema changes. The UI should display flags as informational badges on the segment detail panel. Flags are set by the orchestrator based on service responses; services do not write to the database directly.
 
@@ -422,4 +426,13 @@ Schema changes use sequential numbered migration files in `services/orchestrator
 
 For v1, migrations are add-only. Breaking schema changes before v1.0 are acceptable with a documented upgrade path in the release notes.
 
-Migration 003 adds `reference_origin` to `projects` and creates the `speaker_candidates` table (reference acquisition from source video).
+Migration log:
+
+| # | File | What it does |
+|---|------|--------------|
+| 001 | `001_initial_schema.sql` | Initial schema: `projects`, `sources`, `segments`, `jobs`, indexes |
+| 002 | `002_add_exported_at.sql` | `projects.exported_at` — stale/invalidated-export detection |
+| 003 | `003_auto_approve.sql` | Auto-approve configuration on `projects` (`auto_approve_enabled` + the two thresholds) |
+| 004 | `004_reference_from_video.sql` | `projects.reference_origin` + the `speaker_candidates` table (reference acquisition from source video) |
+| 005 | `005_semantic_source_statuses.sql` | Renames positional step1/step2 column names and source statuses to `separation`/`diarisation` |
+| 006 | `006_speaker_match_confidence.sql` | `segments.speaker_match_confidence REAL NULL` — persists the cluster-level score the diarisation service already reports |
