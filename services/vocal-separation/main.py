@@ -175,7 +175,7 @@ def _run_separation(job: dict) -> None:
     """Blocking separation call — runs in a thread pool executor."""
     job_id = job["job_id"]
     input_path = job["input_path"]
-    output_path = job["output_path"]
+    output_path = job["dest_path"]
     model_name = job["model"]
     chunk_secs = job["chunk_secs"]
     already_chunked = chunk_secs is not None
@@ -335,6 +335,7 @@ async def submit_job(req: JobRequest):
         "retry_with_chunk_secs": None,
         # Internal fields (not exposed in poll response)
         "input_path": req.input_path,
+        "dest_path": req.output_path,
         "model": req.model,
         "chunk_secs": req.chunk_secs,
     }
