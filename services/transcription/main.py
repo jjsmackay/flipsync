@@ -4,9 +4,13 @@ import asyncio
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from transcriber import VALID_MODELS, load_model, process_batch
 
 app = FastAPI(title="FlipSync Transcription Service")
 
@@ -14,6 +18,13 @@ app = FastAPI(title="FlipSync Transcription Service")
 _jobs: dict[str, dict] = {}
 # Lock per job to protect concurrent mutation during background processing
 _job_locks: dict[str, asyncio.Lock] = {}
+# Strong references to in-flight background tasks so they are not garbage
+# collected mid-run (asyncio only holds weak refs to bare create_task results).
+_background_tasks: set[asyncio.Task] = set()
+
+# Bound the job store so a long-running service does not leak memory. Once the
+# cap is reached, the oldest terminal (complete/failed) jobs are evicted.
+MAX_JOBS = 500
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +43,58 @@ class JobRequest(BaseModel):
     language: Optional[str] = None
     batch_size: int = 16
 
+    @field_validator("model")
+    @classmethod
+    def _validate_model(cls, v: str) -> str:
+        if v not in VALID_MODELS:
+            raise ValueError(
+                f"Invalid model '{v}'. Must be one of: {sorted(VALID_MODELS)}."
+            )
+        return v
+
+    @field_validator("batch_size")
+    @classmethod
+    def _validate_batch_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("batch_size must be a positive integer.")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return validation errors in the flat service error format."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "validation_error",
+            "message": "Request validation failed.",
+            "detail": {"errors": jsonable_encoder(exc.errors())},
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Job store maintenance
+# ---------------------------------------------------------------------------
+
+def _evict_if_full() -> None:
+    """Evict oldest terminal jobs when the store is at capacity."""
+    while len(_jobs) >= MAX_JOBS:
+        evicted = False
+        for jid, job in list(_jobs.items()):
+            if job.get("status") in ("complete", "failed"):
+                _jobs.pop(jid, None)
+                _job_locks.pop(jid, None)
+                evicted = True
+                break
+        if not evicted:
+            # All jobs still running; do not evict live state.
+            break
+
 
 # ---------------------------------------------------------------------------
 # Background transcription task
@@ -48,14 +111,14 @@ async def _run_transcription(
     loop = asyncio.get_running_loop()
 
     try:
-        # Load (or retrieve cached) model in executor to avoid blocking event loop
-        from transcriber import load_model, process_batch
-
-        model = await loop.run_in_executor(None, load_model, model_size)
+        # Load (or retrieve cached) model in executor to avoid blocking event loop.
+        # batch_size drives CTranslate2 worker count for concurrent transcription.
+        model = await loop.run_in_executor(None, load_model, model_size, batch_size)
 
         total = len(segments)
 
-        # Process in batches
+        # Process in batches; each batch's segments transcribe concurrently
+        # (bounded by batch_size) inside process_batch.
         for batch_start in range(0, total, batch_size):
             batch = segments[batch_start : batch_start + batch_size]
 
@@ -66,6 +129,7 @@ async def _run_transcription(
                 model,
                 batch,
                 language,
+                batch_size,
             )
 
             # Append results to cumulative list (thread-safe via asyncio lock)
@@ -121,6 +185,8 @@ async def submit_job(req: JobRequest):
             },
         )
 
+    _evict_if_full()
+
     job_state = {
         "job_id": req.job_id,
         "status": "running",
@@ -133,8 +199,8 @@ async def submit_job(req: JobRequest):
 
     segments_plain = [{"id": s.id, "wav_path": s.wav_path} for s in req.segments]
 
-    # Fire and forget background task
-    asyncio.create_task(
+    # Launch background task and retain a strong reference until it finishes.
+    task = asyncio.create_task(
         _run_transcription(
             req.job_id,
             segments_plain,
@@ -143,6 +209,8 @@ async def submit_job(req: JobRequest):
             req.batch_size,
         )
     )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     return {"job_id": req.job_id, "segment_count": len(req.segments)}
 
