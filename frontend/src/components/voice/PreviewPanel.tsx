@@ -72,6 +72,8 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
 
   async function loadAudio(previewId: string) {
     const res = await fetch(getPreviewAudioUrl(projectId, previewId))
+    // A non-2xx here returns the JSON error body — never hand that to the audio element.
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const blob = await res.blob()
     if (!mountedRef.current) return
     revokeUrl()
@@ -113,7 +115,13 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
           if (!preview) return
           if (preview.status === 'complete') {
             clearPolling()
-            await loadAudio(previewId)
+            try {
+              await loadAudio(previewId)
+            } catch (err) {
+              if (!mountedRef.current) return
+              setError(err instanceof Error ? err.message : 'Failed to load generated audio.')
+              setPhase('error')
+            }
           } else if (preview.status === 'failed') {
             clearPolling()
             setError('Synthesis failed.')
