@@ -22,7 +22,9 @@ const config: ProjectConfig = {
   ...TUNING_DEFAULTS,
 }
 
-function renderPanel(overrides: { ranAlready?: boolean; onSaved?: () => void } = {}) {
+function renderPanel(
+  overrides: { ranAlready?: boolean; onSaved?: () => void; advanced?: boolean } = {},
+) {
   render(
     <StageSettingsPanel
       projectId="p1"
@@ -30,6 +32,8 @@ function renderPanel(overrides: { ranAlready?: boolean; onSaved?: () => void } =
       knobs={SEPARATION_KNOBS}
       ranAlready={overrides.ranAlready ?? false}
       onSaved={overrides.onSaved ?? (() => {})}
+      // Most tests drive Shifts, an advanced knob — show them by default.
+      advanced={overrides.advanced ?? true}
     />,
   )
   // The disclosure starts collapsed — open it.
@@ -46,6 +50,12 @@ describe('StageSettingsPanel', () => {
     renderPanel()
     expect(screen.getByLabelText('Shifts')).toHaveValue(0)
     expect(screen.getByRole('button', { name: 'Save settings' })).toBeDisabled()
+  })
+
+  it('hides advanced knobs unless the toggle is on', () => {
+    renderPanel({ advanced: false })
+    expect(screen.getByLabelText('Separation model')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Shifts')).not.toBeInTheDocument()
   })
 
   it('saves only this panel’s knob subset', async () => {

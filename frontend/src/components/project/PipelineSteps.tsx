@@ -46,6 +46,8 @@ interface PipelineStepsProps {
   onTrainStarted?: () => void
   /** The Train row — the strip's Train chip and the next-action card scroll to it. */
   trainRowRef?: RefObject<HTMLDivElement>
+  /** Header toggle: show advanced-flagged knobs in the settings panels. */
+  advanced?: boolean
 }
 
 const CHIP_CLASSES: Record<StepChip['tone'], string> = {
@@ -153,6 +155,7 @@ export function PipelineSteps({
   onGoToModels,
   onTrainStarted,
   trainRowRef,
+  advanced = false,
 }: PipelineStepsProps) {
   const busy = hasActivePipelineJob(project)
   const sources = project.stats.source_coverage
@@ -217,6 +220,7 @@ export function PipelineSteps({
           knobs={knobs}
           ranAlready={step !== undefined && ranAlready(step)}
           onSaved={onSaved}
+          advanced={advanced}
         />
       </div>
     )
@@ -311,7 +315,7 @@ export function PipelineSteps({
       >
         {hasSegments && (
           <>
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 pb-3">
               <CountChip value={project.stats.approved_count} label="approved" tone="bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300" />
               <CountChip value={project.stats.auto_approved_count} label="auto-approved" tone="bg-teal-50 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300" />
               <CountChip value={project.stats.pending_count} label="pending" tone="bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-300" />

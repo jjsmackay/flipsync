@@ -20,6 +20,9 @@ interface StageSettingsPanelProps {
   ranAlready: boolean
   /** Called after a successful save so the parent can refetch. */
   onSaved: () => void
+  /** Header toggle: show the advanced-flagged knobs. Values/dirty tracking
+   *  always cover the full knob list so toggling mid-edit loses nothing. */
+  advanced?: boolean
 }
 
 // Collapsed-by-default disclosure holding one pipeline step's tuning knobs.
@@ -31,6 +34,7 @@ export function StageSettingsPanel({
   knobs,
   ranAlready,
   onSaved,
+  advanced = false,
 }: StageSettingsPanelProps) {
   const [values, setValues] = useState<TuningValues>(() => configValues(config, knobs))
   // Local baseline rather than the config prop: after a save the parent refetch
@@ -77,9 +81,9 @@ export function StageSettingsPanel({
         <span className="inline-block transition-transform group-open:rotate-90">▸</span>
         Settings
       </summary>
-      <div className="mt-3 space-y-3">
+      <div className="mt-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
         <KnobFields
-          knobs={knobs}
+          knobs={knobs.filter((k) => advanced || !k.advanced)}
           values={values}
           onChange={handleChange}
           idPrefix={`stage-${knobs[0]?.key ?? 'knobs'}`}

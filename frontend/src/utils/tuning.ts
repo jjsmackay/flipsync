@@ -30,6 +30,9 @@ interface KnobBase {
   key: TuningKey
   label: string
   hint?: string
+  /** Hidden unless the header's Advanced toggle is on. Basic = you'd touch it
+   *  because you heard a problem; advanced = GPU limits, sampling internals, DSP. */
+  advanced?: boolean
 }
 export interface NumberKnob extends KnobBase {
   kind: 'number'
@@ -60,6 +63,7 @@ export const SEPARATION_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'demucs_shifts',
+    advanced: true,
     label: 'Shifts',
     min: 0,
     max: 10,
@@ -90,6 +94,7 @@ export const DIARISATION_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'diar_min_segment_duration',
+    advanced: true,
     label: 'Min segment (s)',
     min: 0.1,
     max: 30,
@@ -102,6 +107,7 @@ export const TRANSCRIPTION_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'whisper_batch_size',
+    advanced: true,
     label: 'Batch size',
     min: 1,
     max: 64,
@@ -111,6 +117,7 @@ export const TRANSCRIPTION_KNOBS: Knob[] = [
   {
     kind: 'select',
     key: 'whisper_compute_type',
+    advanced: true,
     label: 'Precision',
     options: WHISPER_COMPUTE_TYPES,
     hint: 'Lighter precisions like int8_float16 cut VRAM use on a constrained GPU.',
@@ -118,6 +125,7 @@ export const TRANSCRIPTION_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'whisper_beam_size',
+    advanced: true,
     label: 'Beam size',
     min: 1,
     max: 10,
@@ -151,6 +159,7 @@ export const CLEANUP_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'highpass_hz',
+    advanced: true,
     label: 'High-pass (Hz)',
     min: 0,
     max: 1000,
@@ -160,6 +169,7 @@ export const CLEANUP_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'silence_threshold_db',
+    advanced: true,
     label: 'Silence threshold (dB)',
     min: -90,
     max: 0,
@@ -169,6 +179,7 @@ export const CLEANUP_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'silence_min_duration_secs',
+    advanced: true,
     label: 'Silence min (s)',
     min: 0,
     max: 10,
@@ -190,6 +201,7 @@ export const XTTS_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'xtts_batch_size',
+    advanced: true,
     label: 'Batch size',
     min: 1,
     max: 64,
@@ -199,6 +211,7 @@ export const XTTS_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'xtts_grad_accum',
+    advanced: true,
     label: 'Grad accum',
     min: 1,
     max: 64,
@@ -208,6 +221,7 @@ export const XTTS_KNOBS: Knob[] = [
   {
     kind: 'number',
     key: 'xtts_learning_rate',
+    advanced: true,
     label: 'Learning rate',
     min: 1e-7,
     max: 1,

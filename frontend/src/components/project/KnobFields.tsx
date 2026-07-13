@@ -75,10 +75,10 @@ export function KnobFields({ knobs, values, onChange, disabled, idPrefix }: Knob
         const id = `${idPrefix}-${knob.key}`
         if (knob.kind === 'checkbox') {
           return (
-            <div key={knob.key} className="flex items-start gap-4">
+            <div key={knob.key} className="flex items-start gap-3">
               <label
                 htmlFor={id}
-                className="flex w-44 shrink-0 items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400 cursor-pointer select-none"
+                className="flex w-36 shrink-0 items-center gap-2 text-xs font-medium text-gray-600 dark:text-gray-400 cursor-pointer select-none"
               >
                 <input
                   id={id}
@@ -95,8 +95,8 @@ export function KnobFields({ knobs, values, onChange, disabled, idPrefix }: Knob
           )
         }
         return (
-          <div key={knob.key} className="flex items-start gap-4">
-            <div className="w-44 shrink-0">
+          <div key={knob.key} className="flex items-start gap-3">
+            <div className="w-36 shrink-0">
               <label htmlFor={id} className={LABEL_CLASS}>
                 {knob.label}
               </label>

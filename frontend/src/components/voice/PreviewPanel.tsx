@@ -7,6 +7,9 @@ import { errorMessage } from '../../utils/errors'
 interface PreviewPanelProps {
   projectId: string
   models: Model[]
+  /** Header toggle: show the top-k / top-p dials. Values still ride every
+   *  request, so hiding them mid-session loses nothing. */
+  advanced?: boolean
 }
 
 const TEXT_MAX = 500
@@ -14,10 +17,10 @@ const POLL_MS = 3000
 
 // Per-run XTTS sampling knobs, shared across both columns so A/B compares
 // models, not sampling noise. Defaults mirror the orchestrator's.
+// repetition_penalty stays server-default only — not a UI dial.
 interface SamplingParams {
   temperature: number
   speed: number
-  repetition_penalty: number
   top_k: number
   top_p: number
 }
@@ -25,7 +28,6 @@ interface SamplingParams {
 const DEFAULT_SAMPLING: SamplingParams = {
   temperature: 0.65,
   speed: 1,
-  repetition_penalty: 10,
   top_k: 50,
   top_p: 0.85,
 }
@@ -249,7 +251,7 @@ function SliderRow({
   )
 }
 
-export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
+export function PreviewPanel({ projectId, models, advanced = false }: PreviewPanelProps) {
   const readyModels = models.filter((m) => m.status === 'ready')
 
   const [text, setText] = useState('')
@@ -291,83 +293,79 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             {text.length} / {TEXT_MAX}
           </div>
         </div>
-        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-          <span className="w-32">Conditioning</span>
-          <select
-            value={source}
-            onChange={(e) => setSource(e.target.value as ConditioningOption)}
-            className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
-          >
-            {(Object.keys(CONDITIONING_LABELS) as ConditioningOption[]).map((opt) => (
-              <option key={opt} value={opt}>
-                {CONDITIONING_LABELS[opt]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <SliderRow
-          id="preview-temperature"
-          label="Temperature"
-          min={0.05}
-          max={2}
-          step={0.05}
-          decimals={2}
-          value={sampling.temperature}
-          onChange={setKnob('temperature')}
-          hint="Higher = more varied delivery."
-        />
-        <SliderRow
-          id="preview-speed"
-          label="Speed"
-          min={0.5}
-          max={2}
-          step={0.05}
-          decimals={2}
-          value={sampling.speed}
-          onChange={setKnob('speed')}
-          hint="Speaking-rate multiplier. 1 is the model's natural pace."
-        />
-        <SliderRow
-          id="preview-repetition-penalty"
-          label="Repetition penalty"
-          min={1}
-          max={20}
-          step={0.5}
-          decimals={1}
-          value={sampling.repetition_penalty}
-          onChange={setKnob('repetition_penalty')}
-          hint="Raise it to kill stutters, repeated syllables, and long trailing silences."
-        />
-        <details className="group">
-          <summary className="cursor-pointer select-none text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors list-none flex items-center gap-1">
-            <span className="inline-block transition-transform group-open:rotate-90">▸</span>
-            Advanced sampling
-          </summary>
-          <div className="mt-3 space-y-3">
-            <SliderRow
-              id="preview-top-k"
-              label="Top-k"
-              min={1}
-              max={100}
-              step={1}
-              decimals={0}
-              value={sampling.top_k}
-              onChange={setKnob('top_k')}
-              hint="Samples from only the k most likely tokens. Tighten to reduce weird prosody excursions."
-            />
-            <SliderRow
-              id="preview-top-p"
-              label="Top-p"
-              min={0.05}
-              max={1}
-              step={0.05}
-              decimals={2}
-              value={sampling.top_p}
-              onChange={setKnob('top_p')}
-              hint="Nucleus sampling cutoff. Lower keeps only the most probable continuations."
-            />
+        {/* Synthesis parameters — same container treatment as the step settings cards. */}
+        <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
+          <div>
+            <label
+              htmlFor="preview-conditioning"
+              className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-0.5"
+            >
+              Conditioning
+            </label>
+            <select
+              id="preview-conditioning"
+              value={source}
+              onChange={(e) => setSource(e.target.value as ConditioningOption)}
+              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
+            >
+              {(Object.keys(CONDITIONING_LABELS) as ConditioningOption[]).map((opt) => (
+                <option key={opt} value={opt}>
+                  {CONDITIONING_LABELS[opt]}
+                </option>
+              ))}
+            </select>
           </div>
-        </details>
+          <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+          <SliderRow
+            id="preview-temperature"
+            label="Temperature"
+            min={0.05}
+            max={2}
+            step={0.05}
+            decimals={2}
+            value={sampling.temperature}
+            onChange={setKnob('temperature')}
+            hint="Higher = more varied delivery."
+          />
+          <SliderRow
+            id="preview-speed"
+            label="Speed"
+            min={0.5}
+            max={2}
+            step={0.05}
+            decimals={2}
+            value={sampling.speed}
+            onChange={setKnob('speed')}
+            hint="Speaking-rate multiplier. 1 is the model's natural pace."
+          />
+          {advanced && (
+            <>
+              <SliderRow
+                id="preview-top-k"
+                label="Top-k"
+                min={1}
+                max={100}
+                step={1}
+                decimals={0}
+                value={sampling.top_k}
+                onChange={setKnob('top_k')}
+                hint="Samples from only the k most likely tokens."
+              />
+              <SliderRow
+                id="preview-top-p"
+                label="Top-p"
+                min={0.05}
+                max={1}
+                step={0.05}
+                decimals={2}
+                value={sampling.top_p}
+                onChange={setKnob('top_p')}
+                hint="Nucleus cutoff. Lower keeps only the most probable continuations."
+              />
+            </>
+          )}
+          </div>
+        </div>
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Generate the same text against the base model and a fine-tuned model to compare by ear.
         </p>

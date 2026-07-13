@@ -25,6 +25,27 @@ import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { CollapsibleSection, type CollapsibleSectionHandle } from '../components/ui/CollapsibleSection'
 import { ModelsSection } from '../components/voice/ModelsSection'
 
+// The header's Advanced toggle: a per-browser viewing preference (like the
+// section-collapse memory), NOT project config — it changes which knobs render,
+// never what any run does. localStorage can throw (private mode) — degrade.
+const ADVANCED_KEY = 'flipsync:ui:advanced'
+
+function readAdvancedPref(): boolean {
+  try {
+    return localStorage.getItem(ADVANCED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeAdvancedPref(on: boolean): void {
+  try {
+    localStorage.setItem(ADVANCED_KEY, on ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
 // XTTS presence is a deployment fact, fetched once. Memoise a resolved `true` at
 // module scope so a later transient probe failure can't flip an enabled
 // deployment back to the Export terminal stage.
@@ -76,7 +97,13 @@ export function ProjectDashboardPage() {
   const [reprocessConfirm, setReprocessConfirm] = useState<ReprocessConfirm | null>(null)
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
   const [compareOpen, setCompareOpen] = useState(false)
+  const [advanced, setAdvanced] = useState(readAdvancedPref)
   const xttsEnabled = useXttsEnabled()
+
+  function toggleAdvanced(on: boolean) {
+    setAdvanced(on)
+    writeAdvancedPref(on)
+  }
   const pipelineRef = useRef<CollapsibleSectionHandle>(null)
   const reviewSettingsRef = useRef<HTMLDetailsElement>(null)
   const trainRowRef = useRef<HTMLDivElement>(null)
@@ -292,6 +319,18 @@ export function ProjectDashboardPage() {
           </h1>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
+          <label
+            className="flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 cursor-pointer select-none"
+            title="Show advanced tuning settings (GPU, sampling, and DSP internals)"
+          >
+            <input
+              type="checkbox"
+              checked={advanced}
+              onChange={(e) => toggleAdvanced(e.target.checked)}
+              className="accent-blue-600 w-3.5 h-3.5"
+            />
+            Advanced
+          </label>
           <ThemeToggle />
           {hasSegments && (
             <button
@@ -373,6 +412,7 @@ export function ProjectDashboardPage() {
               void reloadModels()
             }}
             trainRowRef={trainRowRef}
+            advanced={advanced}
           />
         </CollapsibleSection>
       )}
@@ -391,6 +431,7 @@ export function ProjectDashboardPage() {
             modelsLoading={modelsLoading}
             modelsError={modelsError}
             reloadModels={() => void reloadModels()}
+            advanced={advanced}
           />
         </CollapsibleSection>
       )}

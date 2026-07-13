@@ -4,6 +4,8 @@ import { PreviewPanel } from './PreviewPanel'
 
 interface ModelsSectionProps {
   project: ProjectDetail
+  /** Header toggle: forwarded to the preview sampling dials. */
+  advanced?: boolean
   // Models state is owned by the dashboard (the pipeline's Train row needs it
   // too); this section renders it and asks for reloads. Training itself lives
   // on the pipeline's Train row — this section is trained models + preview.
@@ -26,6 +28,7 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
 
 export function ModelsSection({
   project,
+  advanced = false,
   models,
   modelsLoading,
   modelsError,
@@ -42,7 +45,7 @@ export function ModelsSection({
       />
 
       <SubSection title="Preview">
-        <PreviewPanel projectId={project.id} models={models} />
+        <PreviewPanel projectId={project.id} models={models} advanced={advanced} />
       </SubSection>
     </div>
   )
