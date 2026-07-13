@@ -9,38 +9,55 @@ interface UploadAreaProps {
   compact?: boolean
 }
 
+interface UploadFailure {
+  name: string
+  message: string
+}
+
 export function UploadArea({ projectId, onUploaded, compact = false }: UploadAreaProps) {
   const [uploading, setUploading] = useState(false)
   const [uploadingName, setUploadingName] = useState<string | null>(null)
   // null = upload in flight but browser can't compute progress (indeterminate)
   const [progress, setProgress] = useState<number | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [queueTotal, setQueueTotal] = useState(0)
+  const [queuePosition, setQueuePosition] = useState(0)
+  const [failures, setFailures] = useState<UploadFailure[]>([])
   const [dragOver, setDragOver] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  async function handleSourceFile(file: File) {
-    setError(null)
+  async function handleSourceFiles(files: File[]) {
+    if (files.length === 0) return
+    setFailures([])
     setUploading(true)
-    setUploadingName(file.name)
-    setProgress(0)
+    setQueueTotal(files.length)
     try {
-      await uploadSource(projectId, file, (f) => setProgress(f))
-      onUploaded()
-    } catch (err) {
-      setError(errorMessage(err, 'Upload failed'))
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        setQueuePosition(i + 1)
+        setUploadingName(file.name)
+        setProgress(0)
+        try {
+          await uploadSource(projectId, file, (f) => setProgress(f))
+          onUploaded()
+        } catch (err) {
+          setFailures((prev) => [...prev, { name: file.name, message: errorMessage(err, 'Upload failed') }])
+        }
+      }
     } finally {
       setUploading(false)
       setUploadingName(null)
       setProgress(null)
+      setQueueTotal(0)
+      setQueuePosition(0)
     }
   }
 
   function onDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleSourceFile(file)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length) handleSourceFiles(files)
   }
 
   function onDragOver(e: DragEvent<HTMLDivElement>) {
@@ -53,8 +70,8 @@ export function UploadArea({ projectId, onUploaded, compact = false }: UploadAre
   }
 
   function onFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) handleSourceFile(file)
+    const files = Array.from(e.target.files ?? [])
+    if (files.length) handleSourceFiles(files)
     e.target.value = ''
   }
 
@@ -63,6 +80,7 @@ export function UploadArea({ projectId, onUploaded, compact = false }: UploadAre
       ref={fileInputRef}
       type="file"
       accept="video/*,audio/*"
+      multiple
       className="hidden"
       onChange={onFileChange}
       disabled={uploading}
@@ -79,13 +97,21 @@ export function UploadArea({ projectId, onUploaded, compact = false }: UploadAre
             hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {uploading
-            ? `Uploading${progress != null && progress < 1 ? ` ${Math.round(progress * 100)}%` : '…'}`
+            ? `Uploading${queueTotal > 1 ? ` ${queuePosition}/${queueTotal}` : ''}${progress != null && progress < 1 ? ` ${Math.round(progress * 100)}%` : '…'}`
             : '+ Add video'}
         </button>
         {uploading && uploadingName && (
           <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[16rem]">{uploadingName}</span>
         )}
-        {error && <span className="text-sm text-red-600 dark:text-red-400">{error}</span>}
+        {failures.length > 0 && (
+          <div className="flex flex-col">
+            {failures.map((f) => (
+              <span key={f.name} className="text-sm text-red-600 dark:text-red-400">
+                {f.name}: {f.message}
+              </span>
+            ))}
+          </div>
+        )}
         {fileInput}
       </div>
     )
@@ -106,6 +132,7 @@ export function UploadArea({ projectId, onUploaded, compact = false }: UploadAre
           <div className="space-y-2">
             <p className="text-sm text-gray-600 dark:text-gray-400">
               {progress != null && progress >= 1 ? 'Finalising…' : 'Uploading…'}
+              {queueTotal > 1 && <span className="ml-1">{queuePosition} of {queueTotal}</span>}
               {progress != null && progress < 1 && (
                 <span className="ml-1 font-mono text-gray-500 dark:text-gray-400">
                   {Math.round(progress * 100)}%
@@ -136,8 +163,14 @@ export function UploadArea({ projectId, onUploaded, compact = false }: UploadAre
 
       {fileInput}
 
-      {error && (
-        <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+      {failures.length > 0 && (
+        <div className="space-y-1">
+          {failures.map((f) => (
+            <p key={f.name} className="text-sm text-red-600 dark:text-red-400">
+              {f.name}: {f.message}
+            </p>
+          ))}
+        </div>
       )}
     </div>
   )
