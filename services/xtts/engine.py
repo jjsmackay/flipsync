@@ -136,6 +136,7 @@ def finetune(
 
     import torch
     from trainer import Trainer, TrainerArgs
+    from TTS.config.shared_configs import BaseDatasetConfig
     from TTS.tts.datasets import load_tts_samples
     from TTS.tts.layers.xtts.trainer.gpt_trainer import (
         GPTArgs,
@@ -197,17 +198,21 @@ def finetune(
     # project dir (two levels up from output_dir = .../projects/<id>/models/<id>)
     # as the root and reference the CSVs by their path relative to it.
     dataset_root = os.path.dirname(os.path.dirname(output_dir))
-    dataset_config = {
-        "formatter": "coqui",
-        "dataset_name": "flipsync",
-        "path": dataset_root,
-        "meta_file_train": os.path.relpath(train_csv, dataset_root),
-        "meta_file_val": os.path.relpath(eval_csv, dataset_root),
-        "language": params["language"],
-        # load_tts_samples reads dataset["ignored_speakers"] unconditionally
-        # (subscript, not .get) — omitting it raises KeyError 'ignored_speakers'.
-        "ignored_speakers": [],
-    }
+    # load_tts_samples requires a BaseDatasetConfig, not a plain dict: it reads
+    # some keys by subscript (dataset["formatter"]) but others by attribute
+    # (dataset.meta_file_attn_mask), and only a Coqpit supports both. It also
+    # supplies the defaults the loader needs (ignored_speakers=None,
+    # meta_file_attn_mask=""). root_path is the project dir (ancestor of both
+    # the cleaned/ WAVs and the dataset CSVs) so add_extra_keys' relative_to
+    # succeeds; the CSVs are referenced by their path relative to it.
+    dataset_config = BaseDatasetConfig(
+        formatter="coqui",
+        dataset_name="flipsync",
+        path=dataset_root,
+        meta_file_train=os.path.relpath(train_csv, dataset_root),
+        meta_file_val=os.path.relpath(eval_csv, dataset_root),
+        language=params["language"],
+    )
 
     config = GPTTrainerConfig(
         epochs=params.get("epochs", 10),
