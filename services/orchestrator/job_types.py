@@ -38,6 +38,7 @@ JOB_TYPES: dict[str, JobSpec] = {
     "dataset_build": JobSpec(service="cleanup", voice=True),
     "finetune": JobSpec(service="xtts", gpu=True, voice=True),
     "preview": JobSpec(service="xtts", gpu=True, voice=True),
+    "tuning_preview": JobSpec(service="cleanup"),
 }
 
 GPU_JOB_TYPES = frozenset(t for t, spec in JOB_TYPES.items() if spec.gpu)
@@ -45,3 +46,9 @@ GPU_JOB_SERVICES: dict[str, str] = {
     t: spec.service for t, spec in JOB_TYPES.items() if spec.gpu
 }
 VOICE_JOB_TYPES = frozenset(t for t, spec in JOB_TYPES.items() if spec.voice)
+
+# Job types excluded from project-status recomputation: the voice jobs (see
+# JobSpec.voice) plus ephemeral tuning previews — a settings A/B render must
+# never flip the project to 'processing'. These still appear in active_jobs
+# API responses and still block project deletion.
+STATUS_EXEMPT_JOB_TYPES = VOICE_JOB_TYPES | frozenset({"tuning_preview"})

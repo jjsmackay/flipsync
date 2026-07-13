@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from errors import AppError, app_error_handler
 from jobs import recover_jobs, shutdown_runners
-from routers import projects, sources, reference, pipeline, segments, models, previews
+from routers import projects, sources, reference, pipeline, segments, models, previews, tuning
 from service_client import SERVICE_URLS, check_health, close_client, is_healthy
 from state_machines import BULK_ACTION_SOURCES
 
@@ -108,6 +108,7 @@ app.include_router(pipeline.router)
 app.include_router(segments.router)
 app.include_router(models.router)
 app.include_router(previews.router)
+app.include_router(tuning.router)
 
 
 @app.get("/health")

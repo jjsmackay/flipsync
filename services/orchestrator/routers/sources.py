@@ -7,6 +7,7 @@ from typing import Optional
 
 import aiofiles
 from fastapi import APIRouter, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from db import project_dir, require_project, utc_now
@@ -59,6 +60,22 @@ async def upload_source(project_id: str, file: UploadFile = File(...)):
     invalidate_export(project_id)
 
     return {"id": source_id, "filename": filename, "status": "extracting"}
+
+
+@router.get("/{source_id}/vocals")
+async def get_source_vocals(project_id: str, source_id: str):
+    conn = require_project(project_id)
+    source = conn.execute(
+        "SELECT vocals_path FROM sources WHERE id=? AND project_id=?", (source_id, project_id)
+    ).fetchone()
+    if source is None:
+        raise AppError(404, "not_found", "Source not found.")
+    if not source["vocals_path"]:
+        raise AppError(404, "audio_not_found", "Vocal separation has not produced a stem for this source yet.")
+    wav = project_dir(project_id) / source["vocals_path"]
+    if not wav.exists():
+        raise AppError(404, "audio_not_found", "Vocals WAV is missing on disk.")
+    return FileResponse(str(wav), media_type="audio/wav")
 
 
 class SourceDelete(BaseModel):

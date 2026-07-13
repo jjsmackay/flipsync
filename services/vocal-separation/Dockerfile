@@ -11,15 +11,7 @@ RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 # bind mount under MODELS_ROOT (e.g. ${MODELS_ROOT}/audio-separator) and set
 # ROFORMER_MODEL_DIR accordingly in docker-compose.yml (owed deploy step).
 COPY requirements.txt .
-# demucs 4.0.1 pulls in diffq, a Cython extension with no cp311 wheel, so pip
-# compiles it from source and needs a C toolchain. Install build-essential and
-# purge it in the same layer so it doesn't bloat the runtime image.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
-    && pip install --no-cache-dir -r requirements.txt \
-    && apt-get purge -y build-essential \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

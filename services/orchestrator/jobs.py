@@ -22,9 +22,16 @@ import httpx
 
 from audio import get_duration
 from db import get_conn, project_dir, utc_now as _now
-# Job-type properties (GPU gating, per-type service, voice classification)
-# live in the job_types registry; re-exported here for existing importers.
-from job_types import JOB_TYPES, GPU_JOB_TYPES, GPU_JOB_SERVICES, VOICE_JOB_TYPES
+# Job-type properties (GPU gating, per-type service, voice classification,
+# status exemption) live in the job_types registry; re-exported here for
+# existing importers.
+from job_types import (
+    JOB_TYPES,
+    GPU_JOB_TYPES,
+    GPU_JOB_SERVICES,
+    VOICE_JOB_TYPES,
+    STATUS_EXEMPT_JOB_TYPES,
+)
 from state_machines import APPROVED_STATUSES, EXPORTABLE_STATUSES, sql_status_list
 import service_client
 from status import auto_approve_promote, recompute_project_status as _recompute_project_status
@@ -33,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 # One asyncio.Lock per project to enforce one-at-a-time execution.
 _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
 
 # The global GPU lock is created lazily per event loop: an asyncio.Lock binds
 # to the loop it is first awaited on, and tests run each case in a fresh loop
@@ -2047,6 +2053,57 @@ async def _handle_preview(
     _recompute_project_status(project_id)
 
 
+async def _handle_tuning_preview(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Ephemeral A/B render: run ONE segment through the cleanup service with
+    draft params, writing to the tuning_previews/ scratch dir. Never touches
+    segment rows and never drives project status."""
+    conn = get_conn(project_id)
+    seg = conn.execute(
+        "SELECT id, raw_path FROM segments WHERE id=? AND project_id=?",
+        (params["segment_id"], project_id),
+    ).fetchone()
+    if seg is None:
+        _fail_job(project_id, job_id, "segment_not_found: the segment was deleted before the preview ran")
+        return
+    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+
+    out_dir = project_dir(project_id) / "tuning_previews"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    data_prefix = _data_prefix()
+    cleanup_params = _cleanup_params(project)
+    cleanup_params.update(params["params"])  # draft knobs override saved config
+
+    payload = {
+        "job_id": job_id,
+        "segments": [{
+            "id": seg["id"],
+            "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
+            "output_path": f"{data_prefix}/projects/{project_id}/tuning_previews/{job_id}.wav",
+        }],
+        "params": cleanup_params,
+    }
+    try:
+        await _submit_with_retry("cleanup", payload)
+    except Exception as exc:
+        _fail_job(project_id, job_id, f"cleanup_submit_failed: {exc}")
+        return
+    result = await service_client.poll_until_complete("cleanup", job_id)
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "unknown_error"))
+        return
+    seg_result = (result.get("results") or [{}])[0]
+    if seg_result.get("error"):
+        _fail_job(project_id, job_id, f"cleanup_error: {seg_result['error']}")
+        return
+    if seg_result.get("auto_rejected"):
+        _fail_job(project_id, job_id, "silent_after_trim: this segment is entirely silent with these settings")
+        return
+    _complete_job(project_id, job_id)
+
+
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
@@ -2081,6 +2138,7 @@ HANDLERS: dict[str, Callable] = {
     "dataset_build": _handle_dataset_build,
     "finetune": _handle_finetune,
     "preview": _handle_preview,
+    "tuning_preview": _handle_tuning_preview,
 }
 
 # A job type missing from either side would otherwise only fail when first
