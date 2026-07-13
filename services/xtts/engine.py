@@ -141,8 +141,10 @@ def finetune(
         GPTArgs,
         GPTTrainer,
         GPTTrainerConfig,
-        XttsAudioConfig,
     )
+    # XttsAudioConfig lives in TTS.tts.models.xtts in coqui-tts 0.27.5, not in
+    # gpt_trainer (which only re-exports GPTArgs/GPTTrainerConfig/GPTTrainer).
+    from TTS.tts.models.xtts import XttsAudioConfig
     from TTS.utils.manage import ModelManager
 
     os.makedirs(output_dir, exist_ok=True)

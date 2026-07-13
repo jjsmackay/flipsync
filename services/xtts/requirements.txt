@@ -7,11 +7,22 @@ uvicorn
 # explicitly below. Without them the image has no torch at all, and every
 # CUDA-touching call — including the VRAM pre-flight — fails, surfacing as
 # "insufficient_vram: 12 GB required, 0.0 GB available".
-coqui-tts
+# Pinned: coqui-tts declares loose lower bounds only (e.g. transformers>=4.57
+# with no upper cap), so an unpinned build drifts to bleeding-edge transitive
+# deps that break its own code. Pin the whole known-good set instead.
+coqui-tts==0.27.5
 soundfile
 # PyPI's linux x86_64 torch wheel is the CUDA build (bundles its own CUDA
 # runtime), so no CUDA base image or system toolkit is needed — the host just
-# needs a recent NVIDIA driver. Pinned to the versions coqui-tts 0.27.5
-# currently resolves against.
+# needs a recent NVIDIA driver.
 torch==2.13.0
 torchaudio==2.11.0
+# torch >= 2.9 makes coqui-tts require torchcodec for audio IO (it raises an
+# ImportError at `import TTS` otherwise). Only declared under coqui-tts's
+# `codec` extra, so pin it directly. Needs FFmpeg shared libs — already
+# installed in the image.
+torchcodec==0.14.0
+# coqui-tts 0.27.5 needs transformers>=4.57 but has no upper bound; transformers
+# 5.x removed `isin_mps_friendly` from transformers.pytorch_utils, which coqui
+# imports. Cap below 5 — 4.57.6 is the current 4.x that satisfies coqui.
+transformers==4.57.6
