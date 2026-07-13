@@ -80,6 +80,20 @@ def compute_eta_secs(elapsed_secs: float, steps_done: int, total_steps: int) -> 
     return (elapsed_secs / steps_done) * remaining
 
 
+def output_sample_rate(model) -> int:
+    """Sample rate (Hz) of the waveform ``model.inference`` emits.
+
+    XTTS-v2's HiFi-GAN decoder upsamples its output to
+    ``model_args.output_sample_rate`` (24000 for the stock checkpoint) — it is
+    NOT the 22050 Hz ``_SAMPLE_RATE`` the GPT/DVAE operate at, and the base
+    ``config.json`` we ship in every bundle carries the 24000 default. Read the
+    rate off the loaded model (``model.args`` is exactly what the decoder was
+    built from) so the WAV we write is labelled at the rate the samples were
+    actually generated at, whatever checkpoint produced them.
+    """
+    return int(model.args.output_sample_rate)
+
+
 def select_latent_wavs(train_rows: list[list[str]], limit: int = 5) -> list[str]:
     """Pick up to ``limit`` audio files for speaker-latent conditioning.
 
@@ -386,9 +400,13 @@ def synthesise(
         temperature=params.get("temperature", 0.65),
     )
     wav = torch.tensor(out["wav"]).unsqueeze(0)
-    torchaudio.save(output_path, wav, _SAMPLE_RATE)
+    # inference() returns audio at the decoder's output rate (24 kHz for
+    # XTTS-v2), NOT the 22050 Hz the GPT runs at — save and report at the real
+    # rate, else the WAV plays ~9% slow and ~1.5 semitones flat.
+    sample_rate = output_sample_rate(model)
+    torchaudio.save(output_path, wav, sample_rate)
 
-    duration_secs = wav.shape[-1] / _SAMPLE_RATE
+    duration_secs = wav.shape[-1] / sample_rate
     return {"output_path": output_path, "duration_secs": round(duration_secs, 2)}
 
 

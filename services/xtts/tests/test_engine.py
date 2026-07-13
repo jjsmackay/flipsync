@@ -34,6 +34,27 @@ class TestComputeEta:
         assert engine.compute_eta_secs(10.0, 5, 0) == 0.0
 
 
+class TestOutputSampleRate:
+    class _FakeArgs:
+        def __init__(self, sr):
+            self.output_sample_rate = sr
+
+    class _FakeModel:
+        def __init__(self, sr):
+            self.args = TestOutputSampleRate._FakeArgs(sr)
+
+    def test_reads_model_args(self):
+        # XTTS-v2's HiFi-GAN decoder emits at model_args.output_sample_rate
+        # (24000), not the 22050 the GPT operates at — read the real rate off
+        # the model so the WAV header matches the samples.
+        assert engine.output_sample_rate(self._FakeModel(24000)) == 24000
+
+    def test_coerces_to_int(self):
+        rate = engine.output_sample_rate(self._FakeModel(24000.0))
+        assert rate == 24000
+        assert isinstance(rate, int)
+
+
 class TestSelectLatentWavs:
     def test_picks_largest_first_and_caps(self, tmp_path):
         rows = []
