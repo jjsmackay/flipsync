@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 import idle_unload
 import separator as sep
@@ -158,6 +158,9 @@ class JobRequest(BaseModel):
     output_path: str
     model: str = "htdemucs"
     chunk_secs: Optional[int] = None
+    # Demucs test-time augmentation: N random shifts averaged for cleaner
+    # separation at N+1x the cost. 0 (default) keeps the historical behaviour.
+    shifts: int = Field(default=0, ge=0, le=10)
 
     @field_validator("model")
     @classmethod
@@ -235,6 +238,7 @@ def _run_separation(job: dict) -> None:
     output_path = job["dest_path"]
     model_name = job["model"]
     chunk_secs = job["chunk_secs"]
+    shifts = job["shifts"]
     already_chunked = chunk_secs is not None
 
     def progress_cb(p: int) -> None:
@@ -250,6 +254,7 @@ def _run_separation(job: dict) -> None:
                     output_path=output_path,
                     model_name=model_name,
                     chunk_secs=None,
+                    shifts=shifts,
                     progress_callback=progress_cb,
                 )
             except Exception as exc:
@@ -267,6 +272,7 @@ def _run_separation(job: dict) -> None:
                         output_path=output_path,
                         model_name=model_name,
                         chunk_secs=60,
+                        shifts=shifts,
                         progress_callback=progress_cb,
                     )
                 except Exception as exc2:
@@ -289,6 +295,7 @@ def _run_separation(job: dict) -> None:
                     output_path=output_path,
                     model_name=model_name,
                     chunk_secs=chunk_secs,
+                    shifts=shifts,
                     progress_callback=progress_cb,
                 )
             except Exception as exc:
@@ -412,6 +419,7 @@ async def submit_job(req: JobRequest):
         "dest_path": req.output_path,
         "model": req.model,
         "chunk_secs": req.chunk_secs,
+        "shifts": req.shifts,
     }
     _jobs[req.job_id] = job
     _evict_old_jobs()

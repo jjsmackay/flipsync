@@ -42,7 +42,7 @@ def _load_model(model_name: str):
     return model
 
 
-def _apply_demucs(model, audio, sample_rate: int):
+def _apply_demucs(model, audio, sample_rate: int, shifts: int = 0):
     """Run Demucs on a (channels, samples) tensor.
 
     Returns the vocals stem as a (channels, samples) tensor.
@@ -60,7 +60,7 @@ def _apply_demucs(model, audio, sample_rate: int):
             model,
             waveform,
             overlap=0.25,
-            shifts=0,
+            shifts=shifts,
             split=True,
             progress=False,
         )
@@ -78,6 +78,7 @@ def separate(
     output_path: str,
     model_name: str = "htdemucs",
     chunk_secs: Optional[int] = None,
+    shifts: int = 0,
     progress_callback=None,
 ) -> None:  # noqa: E501
     """Separate vocals from audio file and write to output_path.
@@ -87,6 +88,7 @@ def separate(
         output_path: Path to write vocals WAV.
         model_name: Demucs model name.
         chunk_secs: If set, process in chunks of this many seconds.
+        shifts: Demucs test-time augmentation passes (0 = none).
         progress_callback: Optional callable(progress: int) called during processing.
 
     Raises:
@@ -120,14 +122,14 @@ def separate(
         if progress_callback:
             progress_callback(50)
 
-        vocals = _apply_demucs(model, audio, sample_rate)
+        vocals = _apply_demucs(model, audio, sample_rate, shifts=shifts)
 
         if progress_callback:
             progress_callback(100)
     else:
         # Chunked processing with overlap
         vocals = _process_chunked(
-            model, audio, sample_rate, chunk_secs, progress_callback
+            model, audio, sample_rate, chunk_secs, progress_callback, shifts=shifts
         )
 
     torchaudio.save(output_path, vocals, sample_rate)
@@ -140,6 +142,7 @@ def _process_chunked(
     sample_rate: int,
     chunk_secs: int,
     progress_callback=None,
+    shifts: int = 0,
 ) -> torch.Tensor:
     """Process audio in overlapping chunks and stitch vocals back together.
 
@@ -171,7 +174,7 @@ def _process_chunked(
     processed_chunks = []
     for i, (start, end) in enumerate(chunks):
         chunk_audio = audio[:, start:end]
-        vocals_chunk = _apply_demucs(model, chunk_audio, sample_rate)
+        vocals_chunk = _apply_demucs(model, chunk_audio, sample_rate, shifts=shifts)
         processed_chunks.append(vocals_chunk)
 
         if progress_callback:

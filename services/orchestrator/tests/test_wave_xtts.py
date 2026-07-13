@@ -308,6 +308,7 @@ class TestDatasetBuildHandler:
         assert len(manifest["segments"]) == 35
         # audio_file paths are absolute (DATA_DIR-rooted).
         assert all(seg["audio_file"].startswith(str(isolated_data_dir)) for seg in manifest["segments"])
+        assert all(seg["source_id"] == src for seg in manifest["segments"])
         m = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
         assert m["segment_count"] == 35
         assert m["dataset_duration_secs"] == pytest.approx(350.0)
@@ -594,6 +595,52 @@ class TestPreviewHandler:
         job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert job["status"] == "complete"
 
+    def test_temperature_forwarded_from_params(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        _set_reference(conn, project, db.project_dir(project))
+
+        captured = {}
+
+        async def mock_submit(service, payload):
+            captured["payload"] = payload
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete",
+                    "result": {"output_path": "x", "duration_secs": 1.0}}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "preview",
+                             params={"text": "hi", "model_id": None, "temperature": 0.9,
+                                     "conditioning": {"source": None, "segment_count": 5}})
+
+        assert captured["payload"]["params"]["temperature"] == 0.9
+
+    def test_temperature_defaults_to_065(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        _set_reference(conn, project, db.project_dir(project))
+
+        captured = {}
+
+        async def mock_submit(service, payload):
+            captured["payload"] = payload
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete",
+                    "result": {"output_path": "x", "duration_secs": 1.0}}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "preview",
+                             params={"text": "hi", "model_id": None,
+                                     "conditioning": {"source": None, "segment_count": 5}})
+
+        assert captured["payload"]["params"]["temperature"] == 0.65
+
     def test_finetuned_uses_checkpoint_dir(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
@@ -872,6 +919,23 @@ class TestPreviewsRouter:
 
     def test_post_text_too_long_422(self, client, project):
         resp = client.post(f"/projects/{project}/previews", json={"text": "x" * 501})
+        assert resp.status_code == 422
+
+    def test_post_accepts_temperature_and_enqueues_it(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        _set_reference(conn, project, db.project_dir(project))
+        with patch("service_client.is_healthy", new=AsyncMock(return_value=True)):
+            resp = client.post(f"/projects/{project}/previews",
+                               json={"text": "Hello there.", "temperature": 0.8})
+        assert resp.status_code == 202
+        job_id = resp.json()["enqueued_job"]["id"]
+        row = conn.execute("SELECT params FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert json.loads(row["params"])["temperature"] == 0.8
+
+    def test_post_temperature_out_of_range_422(self, client, project):
+        resp = client.post(f"/projects/{project}/previews",
+                           json={"text": "Hi", "temperature": 5.0})
         assert resp.status_code == 422
 
     def test_get_list_maps_params(self, client, project):

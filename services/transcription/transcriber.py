@@ -92,6 +92,8 @@ def transcribe_segment(
     language: Optional[str],
     start_secs: float = 0.0,
     resegment: bool = False,
+    beam_size: int = 5,
+    vad_filter: bool = False,
 ) -> dict:
     """
     Transcribe a single WAV segment.
@@ -117,7 +119,11 @@ def transcribe_segment(
             "transcript_confidence": 0.0,
         }
 
-    transcribe_kwargs = {"word_timestamps": True}
+    transcribe_kwargs = {
+        "word_timestamps": True,
+        "beam_size": beam_size,
+        "vad_filter": vad_filter,
+    }
     if language is not None:
         transcribe_kwargs["language"] = language
 
@@ -186,7 +192,8 @@ def _split_segment(
     return {"id": segment_id, "children": children}
 
 
-def _transcribe_one(model, seg: dict, language: Optional[str]) -> dict:
+def _transcribe_one(model, seg: dict, language: Optional[str],
+                    beam_size: int = 5, vad_filter: bool = False) -> dict:
     """Transcribe one segment, converting any failure into a per-segment error.
 
     A single unreadable or otherwise failing WAV must not abort the whole job,
@@ -202,6 +209,8 @@ def _transcribe_one(model, seg: dict, language: Optional[str]) -> dict:
             language,
             start_secs=seg.get("start_secs") or 0.0,
             resegment=seg.get("resegment", False),
+            beam_size=beam_size,
+            vad_filter=vad_filter,
         )
     except Exception as exc:
         return {
@@ -217,6 +226,8 @@ def process_batch(
     batch: list[dict],
     language: Optional[str],
     max_workers: int = 1,
+    beam_size: int = 5,
+    vad_filter: bool = False,
 ) -> list[dict]:
     """Transcribe a list of segment dicts ({id, wav_path}) and return results.
 
@@ -229,7 +240,8 @@ def process_batch(
     failing segment yields a result with an ``error`` field instead of raising.
     """
     if max_workers <= 1 or len(batch) <= 1:
-        return [_transcribe_one(model, seg, language) for seg in batch]
+        return [_transcribe_one(model, seg, language, beam_size, vad_filter) for seg in batch]
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as pool:
-        return list(pool.map(lambda seg: _transcribe_one(model, seg, language), batch))
+        return list(pool.map(
+            lambda seg: _transcribe_one(model, seg, language, beam_size, vad_filter), batch))
