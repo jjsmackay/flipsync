@@ -277,3 +277,98 @@ class TestAutoApproveConfig:
         entry = next(p for p in listed if p["id"] == project)
         assert entry["stats"]["auto_approved_count"] == 1
         assert entry["stats"]["approved_duration_secs"] == 10.0
+
+
+class TestTuningConfig:
+    """Per-project pipeline tuning knobs (migration 011): demucs, diarisation,
+    whisper beam/vad, cleanup, and xtts finetune hyperparameters."""
+
+    def test_tuning_defaults_on_create(self, client):
+        pid = client.post("/projects", json={"name": "T"}).json()["id"]
+        cfg = client.get(f"/projects/{pid}").json()["config"]
+        assert cfg["demucs_model"] == "htdemucs"
+        assert cfg["demucs_shifts"] == 0
+        assert cfg["diar_min_speakers"] == 1
+        assert cfg["diar_max_speakers"] == 10
+        assert cfg["diar_min_segment_duration"] == 1.0
+        assert cfg["whisper_beam_size"] == 5
+        assert cfg["whisper_vad_filter"] is False
+        assert cfg["target_lufs"] == -23.0
+        assert cfg["highpass_hz"] == 80
+        assert cfg["silence_threshold_db"] == -50.0
+        assert cfg["silence_min_duration_secs"] == 0.1
+        assert cfg["xtts_epochs"] == 10
+        assert cfg["xtts_batch_size"] == 3
+        assert cfg["xtts_grad_accum"] == 1
+        assert cfg["xtts_learning_rate"] == 5e-6
+
+    def test_create_with_tuning_overrides(self, client):
+        resp = client.post("/projects", json={
+            "name": "Custom",
+            "demucs_model": "mdx_extra",
+            "demucs_shifts": 2,
+            "diar_min_speakers": 2,
+            "diar_max_speakers": 4,
+            "diar_min_segment_duration": 0.5,
+            "whisper_beam_size": 1,
+            "whisper_vad_filter": True,
+            "target_lufs": -18.0,
+            "highpass_hz": 100,
+            "silence_threshold_db": -45.0,
+            "silence_min_duration_secs": 0.2,
+            "xtts_epochs": 20,
+            "xtts_batch_size": 4,
+            "xtts_grad_accum": 2,
+            "xtts_learning_rate": 1e-5,
+        })
+        assert resp.status_code == 201
+        cfg = client.get(f"/projects/{resp.json()['id']}").json()["config"]
+        assert cfg["demucs_model"] == "mdx_extra"
+        assert cfg["demucs_shifts"] == 2
+        assert cfg["diar_max_speakers"] == 4
+        assert cfg["whisper_vad_filter"] is True
+        assert cfg["target_lufs"] == -18.0
+        assert cfg["highpass_hz"] == 100
+        assert cfg["xtts_epochs"] == 20
+        assert cfg["xtts_learning_rate"] == 1e-5
+
+    def test_patch_tuning_fields(self, client, project):
+        resp = client.patch(f"/projects/{project}", json={
+            "demucs_model": "mdx_extra",
+            "whisper_beam_size": 3,
+            "whisper_vad_filter": True,
+            "target_lufs": -20.0,
+            "xtts_epochs": 15,
+        })
+        assert resp.status_code == 200
+        cfg = resp.json()["config"]
+        assert cfg["demucs_model"] == "mdx_extra"
+        assert cfg["whisper_beam_size"] == 3
+        assert cfg["whisper_vad_filter"] is True
+        assert cfg["target_lufs"] == -20.0
+        assert cfg["xtts_epochs"] == 15
+
+    def test_invalid_demucs_model_returns_422(self, client):
+        resp = client.post("/projects", json={"name": "B", "demucs_model": "spleeter"})
+        assert resp.status_code == 422
+
+    def test_invalid_demucs_shifts_returns_422(self, client):
+        resp = client.post("/projects", json={"name": "B", "demucs_shifts": -1})
+        assert resp.status_code == 422
+
+    def test_invalid_beam_size_returns_422(self, client):
+        resp = client.post("/projects", json={"name": "B", "whisper_beam_size": 0})
+        assert resp.status_code == 422
+
+    def test_invalid_target_lufs_returns_422(self, client):
+        # LUFS is a negative loudness value; a positive target is invalid.
+        resp = client.post("/projects", json={"name": "B", "target_lufs": 5.0})
+        assert resp.status_code == 422
+
+    def test_invalid_xtts_learning_rate_returns_422(self, client):
+        resp = client.post("/projects", json={"name": "B", "xtts_learning_rate": 0})
+        assert resp.status_code == 422
+
+    def test_patch_invalid_epochs_returns_422(self, client, project):
+        resp = client.patch(f"/projects/{project}", json={"xtts_epochs": 0})
+        assert resp.status_code == 422
