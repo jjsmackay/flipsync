@@ -37,6 +37,30 @@ function clickZeroShotGenerate() {
 }
 
 describe('PreviewPanel temperature', () => {
+  it('buttons are enabled on first render with prefilled text', () => {
+    render(<PreviewPanel projectId="p1" models={models} />)
+    const generateButtons = screen.getAllByRole('button', { name: 'Generate' })
+    // Both zero-shot and fine-tuned buttons should be disabled initially
+    // (no models, but zero-shot has no model requirement)
+    expect(generateButtons[0]).not.toBeDisabled()
+  })
+
+  it('buttons disable when text is cleared', async () => {
+    render(<PreviewPanel projectId="p1" models={models} />)
+    const textarea = screen.getByPlaceholderText('Text to synthesise…')
+    const generateButtons = screen.getAllByRole('button', { name: 'Generate' })
+
+    // Start enabled with prefilled text
+    expect(generateButtons[0]).not.toBeDisabled()
+
+    // Clear the text
+    fireEvent.change(textarea, { target: { value: '' } })
+
+    // Both buttons should now be disabled
+    expect(generateButtons[0]).toBeDisabled()
+    expect(generateButtons[1]).toBeDisabled()
+  })
+
   it('sends the default temperature of 0.65', async () => {
     render(<PreviewPanel projectId="p1" models={models} />)
     enterText()

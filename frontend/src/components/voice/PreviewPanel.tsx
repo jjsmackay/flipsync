@@ -21,6 +21,10 @@ const POLL_MS = 3000
 // ten minutes is generous even behind a queued GPU job.
 const PREVIEW_TIMEOUT_MS = 10 * 60_000
 
+// Prefill with a stock sentence so the generate buttons are live on render.
+// Without this, users see disabled buttons and think previews are broken.
+const DEFAULT_TEXT = "Here's a quick preview of this voice. The quick brown fox jumps over the lazy dog."
+
 type ConditioningOption = 'auto' | 'reference_clip' | 'segments_raw' | 'segments_cleaned'
 
 const CONDITIONING_LABELS: Record<ConditioningOption, string> = {
@@ -195,7 +199,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disab
 export function PreviewPanel({ projectId, models, advanced = false }: PreviewPanelProps) {
   const readyModels = models.filter((m) => m.status === 'ready')
 
-  const [text, setText] = useState('')
+  const [text, setText] = useState(DEFAULT_TEXT)
   const [source, setSource] = useState<ConditioningOption>('auto')
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
   // Shared across both columns so A/B compares models, not sampling noise.
