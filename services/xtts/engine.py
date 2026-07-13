@@ -204,7 +204,6 @@ def finetune(
         model_args=model_args,
         audio=audio_config,
         batch_size=params.get("batch_size", 3),
-        grad_accum_steps=params.get("grad_accum", 1),
         lr=params.get("learning_rate", 5e-6),
         run_eval=True,
         optimizer="AdamW",
@@ -256,7 +255,13 @@ def finetune(
     callbacks = {"on_train_step_end": _on_train_step}
 
     trainer = Trainer(
-        TrainerArgs(restore_path=None, skip_train_epoch=False),
+        # grad_accum_steps is a TrainerArgs field (read as args.grad_accum_steps
+        # by the trainer loop), not a GPTTrainerConfig field.
+        TrainerArgs(
+            restore_path=None,
+            skip_train_epoch=False,
+            grad_accum_steps=params.get("grad_accum", 1),
+        ),
         config,
         output_path=output_dir,
         model=model,
