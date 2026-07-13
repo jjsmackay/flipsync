@@ -309,6 +309,18 @@ Upload or replace the reference clip. Replaces any existing reference. Does not 
 
 ---
 
+#### `GET /projects/{project_id}/reference/audio`
+
+Stream the project's current reference clip (`reference.wav`) as `audio/wav` — the full file, no `Range` support, matching the segment-audio streaming convention (`GET /segments/{segment_id}/audio`).
+
+**Response 200:** `audio/wav`, `Content-Length` header set.
+
+**Response 404 `no_reference`** if the project has no reference set (`reference_path` is null).
+
+**Response 404 `audio_not_found`** if `reference_path` is set but the WAV is missing on disk.
+
+---
+
 #### `POST /projects/{project_id}/reference/scout`
 
 Enqueue a reference-less diarisation pass ("scout") over one source, to surface its speakers as reference candidates. Available once the source has a vocals stem (`vocals_path` set, i.e. step 1 complete).

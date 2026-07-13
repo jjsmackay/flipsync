@@ -65,3 +65,30 @@ class TestReferenceUpload:
                     files={"file": ("ref.wav", f, "audio/wav")},
                 )
             assert resp.status_code == 200
+
+
+class TestReferenceAudio:
+    def test_get_audio_returns_wav_bytes(self, client, project, test_wav):
+        with open(test_wav, "rb") as f:
+            client.post(
+                f"/projects/{project}/reference",
+                files={"file": ("ref.wav", f, "audio/wav")},
+            )
+
+        resp = client.get(f"/projects/{project}/reference/audio")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/wav"
+
+        with open(test_wav, "rb") as f:
+            expected = f.read()
+        assert resp.content == expected
+
+    def test_get_audio_no_reference_returns_404(self, client, project):
+        resp = client.get(f"/projects/{project}/reference/audio")
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["error"] == "no_reference"
+
+    def test_get_audio_unknown_project_returns_404(self, client):
+        resp = client.get("/projects/bad-id/reference/audio")
+        assert resp.status_code == 404

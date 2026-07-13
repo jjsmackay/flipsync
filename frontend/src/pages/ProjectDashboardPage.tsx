@@ -17,6 +17,7 @@ import { deriveStage } from '../utils/stage'
 import { FailedJobsPanel } from '../components/project/FailedJobsPanel'
 import { StageStrip } from '../components/project/StageStrip'
 import { NextActionCard } from '../components/project/NextActionCard'
+import { ReferenceCard } from '../components/project/ReferenceCard'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { PipelineSteps } from '../components/project/PipelineSteps'
 import { CompareSettingsModal } from '../components/project/CompareSettingsModal'
@@ -375,6 +376,9 @@ export function ProjectDashboardPage() {
       {hasSources && (
         <CollapsibleSection title="Sources" sectionKey="sources" defaultOpen>
           <div className="space-y-2">
+            {project.reference_path && (
+              <ReferenceCard project={project} onAction={() => void refetch()} />
+            )}
             <SourcesTable
               sources={project.stats.source_coverage}
               onReprocess={handleReprocess}

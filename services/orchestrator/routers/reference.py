@@ -84,6 +84,23 @@ async def upload_reference(project_id: str, file: UploadFile = File(...)):
     return {"reference_path": "reference.wav", "duration_secs": duration}
 
 
+@router.get("/audio")
+async def get_reference_audio(project_id: str):
+    conn = require_project(project_id)
+
+    row = conn.execute(
+        "SELECT reference_path FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
+    if row["reference_path"] is None:
+        raise AppError(404, "no_reference", "No reference clip has been set for this project.")
+
+    wav = project_dir(project_id) / row["reference_path"]
+    if not wav.exists():
+        raise AppError(404, "audio_not_found", "Reference WAV not found on disk.")
+
+    return FileResponse(str(wav), media_type="audio/wav")
+
+
 # ---------------------------------------------------------------------------
 # Diarise + pick (scout)
 # ---------------------------------------------------------------------------

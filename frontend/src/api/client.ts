@@ -212,6 +212,11 @@ export function uploadReference(
   return uploadWithProgress(`/projects/${projectId}/reference`, file, onProgress)
 }
 
+/** The current reference clip's audio — whatever was uploaded or assembled from a scan pick. */
+export function getReferenceAudioUrl(projectId: string): string {
+  return `${BASE_URL}/projects/${projectId}/reference/audio`
+}
+
 // ---- Reference: diarise + pick (scout) ----
 
 export function startScout(
