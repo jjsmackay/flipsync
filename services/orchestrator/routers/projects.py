@@ -156,28 +156,28 @@ def _project_detail(project_id: str) -> dict:
 WHISPER_COMPUTE_TYPES = {"default", "float16", "int8_float16", "int8"}
 _WHISPER_BATCH = Field(default=16, ge=1, le=64)
 
-
-def _validate_compute_type(v: Optional[str]) -> Optional[str]:
-    if v is not None and v not in WHISPER_COMPUTE_TYPES:
-        raise ValueError(f"whisper_compute_type must be one of {sorted(WHISPER_COMPUTE_TYPES)}")
-    return v
-
-
 # Demucs models the vocal-separation service accepts.
 DEMUCS_MODELS = {"htdemucs", "mdx_extra"}
 
 
-def _validate_demucs_model(v: Optional[str]) -> Optional[str]:
-    if v is not None and v not in DEMUCS_MODELS:
-        raise ValueError(f"demucs_model must be one of {sorted(DEMUCS_MODELS)}")
-    return v
+def _enum_validator(field_name: str, allowed: set[str]):
+    """Build a field validator rejecting non-None values outside ``allowed``."""
+    def _validate(v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in allowed:
+            raise ValueError(f"{field_name} must be one of {sorted(allowed)}")
+        return v
+    return _validate
 
 
-# Per-stage tuning knobs promoted to project config (migration 011). Each pair
-# of (create default, patch Optional) shares these bounds; the create/patch
-# models below reuse the same Field constraints so validation is identical on
-# both paths. target_lufs already exists as a column (migration 001) but had no
-# API path until now.
+_validate_compute_type = _enum_validator("whisper_compute_type", WHISPER_COMPUTE_TYPES)
+_validate_demucs_model = _enum_validator("demucs_model", DEMUCS_MODELS)
+
+
+# Per-stage tuning knobs promoted to project config (migration 011).
+# target_lufs already exists as a column (migration 001) but had no API path
+# until now. Each knob's bounds are spelled out on both ProjectCreate (with a
+# concrete default) and ProjectPatch (Optional), matching this file's existing
+# per-field style — keep the two in sync when changing a bound.
 #
 # Ranges are deliberately generous "sanity" bounds — enough to reject nonsense
 # (a positive LUFS, a zero learning rate) without second-guessing an operator
@@ -384,14 +384,14 @@ async def patch_project(project_id: str, body: ProjectPatch):
     for f in (
         "demucs_model", "demucs_shifts",
         "diar_min_speakers", "diar_max_speakers", "diar_min_segment_duration",
-        "whisper_beam_size",
+        "whisper_beam_size", "whisper_vad_filter",
         "target_lufs", "highpass_hz", "silence_threshold_db", "silence_min_duration_secs",
         "xtts_epochs", "xtts_batch_size", "xtts_grad_accum", "xtts_learning_rate",
     ):
         if f in provided and getattr(body, f) is not None:
-            updates[f] = getattr(body, f)
-    if "whisper_vad_filter" in provided and body.whisper_vad_filter is not None:
-        updates["whisper_vad_filter"] = int(body.whisper_vad_filter)
+            val = getattr(body, f)
+            # SQLite has no bool type; store the one boolean knob as 0/1.
+            updates[f] = int(val) if isinstance(val, bool) else val
 
     # Changing match_threshold or any auto-approve field triggers a synchronous
     # segment status re-evaluation (spec/api-contracts.md PATCH /projects).

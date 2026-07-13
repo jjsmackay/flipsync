@@ -1283,6 +1283,27 @@ class CleanupError(Exception):
     dataset builds, the model row)."""
 
 
+def _cleanup_params(project_row: Any) -> dict:
+    """Build the cleanup-service params dict from a project row.
+
+    Shared by the dataset-build and export cleanup paths (which otherwise
+    differ in output dir and result handling) so a promoted cleanup knob is a
+    one-line change here rather than two dicts that must stay identical.
+    """
+    return {
+        "target_lufs": project_row["target_lufs"],
+        "true_peak_dbtp": -2.0,
+        "lra": 7.0,
+        "highpass_hz": project_row["highpass_hz"],
+        "silence_threshold_db": project_row["silence_threshold_db"],
+        "silence_min_duration_secs": project_row["silence_min_duration_secs"],
+        "clipping_threshold_db": -0.1,
+        "clipping_min_consecutive_samples": 3,
+        "output_sample_rate": 22050,
+        "output_channels": 1,
+    }
+
+
 async def _run_cleanup(
     project_id: str,
     project_row: Any,
@@ -1311,18 +1332,7 @@ async def _run_cleanup(
     cleanup_payload = {
         "job_id": job_id,
         "segments": cleanup_segments,
-        "params": {
-            "target_lufs": project_row["target_lufs"],
-            "true_peak_dbtp": -2.0,
-            "lra": 7.0,
-            "highpass_hz": project_row["highpass_hz"],
-            "silence_threshold_db": project_row["silence_threshold_db"],
-            "silence_min_duration_secs": project_row["silence_min_duration_secs"],
-            "clipping_threshold_db": -0.1,
-            "clipping_min_consecutive_samples": 3,
-            "output_sample_rate": 22050,
-            "output_channels": 1,
-        },
+        "params": _cleanup_params(project_row),
     }
 
     try:
@@ -1500,18 +1510,7 @@ async def _handle_export(
         cleanup_payload = {
             "job_id": job_id,
             "segments": cleanup_segments,
-            "params": {
-                "target_lufs": project["target_lufs"],
-                "true_peak_dbtp": -2.0,
-                "lra": 7.0,
-                "highpass_hz": project["highpass_hz"],
-                "silence_threshold_db": project["silence_threshold_db"],
-                "silence_min_duration_secs": project["silence_min_duration_secs"],
-                "clipping_threshold_db": -0.1,
-                "clipping_min_consecutive_samples": 3,
-                "output_sample_rate": 22050,
-                "output_channels": 1,
-            },
+            "params": _cleanup_params(project),
         }
 
         try:
