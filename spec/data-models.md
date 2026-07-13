@@ -53,13 +53,18 @@ CREATE TABLE projects (
     -- Pipeline tuning knobs (migration 011). Defaults match the values the
     -- orchestrator previously hardcoded, so a change only takes effect on the
     -- next run of that stage (no retro-apply).
-    demucs_model              TEXT NOT NULL DEFAULT 'htdemucs',    -- 'htdemucs' | 'mdx_extra'
+    demucs_model              TEXT NOT NULL DEFAULT 'htdemucs',    -- 'htdemucs' | 'htdemucs_ft' | 'mdx_extra' | 'bs_roformer'; API default is 'htdemucs_ft' (set by ProjectCreate, not this column DEFAULT)
     demucs_shifts             INTEGER NOT NULL DEFAULT 0,          -- Demucs test-time augmentation passes (0-10)
     diar_min_speakers         INTEGER NOT NULL DEFAULT 1,
     diar_max_speakers         INTEGER NOT NULL DEFAULT 10,
     diar_min_segment_duration REAL NOT NULL DEFAULT 1.0,
     whisper_beam_size         INTEGER NOT NULL DEFAULT 5,          -- faster-whisper beam width
     whisper_vad_filter        INTEGER NOT NULL DEFAULT 0,          -- boolean; drop non-speech before decode
+    -- Migration 012. Optional wav2vec2 forced-alignment pass: refines whisper
+    -- word timestamps before sentence-aligned re-segmentation. Off by
+    -- default; a no-op for segments that are not re-segmented; does not
+    -- retro-apply (re-transcribe to adopt).
+    align_words               INTEGER NOT NULL DEFAULT 0,          -- boolean; forced-align word timestamps before re-segmentation
     highpass_hz               INTEGER NOT NULL DEFAULT 80,         -- cleanup high-pass cutoff
     silence_threshold_db      REAL NOT NULL DEFAULT -50.0,         -- cleanup silence-trim threshold
     silence_min_duration_secs REAL NOT NULL DEFAULT 0.1,
@@ -80,6 +85,8 @@ CREATE TABLE projects (
 Set whenever `reference_path` is (re)established — by `POST /reference` (upload) or `POST /reference/scout/select` (diarise + pick). NULL until a reference is set.
 
 **Auto-approve columns.** When `auto_approve_enabled` is set, segments whose `match_confidence` and `transcript_confidence` clear the two auto-approve thresholds (and that carry no flags or clipping warning) are moved from `pending` to `auto_approved` when transcription results land. See [Pipeline](pipeline.md) §Auto-approval for the full eligibility rule and [API Contracts](api-contracts.md) `PATCH /projects` for re-evaluation on threshold changes.
+
+**`align_words`.** When enabled, the transcription service runs an optional wav2vec2 forced-alignment pass to sharpen word timestamps before sentence-aligned re-segmentation. It refines timestamps only — transcript text, `transcript_confidence`, and auto-approval are unaffected — and is a no-op for segments that are not re-segmented. Off by default; sent to the transcription service as `align` on `POST /jobs` (see [API Contracts](api-contracts.md) §Transcription Service). See [Pipeline](pipeline.md) §Optional word alignment.
 
 ---
 

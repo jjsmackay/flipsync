@@ -890,9 +890,9 @@ Returns 200 when the service is ready to accept jobs. The orchestrator should re
 | `job_id` | string | yes | UUID assigned by orchestrator |
 | `input_path` | string | yes | Absolute path to input WAV |
 | `output_path` | string | yes | Absolute path for output vocals WAV |
-| `model` | string | yes | `htdemucs` (default, best quality) or `mdx_extra` (fallback for poor htdemucs output) |
-| `chunk_secs` | int or null | no | If set, process audio in chunks of this duration (seconds) with 1-second overlap, then stitch. Used for OOM retry. If null, attempt whole-file processing. |
-| `shifts` | int | no | Demucs test-time augmentation passes (0–10, default 0). Higher = cleaner separation at N+1× the runtime. Sourced from project `demucs_shifts`. |
+| `model` | string | yes | `htdemucs` (Demucs v4), `htdemucs_ft` (fine-tuned, default), `mdx_extra`, or `bs_roformer` (RoFormer via audio-separator). RoFormer weights download on first use to `ROFORMER_MODEL_DIR` (defaults under `MODELS_ROOT`). |
+| `chunk_secs` | int or null | no | If set, process audio in chunks of this duration (seconds) with 1-second overlap, then stitch. Used for OOM retry. If null, attempt whole-file processing. Applies to Demucs backends only; RoFormer manages its own segmentation. |
+| `shifts` | int | no | Demucs test-time augmentation passes (0–10, default 0). Higher = cleaner separation at N+1× the runtime. Sourced from project `demucs_shifts`. Ignored for RoFormer. |
 
 **Response 202:**
 ```json
@@ -1080,7 +1080,8 @@ The `mode` field (`"scout"` | `"match"`) is present on every completion response
   "batch_size": 16,
   "compute_type": "default",
   "beam_size": 5,
-  "vad_filter": false
+  "vad_filter": false,
+  "align": false
 }
 ```
 
@@ -1096,6 +1097,7 @@ The `mode` field (`"scout"` | `"match"`) is present on every completion response
 | `compute_type` | string | no | CTranslate2 precision: `default` (float16 on GPU, int8 on CPU), `float16`, `int8_float16`, or `int8`. Default `default`. A lighter type cuts VRAM on a constrained GPU. |
 | `beam_size` | int | no | faster-whisper beam width. Default 5. Sourced from project `whisper_beam_size`. |
 | `vad_filter` | bool | no | Drop non-speech with faster-whisper's VAD before decoding. Default false. Sourced from project `whisper_vad_filter`. |
+| `align` | bool | no | Run a wav2vec2 forced-alignment pass over each segment's words before re-segmentation, sharpening word start/end times. Default false. Sourced from project `align_words`. No effect unless `resegment` is also true for a given segment — see [Pipeline](pipeline.md) §Optional word alignment. |
 
 Transcription always runs with word-level timestamps enabled; they are consumed internally for re-segmentation and not returned per word.
 

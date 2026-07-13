@@ -50,7 +50,9 @@ ffmpeg -i {input} -vn -acodec pcm_s16le -ar 44100 {output}
 
 Demucs separates the audio into four stems: vocals, drums, bass, other. Only the vocals stem is retained. The other stems are discarded after processing.
 
-Default model: `htdemucs`. This is Demucs v4's hybrid transformer model and the best general-purpose option. A fallback model (`mdx_extra`) is available if `htdemucs` produces poor output for a specific file; the orchestrator can request a specific model variant.
+Default model: `htdemucs_ft` (the per-stem fine-tuned Demucs v4 bag — cleaner vocals than plain `htdemucs` at ~4× runtime, acceptable for an offline first stage). Fallbacks `htdemucs` and `mdx_extra` remain selectable; the orchestrator requests a specific variant per project via `demucs_model`. Changing the model does not retro-apply — reprocess Step 1 to adopt it.
+
+An alternative separation backend, `bs_roformer` (BS-RoFormer via the `audio-separator` package), is selectable through the same `demucs_model` config. It typically yields cleaner vocals than Demucs at higher VRAM cost. It runs in the same vocal-separation service, chosen per project; the OOM chunk-retry path (`retry_with_chunk_secs`) applies to the Demucs backends only — RoFormer manages its own internal segmentation.
 
 ### GPU memory and chunking
 
@@ -182,6 +184,10 @@ Whisper word timestamps can overshoot the audio, so every boundary is **clamped*
 **Orchestrator handling.** When a completed segment arrives with `children`, the orchestrator first **re-checks eligibility at write time** — the results land minutes after eligibility was snapshotted at submit, and the user may have acted in between. The parent must still have status `pending`/`below_threshold`, `transcript IS NULL`, and `transcript_edited IS NULL`. If it does, the orchestrator — in one transaction — inserts one row per child (inheriting `source_id`, `speaker_label`, `match_confidence`, and status from the parent; transcript and confidence from the child; a `short_transcript` flag if the child is under 2 seconds) and deletes the parent row. The parent WAV file is deleted best-effort after the transaction commits. Any child with `end_secs <= start_secs` is defensively skipped.
 
 If the parent is **no longer eligible** — or every child was skipped — nothing is split and nothing is deleted: the children's texts are joined (single spaces) into the parent's `transcript`, `transcript_confidence` is set to the minimum child confidence, and the normal short-transcript flag and auto-approve evaluation apply as for a plain write. Either way the result is deduplicated on the parent id. Approval state is never at risk.
+
+### Optional word alignment
+
+When a project has `align_words` enabled, the service runs a wav2vec2 forced-alignment pass over each segment's whisper words before re-segmentation, replacing whisper's heuristic word start/end times with alignment-derived ones. It refines only timestamps — word text and per-word probability (and thus `transcript_confidence` and auto-approval) are unchanged. Alignment affects re-segmentation boundaries only; for a segment that is not re-segmented it is a no-op. Off by default. Changing it does not retro-apply — re-transcribe to adopt.
 
 ### Auto-approval
 

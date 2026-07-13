@@ -900,7 +900,7 @@ async def _handle_transcription_bulk(
 
     project = conn.execute(
         "SELECT whisper_model, language, whisper_batch_size, whisper_compute_type, "
-        "whisper_beam_size, whisper_vad_filter "
+        "whisper_beam_size, whisper_vad_filter, align_words "
         "FROM projects WHERE id=?",
         (project_id,),
     ).fetchone()
@@ -947,6 +947,7 @@ async def _handle_transcription_bulk(
         "compute_type": project["whisper_compute_type"],
         "beam_size": project["whisper_beam_size"],
         "vad_filter": bool(project["whisper_vad_filter"]),
+        "align": bool(project["align_words"]),
     }
 
     try:
@@ -1001,7 +1002,7 @@ async def _handle_transcription_segment(
 
     project = conn.execute(
         "SELECT whisper_model, language, whisper_compute_type, "
-        "whisper_beam_size, whisper_vad_filter FROM projects WHERE id=?",
+        "whisper_beam_size, whisper_vad_filter, align_words FROM projects WHERE id=?",
         (project_id,),
     ).fetchone()
     data_prefix = _data_prefix()
@@ -1018,6 +1019,7 @@ async def _handle_transcription_segment(
         "compute_type": project["whisper_compute_type"],
         "beam_size": project["whisper_beam_size"],
         "vad_filter": bool(project["whisper_vad_filter"]),
+        "align": bool(project["align_words"]),
     }
 
     try:

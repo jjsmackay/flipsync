@@ -101,6 +101,19 @@ class TestPatchProject:
         assert resp.status_code == 200
         assert resp.json()["config"]["match_threshold"] == 0.60
 
+    def test_patch_accepts_bs_roformer(self, client):
+        pid = client.post("/projects", json={"name": "roformer"}).json()["id"]
+        r = client.patch(f"/projects/{pid}", json={"demucs_model": "bs_roformer"})
+        assert r.status_code == 200
+        assert client.get(f"/projects/{pid}").json()["config"]["demucs_model"] == "bs_roformer"
+
+    def test_align_words_defaults_off_and_toggles(self, client):
+        pid = client.post("/projects", json={"name": "align"}).json()["id"]
+        assert client.get(f"/projects/{pid}").json()["config"]["align_words"] is False
+        r = client.patch(f"/projects/{pid}", json={"align_words": True})
+        assert r.status_code == 200
+        assert client.get(f"/projects/{pid}").json()["config"]["align_words"] is True
+
     def test_patch_nonexistent_returns_404(self, client):
         resp = client.patch("/projects/bad-id", json={"name": "X"})
         assert resp.status_code == 404
@@ -286,7 +299,7 @@ class TestTuningConfig:
     def test_tuning_defaults_on_create(self, client):
         pid = client.post("/projects", json={"name": "T"}).json()["id"]
         cfg = client.get(f"/projects/{pid}").json()["config"]
-        assert cfg["demucs_model"] == "htdemucs"
+        assert cfg["demucs_model"] == "htdemucs_ft"
         assert cfg["demucs_shifts"] == 0
         assert cfg["diar_min_speakers"] == 1
         assert cfg["diar_max_speakers"] == 10
@@ -372,3 +385,15 @@ class TestTuningConfig:
     def test_patch_invalid_epochs_returns_422(self, client, project):
         resp = client.patch(f"/projects/{project}", json={"xtts_epochs": 0})
         assert resp.status_code == 422
+
+    def test_new_project_defaults_to_htdemucs_ft(self, client):
+        r = client.post("/projects", json={"name": "ft-default"})
+        pid = r.json()["id"]
+        detail = client.get(f"/projects/{pid}").json()
+        assert detail["config"]["demucs_model"] == "htdemucs_ft"
+
+    def test_patch_accepts_htdemucs_ft(self, client):
+        pid = client.post("/projects", json={"name": "ft-patch"}).json()["id"]
+        r = client.patch(f"/projects/{pid}", json={"demucs_model": "htdemucs_ft"})
+        assert r.status_code == 200
+        assert client.get(f"/projects/{pid}").json()["config"]["demucs_model"] == "htdemucs_ft"

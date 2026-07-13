@@ -59,9 +59,12 @@ export interface ProjectConfig {
   auto_approve_transcript_threshold: number
   whisper_batch_size: number
   whisper_compute_type: string
+  demucs_model: string
+  align_words: boolean
 }
 
 export const WHISPER_COMPUTE_TYPES = ['default', 'float16', 'int8_float16', 'int8'] as const
+export const DEMUCS_MODELS = ['htdemucs', 'htdemucs_ft', 'mdx_extra', 'bs_roformer'] as const
 
 export interface SourceCoverage {
   source_id: string
@@ -214,6 +217,8 @@ export interface PatchProjectRequest {
   auto_approve_transcript_threshold?: number
   whisper_batch_size?: number
   whisper_compute_type?: string
+  demucs_model?: string
+  align_words?: boolean
 }
 
 export interface PatchSegmentRequest {

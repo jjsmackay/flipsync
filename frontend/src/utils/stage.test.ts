@@ -42,6 +42,8 @@ function makeProject(overrides: {
       auto_approve_transcript_threshold: 0.9,
       whisper_batch_size: 16,
       whisper_compute_type: 'default',
+      demucs_model: 'htdemucs_ft',
+      align_words: false,
     },
     active_jobs: activeJobs.map((j, i) => ({
       id: j.id ?? `j${i}`,

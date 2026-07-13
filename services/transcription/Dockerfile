@@ -13,10 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Alignment weights (torchaudio MMS_FA, for the optional align_words pass)
+# download on first use via torch.hub, cached under TORCH_HOME (default
+# /root/.cache/torch). Bind-mount that path under the MODELS_ROOT model-cache
+# convention (see docker-compose.yml / spec/deployment.md) so weights survive
+# `compose down` — not yet wired into docker-compose.yml; owed alongside the
+# GPU-host CUDA-coexistence check below.
 COPY requirements.txt .
 # Ubuntu 24.04's system Python is PEP 668 "externally managed"; this is a
 # single-purpose container, so install straight into it.
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+# --extra-index-url pulls the CUDA 12.6 (cu126) torch/torchaudio wheels
+# (see requirements.txt for the coexistence caveat with ctranslate2's
+# system-CUDA linkage); everything else resolves from PyPI as before.
+RUN pip3 install --no-cache-dir --break-system-packages \
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+        -r requirements.txt
 
 COPY . .
 

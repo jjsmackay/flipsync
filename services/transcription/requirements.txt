@@ -8,3 +8,34 @@ faster-whisper==1.2.1
 # fix_execstack.py. faster-whisper 1.2.1 permits ctranslate2<5 and no longer
 # imports `requests` directly (uses huggingface_hub), so that pin is gone too.
 ctranslate2==4.8.1
+
+# Optional forced-alignment pass (align_words) — torchaudio-native MMS forced
+# aligner, NOT whisperx. See the dependency-solve spike for the full
+# rationale: docs/superpowers/plans/notes/2026-07-13-alignment-dep-solve.md.
+# whisperx was rejected: it drags in pyannote-audio, pytorch-lightning and
+# torchvision for diarisation/training features this feature never uses (our
+# own diarisation stage already owns speaker selection). torchaudio's native
+# forced-alignment API (`torchaudio.pipelines.MMS_FA`) gives the same
+# wav2vec2-forced-alignment technique at roughly half the resolved dependency
+# count, with no pyannote/lightning footprint. `transformers` is deliberately
+# NOT added — MMS_FA needs none of it.
+#
+# CAUTION — CUDA coexistence is UNVERIFIED, OWED on the deploy GPU host:
+# ctranslate2==4.8.1 above links against the CUDA 12 / cuDNN 9 libraries the
+# base image (nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04) provides via
+# ldconfig — its wheel bundles no CUDA libs of its own. These torch/torchaudio
+# cu12 wheels bundle their OWN CUDA runtime + cuDNN inside the torch package.
+# Two independent CUDA/cuDNN copies loaded into the same process is the real
+# risk the spike flagged and did NOT confirm (no GPU on the spike host). If it
+# breaks ctranslate2's CUDA init on the deploy host, the fallback is a
+# dedicated alignment sidecar image behind the same aligner.py interface.
+#
+# Pins: 2.8.0/cu126 is the latest well-known-good PyTorch CUDA-12.x wheel line
+# at time of writing, chosen to sit under the 12.9.2 base image (wheels bundle
+# their own runtime, so this is about driver forward-compatibility, not an
+# exact CUDA match). NOT build-verified against this base image — confirm or
+# adjust the exact pin on the deploy GPU host before relying on this pass in
+# production. Install from the PyTorch cu126 wheel index (see Dockerfile),
+# not plain PyPI, which only carries CPU-only torch/torchaudio builds.
+torch==2.8.0
+torchaudio==2.8.0

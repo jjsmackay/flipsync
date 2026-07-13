@@ -256,7 +256,7 @@ export function ProjectDashboardPage() {
             </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Transcribe
+                Processing settings
               </h3>
               <TranscribeSettingsPanel
                 projectId={project.id}

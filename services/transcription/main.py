@@ -64,6 +64,10 @@ class JobRequest(BaseModel):
     # own defaults, so an unset job behaves exactly as before.
     beam_size: int = 5
     vad_filter: bool = False
+    # Optional forced-alignment pass (project's align_words config). Off by
+    # default so an unset job behaves exactly as before; it only takes effect
+    # for segments that are also being re-segmented (see transcriber.py).
+    align: bool = False
 
     @field_validator("beam_size")
     @classmethod
@@ -147,6 +151,7 @@ async def _run_transcription(
     compute_type: str = "default",
     beam_size: int = 5,
     vad_filter: bool = False,
+    align: bool = False,
 ) -> None:
     """Background task: load model, process segments in batches, update job state."""
     loop = asyncio.get_running_loop()
@@ -175,6 +180,7 @@ async def _run_transcription(
                 batch_size,
                 beam_size,
                 vad_filter,
+                align,
             )
 
             # Append results to cumulative list (thread-safe via asyncio lock)
@@ -263,6 +269,7 @@ async def submit_job(req: JobRequest):
             req.compute_type,
             req.beam_size,
             req.vad_filter,
+            req.align,
         )
     )
     _background_tasks.add(task)

@@ -127,6 +127,7 @@ def _project_detail(project_id: str) -> dict:
             "diar_min_segment_duration": p["diar_min_segment_duration"],
             "whisper_beam_size": p["whisper_beam_size"],
             "whisper_vad_filter": bool(p["whisper_vad_filter"]),
+            "align_words": bool(p["align_words"]),
             "target_lufs": p["target_lufs"],
             "highpass_hz": p["highpass_hz"],
             "silence_threshold_db": p["silence_threshold_db"],
@@ -154,7 +155,7 @@ WHISPER_COMPUTE_TYPES = {"default", "float16", "int8_float16", "int8"}
 _WHISPER_BATCH = Field(default=16, ge=1, le=64)
 
 # Demucs models the vocal-separation service accepts.
-DEMUCS_MODELS = {"htdemucs", "mdx_extra"}
+DEMUCS_MODELS = {"htdemucs", "htdemucs_ft", "mdx_extra", "bs_roformer"}
 
 
 def _enum_validator(field_name: str, allowed: set[str]):
@@ -193,7 +194,7 @@ class ProjectCreate(BaseModel):
     whisper_batch_size: int = _WHISPER_BATCH
     whisper_compute_type: str = "default"
     # Separation
-    demucs_model: str = "htdemucs"
+    demucs_model: str = "htdemucs_ft"
     demucs_shifts: int = Field(default=0, ge=0, le=10)
     # Diarisation
     diar_min_speakers: int = Field(default=1, ge=1, le=20)
@@ -202,6 +203,7 @@ class ProjectCreate(BaseModel):
     # Transcription
     whisper_beam_size: int = Field(default=5, ge=1, le=10)
     whisper_vad_filter: bool = False
+    align_words: bool = False
     # Cleanup
     target_lufs: float = Field(default=-23.0, ge=-70.0, le=-5.0)
     highpass_hz: int = Field(default=80, ge=0, le=1000)
@@ -238,6 +240,7 @@ class ProjectPatch(BaseModel):
     # Transcription
     whisper_beam_size: Optional[int] = Field(default=None, ge=1, le=10)
     whisper_vad_filter: Optional[bool] = None
+    align_words: Optional[bool] = None
     # Cleanup
     target_lufs: Optional[float] = Field(default=None, ge=-70.0, le=-5.0)
     highpass_hz: Optional[int] = Field(default=None, ge=0, le=1000)
@@ -312,11 +315,11 @@ async def create_project(body: ProjectCreate):
             whisper_batch_size, whisper_compute_type,
             demucs_model, demucs_shifts,
             diar_min_speakers, diar_max_speakers, diar_min_segment_duration,
-            whisper_beam_size, whisper_vad_filter,
+            whisper_beam_size, whisper_vad_filter, align_words,
             target_lufs, highpass_hz, silence_threshold_db, silence_min_duration_secs,
             xtts_epochs, xtts_batch_size, xtts_grad_accum, xtts_learning_rate)
         VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (project_id, body.name, now, now, body.whisper_model,
          body.language, body.match_threshold, body.target_duration_secs,
@@ -325,7 +328,7 @@ async def create_project(body: ProjectCreate):
          body.whisper_batch_size, body.whisper_compute_type,
          body.demucs_model, body.demucs_shifts,
          body.diar_min_speakers, body.diar_max_speakers, body.diar_min_segment_duration,
-         body.whisper_beam_size, int(body.whisper_vad_filter),
+         body.whisper_beam_size, int(body.whisper_vad_filter), int(body.align_words),
          body.target_lufs, body.highpass_hz, body.silence_threshold_db,
          body.silence_min_duration_secs,
          body.xtts_epochs, body.xtts_batch_size, body.xtts_grad_accum,
@@ -361,7 +364,7 @@ async def patch_project(project_id: str, body: ProjectPatch):
         # change applies to the next run of that stage; no re-evaluation.
         "demucs_model", "demucs_shifts",
         "diar_min_speakers", "diar_max_speakers", "diar_min_segment_duration",
-        "whisper_beam_size", "whisper_vad_filter",
+        "whisper_beam_size", "whisper_vad_filter", "align_words",
         "target_lufs", "highpass_hz", "silence_threshold_db", "silence_min_duration_secs",
         "xtts_epochs", "xtts_batch_size", "xtts_grad_accum", "xtts_learning_rate",
     ):

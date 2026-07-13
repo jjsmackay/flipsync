@@ -101,6 +101,27 @@ class TestWhisperTuningPayload:
         assert capture[0]["batch_size"] == 4
         assert capture[0]["compute_type"] == "int8_float16"
 
+    def test_bulk_payload_carries_align_words_config(
+        self, client, project, isolated_data_dir
+    ):
+        import db
+        conn = db.get_conn(project)
+        client.patch(f"/projects/{project}", json={"align_words": True})
+        source_id = _insert_source(conn, project, "complete")
+        seg = _insert_segment(conn, project, source_id, status="pending", confidence=0.7)
+        _create_segment_wav(db.project_dir(project), seg)
+
+        capture = []
+        _run_bulk(
+            project, [seg],
+            [{"completed_segments": [
+                {"id": seg, "transcript": "x", "transcript_confidence": 0.9}
+            ]}],
+            submit_capture=capture,
+        )
+
+        assert capture[0]["align"] is True
+
 
 # ========================================================================
 # A1 — write-time eligibility re-check for children results

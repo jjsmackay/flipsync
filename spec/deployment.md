@@ -156,12 +156,17 @@ Create a `.env` file at the repo root before first run: `cp .env.example .env`. 
 | `HF_TOKEN` | yes | — | HuggingFace token for pyannote model download (diarisation only) |
 | `DATA_ROOT` | no | `data` (named volume) | Override project-data storage with a host bind path (absolute, or `./data`). Unset = named volume (see note above) |
 | `MODELS_ROOT` | no | `/mnt/models/flipsync` | Host dir for the demucs/pyannote/whisper caches |
+| `ROFORMER_MODEL_DIR` | no | `${MODELS_ROOT}/audio-separator` | Cache dir for BS-RoFormer weights (only used when a project selects the `bs_roformer` separation model) |
+| `IDLE_UNLOAD_SECS` | no | `60` | Idle seconds before vocal-separation/diarisation release their model from VRAM (0 disables). See §Idle VRAM unloading |
+| `SERVICE_READY_TIMEOUT_SECS` | no | `1800` | Orchestrator's pre-GPU-lock wait for a processing service to become ready |
 | `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
 | `FRONTEND_PORT` | no | `3000` | Host port for the UI |
 | `CORS_ORIGINS` | no | `http://localhost:3000,http://127.0.0.1:3000` | Browser origins allowed to call the orchestrator directly |
 | `XTTS_ACCEPT_CPML` | only with `--profile xtts` | — | CPML licence acceptance; the XTTS service refuses to start without it (see §XTTS service) |
 
-Model selection (Demucs and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`.
+Model selection (separation and Whisper) is not configured via environment variables — the orchestrator passes the model name in each job request, per `api-contracts.md`. The separation model is a per-project config (`demucs_model`): `htdemucs_ft` (default), `htdemucs`, `mdx_extra`, or `bs_roformer`. The optional word-alignment pass is the per-project `align_words` flag (off by default).
+
+**RoFormer and alignment weight caches (owed compose wiring).** When a project uses `bs_roformer`, its weights download on first use to `ROFORMER_MODEL_DIR`; when `align_words` is on, the wav2vec2/MMS alignment weights download to `TORCH_HOME`. Neither cache is bind-mounted in `docker-compose.yml` yet, so both re-download on container recreate — add mounts under `MODELS_ROOT` (e.g. `${MODELS_ROOT}/audio-separator` and a `TORCH_HOME` dir) alongside the existing demucs/pyannote/whisper mounts before relying on either feature. The alignment pass also adds a torch/torchaudio CUDA runtime to the transcription image; verify it coexists with ctranslate2's system-CUDA linkage when building on the deploy host.
 
 **Orchestrator CORS.** `CORS_ORIGINS` only matters if something calls the orchestrator's published port from a browser directly. The UI itself calls the same-origin `/api` proxy, so it needs no CORS entry.
 

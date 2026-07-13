@@ -4,6 +4,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+import aligner
 from resegment import (
     compute_boundaries,
     merge_degenerate_children,
@@ -94,6 +95,8 @@ def transcribe_segment(
     resegment: bool = False,
     beam_size: int = 5,
     vad_filter: bool = False,
+    align: bool = False,
+    aligner_fn=aligner.align_words,
 ) -> dict:
     """
     Transcribe a single WAV segment.
@@ -109,6 +112,13 @@ def transcribe_segment(
     and its own transcript and confidence. A single utterance or a no-word
     transcription returns the unsplit shape, exactly as if ``resegment``
     were false.
+
+    When ``align`` is also true (and there are words to resegment), a forced
+    alignment pass (``aligner_fn``, default ``aligner.align_words``) refines
+    the word start/end timestamps *before* splitting into utterances — this
+    sharpens child-segment boundaries. It never changes word text or
+    per-word probability, so ``compute_confidence`` is unaffected. It is a
+    no-op unless a segment is actually being re-segmented.
     """
     # Check duration first
     duration = get_wav_duration(wav_path)
@@ -138,6 +148,8 @@ def transcribe_segment(
             all_words.extend(seg.words)
 
     if resegment and all_words:
+        if align:
+            all_words = aligner_fn(wav_path, all_words, language)
         utterances = normalise_utterances(split_into_utterances(all_words))
         if len(utterances) >= 2:
             split = _split_segment(
@@ -193,7 +205,8 @@ def _split_segment(
 
 
 def _transcribe_one(model, seg: dict, language: Optional[str],
-                    beam_size: int = 5, vad_filter: bool = False) -> dict:
+                    beam_size: int = 5, vad_filter: bool = False,
+                    align: bool = False) -> dict:
     """Transcribe one segment, converting any failure into a per-segment error.
 
     A single unreadable or otherwise failing WAV must not abort the whole job,
@@ -211,6 +224,7 @@ def _transcribe_one(model, seg: dict, language: Optional[str],
             resegment=seg.get("resegment", False),
             beam_size=beam_size,
             vad_filter=vad_filter,
+            align=align,
         )
     except Exception as exc:
         return {
@@ -228,6 +242,7 @@ def process_batch(
     max_workers: int = 1,
     beam_size: int = 5,
     vad_filter: bool = False,
+    align: bool = False,
 ) -> list[dict]:
     """Transcribe a list of segment dicts ({id, wav_path}) and return results.
 
@@ -238,10 +253,15 @@ def process_batch(
     ``batch_size`` into a genuine throughput / GPU-memory knob rather than a
     progress-reporting granularity. Results are returned in input order; a
     failing segment yields a result with an ``error`` field instead of raising.
+
+    ``align`` (default false) is forwarded to each segment's forced-alignment
+    pass; see ``transcribe_segment`` for when it actually takes effect.
     """
     if max_workers <= 1 or len(batch) <= 1:
-        return [_transcribe_one(model, seg, language, beam_size, vad_filter) for seg in batch]
+        return [_transcribe_one(model, seg, language, beam_size, vad_filter, align)
+                for seg in batch]
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as pool:
         return list(pool.map(
-            lambda seg: _transcribe_one(model, seg, language, beam_size, vad_filter), batch))
+            lambda seg: _transcribe_one(model, seg, language, beam_size, vad_filter, align),
+            batch))
