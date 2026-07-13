@@ -14,6 +14,7 @@ from fastapi import APIRouter, UploadFile, File, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from audio import get_duration
 from db import get_conn, project_dir, require_project, utc_now
 from errors import AppError
 from jobs import enqueue
@@ -26,51 +27,6 @@ MIN_DURATION_SECS = 5.0
 # Maximum assembled reference length. Turns are taken longest-first up to this
 # cap; the final turn is truncated to land exactly on it.
 REFERENCE_MAX_SECS = 30.0
-_FFPROBE_TIMEOUT_SECS = 10.0
-
-
-def _wave_duration(path: str) -> float:
-    """Duration of a WAV file via the stdlib wave module (0.0 on failure)."""
-    try:
-        import wave as _wave
-        with _wave.open(path, "r") as wf:
-            return wf.getnframes() / float(wf.getframerate())
-    except Exception:
-        return 0.0
-
-
-async def _get_duration(path: str) -> float:
-    """Return audio duration in seconds without blocking the event loop.
-
-    Tries ffprobe (any format) via an async subprocess, falls back to the wave
-    module for WAV files (works in test environments without ffprobe).
-    """
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_FFPROBE_TIMEOUT_SECS)
-        val = float(stdout.decode().strip())
-        if val > 0:
-            return val
-    except Exception:
-        # ffprobe missing, hung, or emitted junk. Kill a still-running process
-        # before falling back — a timed-out wait_for leaves it alive otherwise.
-        if proc is not None and proc.returncode is None:
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-
-    # Fallback: WAV header read, offloaded to a thread to stay non-blocking.
-    return await asyncio.to_thread(_wave_duration, path)
 
 
 async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav) -> float:
@@ -83,7 +39,7 @@ async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav) -
     atomic rename. The gate runs before installation, so a too-short candidate
     never destroys an existing valid reference. Returns the duration.
     """
-    duration = await _get_duration(str(staged_wav))
+    duration = await get_duration(str(staged_wav))
     if duration < MIN_DURATION_SECS:
         raise AppError(
             422, "reference_too_short",
@@ -292,24 +248,46 @@ async def get_scout(project_id: str):
     return {"status": "complete", "source_id": job["source_id"], "speakers": _candidate_speakers(conn, project_id)}
 
 
-@router.get("/scout/samples/{speaker_label}/{index}")
-async def get_scout_sample(project_id: str, speaker_label: str, index: int):
-    conn = require_project(project_id)
-
+def _require_candidate(conn, project_id: str, speaker_label: str):
+    """Fetch the speaker_candidates row or raise 404 unknown_speaker."""
     cand = conn.execute(
-        "SELECT scout_job_id, pool_json FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
+        "SELECT * FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
         (project_id, speaker_label),
     ).fetchone()
     if cand is None:
         raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
+    return cand
+
+
+def _pool_dir(project_id: str, cand):
+    """Directory holding a candidate's pool slice WAVs."""
+    return (
+        project_dir(project_id) / "reference_candidates"
+        / cand["scout_job_id"] / cand["speaker_label"]
+    )
+
+
+def _select_or_422(pool: list, excluded: set):
+    """Pick the reference turns, or raise 422 when exclusions empty the pool."""
+    chosen = _select_reference_turns(pool, excluded, REFERENCE_MAX_SECS)
+    if not chosen:
+        raise AppError(
+            422, "reference_too_short",
+            "No turns left after exclusions — keep at least one segment.",
+            {"excluded_indices": sorted(excluded)},
+        )
+    return chosen
+
+
+@router.get("/scout/samples/{speaker_label}/{index}")
+async def get_scout_sample(project_id: str, speaker_label: str, index: int):
+    conn = require_project(project_id)
+    cand = _require_candidate(conn, project_id, speaker_label)
 
     if index not in {t["index"] for t in json.loads(cand["pool_json"])}:
         raise AppError(404, "unknown_segment", "Segment not in this candidate's pool.")
 
-    wav = (
-        project_dir(project_id) / "reference_candidates"
-        / cand["scout_job_id"] / speaker_label / f"{index}.wav"
-    )
+    wav = _pool_dir(project_id, cand) / f"{index}.wav"
     if not wav.exists():
         raise AppError(404, "audio_not_found", "Pool slice WAV not found.")
 
@@ -328,56 +306,25 @@ async def get_scout_preview(
     exclusions) before committing to select. Identical assembly to select, so
     the preview matches the eventual reference exactly."""
     conn = require_project(project_id)
-
-    cand = conn.execute(
-        "SELECT scout_job_id, pool_json FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
-        (project_id, speaker_label),
-    ).fetchone()
-    if cand is None:
-        raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
+    cand = _require_candidate(conn, project_id, speaker_label)
 
     pool = json.loads(cand["pool_json"])
-    chosen = _select_reference_turns(pool, set(exclude), REFERENCE_MAX_SECS)
-    if not chosen:
-        raise AppError(
-            422, "reference_too_short",
-            "No turns left after exclusions — keep at least one segment.",
-            {"excluded_indices": sorted(set(exclude))},
-        )
+    chosen = _select_or_422(pool, set(exclude))
 
-    pool_dir = (
-        project_dir(project_id) / "reference_candidates"
-        / cand["scout_job_id"] / speaker_label
-    )
-    data = await asyncio.to_thread(_assemble_reference_bytes, pool_dir, chosen)
+    data = await asyncio.to_thread(_assemble_reference_bytes, _pool_dir(project_id, cand), chosen)
     return Response(content=data, media_type="audio/wav")
 
 
 @router.post("/scout/select")
 async def select_speaker(project_id: str, body: SelectRequest):
     conn = require_project(project_id)
-
-    cand = conn.execute(
-        "SELECT * FROM speaker_candidates WHERE project_id=? AND speaker_label=?",
-        (project_id, body.speaker_label),
-    ).fetchone()
-    if cand is None:
-        raise AppError(404, "unknown_speaker", "Speaker not in the current candidate set.")
+    cand = _require_candidate(conn, project_id, body.speaker_label)
 
     pool = json.loads(cand["pool_json"])
     excluded = set(body.excluded_indices)
-    chosen = _select_reference_turns(pool, excluded, REFERENCE_MAX_SECS)
-    if not chosen:
-        raise AppError(
-            422, "reference_too_short",
-            "No turns left after exclusions — keep at least one segment.",
-            {"excluded_indices": sorted(excluded)},
-        )
+    chosen = _select_or_422(pool, excluded)
 
-    pool_dir = (
-        project_dir(project_id) / "reference_candidates"
-        / cand["scout_job_id"] / body.speaker_label
-    )
+    pool_dir = _pool_dir(project_id, cand)
     # Assemble into a temp file so a too-short result never destroys an existing
     # valid reference; _finalise_reference gates on duration then installs it.
     pdir = project_dir(project_id)

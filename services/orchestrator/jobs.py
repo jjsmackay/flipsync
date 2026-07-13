@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import httpx
 
+from audio import get_duration
 from db import get_conn, project_dir, utc_now as _now
 import service_client
 from status import auto_approve_promote, recompute_project_status as _recompute_project_status
@@ -341,7 +342,6 @@ async def _execute_job(project_id: str, job_id: str) -> None:
     except Exception as exc:
         logger.exception("Job %s (%s) raised an exception", job_id, job_type)
         _fail_job(project_id, job_id, str(exc))
-        _recompute_project_status(project_id)
 
 
 def _complete_job(project_id: str, job_id: str) -> None:
@@ -365,10 +365,24 @@ def _fail_job(project_id: str, job_id: str, error: str) -> None:
     _recompute_project_status(project_id)
 
 
+def _fail_model(conn, model_id: str, msg: str) -> None:
+    """Mark a models row failed. A model left at 'pending'/'training' would be
+    wedged forever (no cancel endpoint, POST/DELETE 409 while in progress)."""
+    conn.execute(
+        "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
+        (msg, _now(), model_id),
+    )
+    conn.commit()
+
+
 def _update_progress(project_id: str, job_id: str, progress: int) -> None:
     conn = get_conn(project_id)
-    conn.execute("UPDATE jobs SET progress=? WHERE id=?", (progress, job_id))
-    conn.commit()
+    changed = conn.execute(
+        "UPDATE jobs SET progress=? WHERE id=? AND progress IS NOT ?",
+        (progress, job_id, progress),
+    ).rowcount
+    if changed:
+        conn.commit()
 
 
 def _update_progress_detail(project_id: str, job_id: str, detail: dict) -> None:
@@ -382,6 +396,17 @@ def _update_progress_detail(project_id: str, job_id: str, detail: dict) -> None:
         (json.dumps(detail), job_id),
     )
     conn.commit()
+
+
+def _progress_cb(project_id: str, job_id: str, scale: float = 1.0) -> Callable:
+    """Build a ``poll_until_complete`` ``on_progress`` callback that copies the
+    service's 0-100 ``progress`` into the job row, optionally scaled (e.g.
+    dataset_build's cleanup phase only occupies 0-80% of the job's progress)."""
+    def on_progress(result):
+        progress = result.get("progress", 0)
+        if progress:
+            _update_progress(project_id, job_id, int(progress * scale))
+    return on_progress
 
 
 # ---------------------------------------------------------------------------
@@ -432,10 +457,11 @@ async def _handle_extract_audio(
         )
         conn.commit()
         _fail_job(project_id, job_id, f"ffmpeg_error: {error_msg}")
-        _recompute_project_status(project_id)
         return
 
-    duration_secs = await _get_audio_duration(str(output_path))
+    # get_duration returns 0.0 on total failure; store NULL in that case so
+    # a missing duration stays distinguishable from a zero-length file.
+    duration_secs = await get_duration(str(output_path)) or None
 
     conn.execute(
         """
@@ -448,21 +474,6 @@ async def _handle_extract_audio(
     conn.commit()
     _complete_job(project_id, job_id)
     _recompute_project_status(project_id)
-
-
-async def _get_audio_duration(wav_path: str) -> float | None:
-    """Return duration in seconds using ffprobe, or None on failure."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", wav_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        return float(stdout.decode().strip())
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +495,6 @@ async def _handle_vocal_separation(
     source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
     if source is None:
         _fail_job(project_id, job_id, "source_not_found")
-        _recompute_project_status(project_id)
         return
 
     # Transition source to separation_running
@@ -523,13 +533,9 @@ async def _handle_vocal_separation(
         )
         conn.commit()
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
-        _recompute_project_status(project_id)
         return
 
-    def on_progress(result):
-        progress = result.get("progress", 0)
-        if progress:
-            _update_progress(project_id, job_id, progress)
+    on_progress = _progress_cb(project_id, job_id)
 
     result = await service_client.poll_until_complete("vocal_separation", job_id, on_progress=on_progress)
 
@@ -561,7 +567,6 @@ async def _handle_vocal_separation(
             )
             conn.commit()
             _fail_job(project_id, job_id, error)
-            _recompute_project_status(project_id)
             return
 
     conn.execute(
@@ -649,7 +654,6 @@ async def _handle_diarisation(
     source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
     if source is None:
         _fail_job(project_id, job_id, "source_not_found")
-        _recompute_project_status(project_id)
         return
 
     if source["status"] not in _DIARISATION_SOURCE_STATUSES:
@@ -702,13 +706,9 @@ async def _handle_diarisation(
         )
         conn.commit()
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
-        _recompute_project_status(project_id)
         return
 
-    def on_progress(result):
-        progress = result.get("progress", 0)
-        if progress:
-            _update_progress(project_id, job_id, progress)
+    on_progress = _progress_cb(project_id, job_id)
 
     result = await service_client.poll_until_complete("diarisation", job_id, on_progress=on_progress)
 
@@ -720,7 +720,6 @@ async def _handle_diarisation(
         )
         conn.commit()
         _fail_job(project_id, job_id, error)
-        _recompute_project_status(project_id)
         return
 
     # Write segments to DB. Clear any pre-existing segments for this source
@@ -769,6 +768,32 @@ async def _handle_diarisation(
     _maybe_auto_transcribe(project_id)
 
 
+def enqueue_bulk_transcription(project_id: str) -> tuple[str, int] | None:
+    """Enqueue a transcription_bulk job for every untranscribed pending/maybe
+    segment in the project. Returns ``(job_id, segment_count)``, or None if
+    there are none.
+
+    Shared by the post-diarisation auto-trigger (_maybe_auto_transcribe) and
+    the manual POST /transcription/run endpoint. Params carry only
+    segment_ids: _handle_transcription_bulk reads whisper_model/language live
+    from project config at run time (params only override), so no config
+    snapshot is taken here.
+    """
+    conn = get_conn(project_id)
+    segments = conn.execute(
+        """
+        SELECT id FROM segments
+        WHERE project_id=? AND status IN ('pending','maybe') AND transcript IS NULL
+        """,
+        (project_id,),
+    ).fetchall()
+    if not segments:
+        return None
+    segment_ids = [s["id"] for s in segments]
+    job_id = enqueue(project_id, "transcription_bulk", params={"segment_ids": segment_ids})
+    return job_id, len(segment_ids)
+
+
 def _maybe_auto_transcribe(project_id: str) -> None:
     """After all sources finish diarisation, auto-trigger transcription for
     pending segments with no transcript.  Triggers when no sources are still
@@ -782,23 +807,7 @@ def _maybe_auto_transcribe(project_id: str) -> None:
     if in_progress > 0:
         return
 
-    # All sources complete — check for untranscribed segments
-    segments = conn.execute(
-        """
-        SELECT id, raw_path FROM segments
-        WHERE project_id=? AND status IN ('pending','maybe') AND transcript IS NULL
-        """,
-        (project_id,),
-    ).fetchall()
-
-    if segments:
-        project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
-        params = {
-            "segment_ids": [s["id"] for s in segments],
-            "model": project["whisper_model"],
-            "language": project["language"],
-        }
-        enqueue(project_id, "transcription_bulk", params=params)
+    enqueue_bulk_transcription(project_id)
 
 
 # ---------------------------------------------------------------------------
@@ -816,12 +825,10 @@ async def _handle_scout_speakers(
     source = conn.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
     if source is None:
         _fail_job(project_id, job_id, "source_not_found")
-        _recompute_project_status(project_id)
         return
 
     if not source["vocals_path"]:
         _fail_job(project_id, job_id, "vocals_not_ready")
-        _recompute_project_status(project_id)
         return
 
     # An optional expected speaker count (from the scout request) forces
@@ -854,19 +861,14 @@ async def _handle_scout_speakers(
         await _submit_with_retry("diarisation", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
-        _recompute_project_status(project_id)
         return
 
-    def on_progress(result):
-        progress = result.get("progress", 0)
-        if progress:
-            _update_progress(project_id, job_id, progress)
+    on_progress = _progress_cb(project_id, job_id)
 
     result = await service_client.poll_until_complete("diarisation", job_id, on_progress=on_progress)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
-        _recompute_project_status(project_id)
         return
 
     # Replace the project's candidate set with this scout's speakers. montage_path
@@ -926,7 +928,6 @@ async def _handle_transcription_bulk(
     segment_ids = params.get("segment_ids", [])
     if not segment_ids:
         _fail_job(project_id, job_id, "no_segment_ids")
-        _recompute_project_status(project_id)
         return
 
     project = conn.execute(
@@ -961,7 +962,6 @@ async def _handle_transcription_bulk(
 
     if not seg_list:
         _fail_job(project_id, job_id, "no_valid_segments")
-        _recompute_project_status(project_id)
         return
 
     model = params.get("model") or project["whisper_model"]
@@ -985,7 +985,6 @@ async def _handle_transcription_bulk(
         await _submit_with_retry("transcription", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
-        _recompute_project_status(project_id)
         return
 
     # Track already-written parent segment IDs to deduplicate cumulative
@@ -993,11 +992,10 @@ async def _handle_transcription_bulk(
     # has been replaced by children).
     written_ids: set[str] = set()
 
-    def on_progress(result):
-        progress = result.get("progress", 0)
-        if progress:
-            _update_progress(project_id, job_id, progress)
+    _report_progress = _progress_cb(project_id, job_id)
 
+    def on_progress(result):
+        _report_progress(result)
         # Write completed segments incrementally
         _apply_transcription_results(
             project_id, conn, result.get("completed_segments", []), written_ids,
@@ -1008,7 +1006,6 @@ async def _handle_transcription_bulk(
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
-        _recompute_project_status(project_id)
         return
 
     # Final pass: write any remaining completed segments from the final poll
@@ -1026,14 +1023,12 @@ async def _handle_transcription_segment(
     segment_ids = params.get("segment_ids", [])
     if not segment_ids:
         _fail_job(project_id, job_id, "no_segment_ids")
-        _recompute_project_status(project_id)
         return
 
     seg_id = segment_ids[0]
     seg = conn.execute("SELECT id, raw_path FROM segments WHERE id=? AND project_id=?", (seg_id, project_id)).fetchone()
     if seg is None:
         _fail_job(project_id, job_id, "segment_not_found")
-        _recompute_project_status(project_id)
         return
 
     project = conn.execute(
@@ -1061,14 +1056,12 @@ async def _handle_transcription_segment(
         await _submit_with_retry("transcription", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
-        _recompute_project_status(project_id)
         return
 
     result = await service_client.poll_until_complete("transcription", job_id)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
-        _recompute_project_status(project_id)
         return
 
     # transcription_segment jobs never set resegment, so results are always
@@ -1132,7 +1125,7 @@ def _apply_transcription_results(
             """,
             (transcript, confidence, now, seg_id, project_id),
         )
-        _clear_transcription_error_flag(conn, seg_id)
+        _clear_keyed_flag(conn, seg_id, "transcription_error")
         duration = durations.get(seg_id) if durations else None
         if duration is None:
             row = conn.execute(
@@ -1153,7 +1146,7 @@ def _apply_transcription_results(
             # Per-segment service failure: leave transcript NULL so every
             # retranscription selector (transcript IS NULL) still picks the
             # segment up, and surface the failure as a flag.
-            _set_transcription_error_flag(conn, seg_id, cs["error"])
+            _set_keyed_flag(conn, seg_id, "transcription_error", cs["error"])
             continue
 
         children = cs.get("children")
@@ -1238,36 +1231,37 @@ def _apply_transcription_results(
             logger.warning("Could not delete replaced parent WAV %s: %s", wav, exc)
 
 
-_TRANSCRIPTION_ERROR_PREFIX = "transcription_error: "
-
-
-def _set_transcription_error_flag(conn, segment_id: str, message: str) -> None:
-    """Record a per-segment transcription failure in the flags array.
-
-    Any existing ``transcription_error:`` flag is replaced (dedupe on
-    re-add), mirroring the ``cleanup_error: <msg>`` pattern.
-    """
+def _set_keyed_flag(conn, segment_id: str, key: str, message: str) -> None:
+    """Record a ``"key: <msg>"`` entry in the flags array, replacing any
+    existing entry for the same key (dedupe on re-add). Used for the keyed
+    flags spec'd in CLAUDE.md: ``transcription_error``, ``cleanup_error``."""
     row = conn.execute("SELECT flags FROM segments WHERE id=?", (segment_id,)).fetchone()
     if row is None:
-        logger.warning("Transcription returned an error for unknown segment %s", segment_id)
+        logger.warning("Flag %s reported for unknown segment %s", key, segment_id)
         return
+    prefix = f"{key}: "
     flags = [
         f for f in (json.loads(row["flags"]) if row["flags"] else [])
-        if not f.startswith(_TRANSCRIPTION_ERROR_PREFIX)
+        if not str(f).startswith(prefix)
     ]
-    flags.append(f"{_TRANSCRIPTION_ERROR_PREFIX}{message}")
+    flags.append(f"{prefix}{message}")
     conn.execute("UPDATE segments SET flags=? WHERE id=?", (json.dumps(flags), segment_id))
 
 
-def _clear_transcription_error_flag(conn, segment_id: str) -> None:
-    """Drop any stale ``transcription_error:`` flag after a successful write."""
+def _clear_keyed_flag(conn, segment_id: str, key: str) -> None:
+    """Drop any stale ``"key: <msg>"`` flag (e.g. after a later success)."""
     row = conn.execute("SELECT flags FROM segments WHERE id=?", (segment_id,)).fetchone()
     if row is None or not row["flags"]:
         return
     flags = json.loads(row["flags"])
-    kept = [f for f in flags if not f.startswith(_TRANSCRIPTION_ERROR_PREFIX)]
+    kept = [f for f in flags if not str(f).startswith(f"{key}: ")]
     if len(kept) != len(flags):
         conn.execute("UPDATE segments SET flags=? WHERE id=?", (json.dumps(kept), segment_id))
+
+
+def _has_keyed_flag(flags: list, key: str) -> bool:
+    """True when a parsed flags array carries an entry for the keyed flag."""
+    return any(str(f).startswith(f"{key}: ") for f in flags)
 
 
 # ---------------------------------------------------------------------------
@@ -1310,21 +1304,23 @@ async def _run_cleanup(
     segments: list,
     job_id: str,
     on_progress: Callable | None = None,
+    output_dir: str = "cleaned",
 ) -> list[dict]:
     """Submit a cleanup job for the given segments and poll until complete.
 
     Each segment row must expose ``id`` and ``raw_path``. Cleaned WAVs are
-    written to ``cleaned/{id}.wav`` on the shared volume — the dataset cache,
-    deliberately separate from export/ so exports and dataset builds never
-    clobber each other's files. Returns the service's per-segment ``results``
-    list. Raises CleanupError on submit failure or a job-level cleanup failure.
+    written to ``{output_dir}/{id}.wav`` on the shared volume — defaulting to
+    ``cleaned/`` (the dataset cache), or ``export_tmp/`` for a staged export,
+    kept deliberately separate so exports and dataset builds never clobber
+    each other's files. Returns the service's per-segment ``results`` list.
+    Raises CleanupError on submit failure or a job-level cleanup failure.
     """
     data_prefix = _data_prefix()
     cleanup_segments = [
         {
             "id": seg["id"],
             "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
-            "output_path": f"{data_prefix}/projects/{project_id}/cleaned/{seg['id']}.wav",
+            "output_path": f"{data_prefix}/projects/{project_id}/{output_dir}/{seg['id']}.wav",
         }
         for seg in segments
     ]
@@ -1420,7 +1416,7 @@ def _select_dataset_segments(
             dropped["too_long"] += 1
             continue
         flags = json.loads(r["flags"]) if r["flags"] else []
-        if any(str(f).startswith("cleanup_error") for f in flags):
+        if _has_keyed_flag(flags, "cleanup_error"):
             dropped["flagged"] += 1
             continue
         kept.append(r)
@@ -1460,7 +1456,6 @@ async def _handle_export(
 
     if not approved:
         _fail_job(project_id, job_id, "no_approved_segments")
-        _recompute_project_status(project_id)
         return
 
     # Refuse to build an export that would silently omit approved-but-
@@ -1481,11 +1476,9 @@ async def _handle_export(
             f"untranscribed_approved_segments: {len(untranscribed)} approved "
             f"segment(s) have no transcript: {preview}{more}. Transcribe or reject them.",
         )
-        _recompute_project_status(project_id)
         return
 
     pdir = project_dir(project_id)
-    data_prefix = _data_prefix()
     export_dir = pdir / "export"
     staging_dir = pdir / "export_tmp"
     archive_path = pdir / "export.tar.gz"
@@ -1494,42 +1487,19 @@ async def _handle_export(
     # Clear any stale staging left by an earlier failed/interrupted export,
     # then stage this run's WAVs in export_tmp/.
     if staging_dir.exists():
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, staging_dir, ignore_errors=True)
     staging_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Build cleanup payload — outputs land in the staging directory.
-        cleanup_segments = []
-        for seg in approved:
-            cleanup_segments.append({
-                "id": seg["id"],
-                "input_path": f"{data_prefix}/projects/{project_id}/{seg['raw_path']}",
-                "output_path": f"{data_prefix}/projects/{project_id}/export_tmp/{seg['id']}.wav",
-            })
-
-        cleanup_payload = {
-            "job_id": job_id,
-            "segments": cleanup_segments,
-            "params": _cleanup_params(project),
-        }
-
+        # Cleanup outputs land in the staging directory.
         try:
-            await _submit_with_retry("cleanup", cleanup_payload)
-        except Exception as exc:
-            _fail_job(project_id, job_id, f"cleanup_submit_failed: {exc}")
-            _recompute_project_status(project_id)
-            return
-
-        def on_progress(result):
-            progress = result.get("progress", 0)
-            if progress:
-                _update_progress(project_id, job_id, progress)
-
-        result = await service_client.poll_until_complete("cleanup", job_id, on_progress=on_progress)
-
-        if result["status"] == "failed":
-            _fail_job(project_id, job_id, result.get("error", "unknown_error"))
-            _recompute_project_status(project_id)
+            results = await _run_cleanup(
+                project_id, project, approved, job_id,
+                on_progress=_progress_cb(project_id, job_id),
+                output_dir="export_tmp",
+            )
+        except CleanupError as exc:
+            _fail_job(project_id, job_id, str(exc))
             return
 
         # Cleanup succeeded — apply per-segment results and promote the staged
@@ -1540,7 +1510,7 @@ async def _handle_export(
             conn.execute(
                 "UPDATE segments SET export_path=NULL WHERE project_id=?", (project_id,)
             )
-            for seg_result in result.get("results", []):
+            for seg_result in results:
                 seg_id = seg_result["id"]
 
                 if seg_result.get("error"):
@@ -1549,7 +1519,7 @@ async def _handle_export(
                         "UPDATE segments SET status='auto_rejected', updated_at=? WHERE id=?",
                         (now, seg_id),
                     )
-                    _add_flag(conn, seg_id, f"cleanup_error: {seg_result['error']}")
+                    _set_keyed_flag(conn, seg_id, "cleanup_error", seg_result["error"])
 
                 elif seg_result.get("auto_rejected"):
                     # Silent after trim
@@ -1582,6 +1552,10 @@ async def _handle_export(
             # Write manifest.json (from the uncommitted DB state on this same
             # connection) into staging, and build the new archive alongside the
             # old one, packaging exactly the manifest's WAVs.
+            # Deliberately synchronous (no asyncio.to_thread) even though the
+            # tar+gzip is slow: the open transaction on the shared per-project
+            # connection must not interleave with request handlers, which
+            # would commit it half-done. Blocking the loop IS the exclusion.
             audio_files = _write_manifest(
                 project_id, project, pdir, export_dir=staging_dir
             )
@@ -1613,7 +1587,7 @@ async def _handle_export(
         # Success renames staging away; on any failure remove leftovers so the
         # previous export/ and archive remain the only visible state.
         if staging_dir.exists():
-            shutil.rmtree(staging_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, staging_dir, ignore_errors=True)
         if archive_tmp.exists():
             archive_tmp.unlink()
 
@@ -1645,47 +1619,57 @@ def _write_manifest(
 
     manifest_segments = []
     audio_files: list[str] = []
-    total_duration = 0.0
     for r in rows:
-        transcript = r["text"]
-        if transcript is None:
+        if r["text"] is None:
             # Skip segments without transcript (edge case)
             logger.warning("Segment %s has no transcript, excluding from manifest", r["id"])
             continue
-        dur = r["duration_secs"] or 0.0
-        total_duration += dur
-        manifest_segments.append({
-            "id": r["id"],
-            "audio_file": f"{r['id']}.wav",
-            "text": transcript,
-            "source_id": r["source_id"],
-            "source": r["source_filename"],
-            "start_secs": r["start_secs"],
-            "end_secs": r["end_secs"],
-            "duration_secs": dur,
-            "match_confidence": r["match_confidence"],
-            "transcript_confidence": r["transcript_confidence"],
-            "clipping_warning": bool(r["clipping_warning"]),
-        })
+        entry = _manifest_entry(r, audio_file=f"{r['id']}.wav", text=r["text"])
+        entry["clipping_warning"] = bool(r["clipping_warning"])
+        manifest_segments.append(entry)
         audio_files.append(f"{r['id']}.wav")
 
-    manifest = {
-        "version": "1",
-        "project_id": project_id,
-        "exported_at": _now(),
-        "speaker": "target",
-        "segments": manifest_segments,
-        "stats": {
-            "segment_count": len(manifest_segments),
-            "total_duration_secs": total_duration,
-        },
-    }
+    manifest = _manifest_envelope(project_id, manifest_segments)
 
     target_dir = export_dir if export_dir is not None else pdir / "export"
     target_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = target_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
     return audio_files
+
+
+def _manifest_entry(r, audio_file: str, text: str) -> dict:
+    """One manifest segment entry — shared by the export manifest and the
+    dataset manifest so the schema can't drift between them."""
+    return {
+        "id": r["id"],
+        "audio_file": audio_file,
+        "text": text,
+        "source_id": r["source_id"],
+        "source": r["source_filename"],
+        "start_secs": r["start_secs"],
+        "end_secs": r["end_secs"],
+        "duration_secs": r["duration_secs"] or 0.0,
+        "match_confidence": r["match_confidence"],
+        "transcript_confidence": r["transcript_confidence"],
+    }
+
+
+def _manifest_envelope(project_id: str, segments: list[dict], **extra) -> dict:
+    """The shared manifest envelope; extra keys (e.g. dataset `selection`)
+    slot in between segments and stats."""
+    return {
+        "version": "1",
+        "project_id": project_id,
+        "exported_at": _now(),
+        "speaker": "target",
+        "segments": segments,
+        **extra,
+        "stats": {
+            "segment_count": len(segments),
+            "total_duration_secs": sum(s["duration_secs"] for s in segments),
+        },
+    }
 
 
 def _package_archive(
@@ -1732,21 +1716,13 @@ async def _handle_dataset_build(
     mode = params.get("mode", "approved")
     min_confidence = params.get("min_confidence")
 
-    def _fail_model(msg: str) -> None:
-        conn.execute(
-            "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
-            (msg, _now(), model_id),
-        )
-        conn.commit()
-
     # Re-select at run time — approvals/thresholds may have moved since enqueue.
     kept, dropped = _select_dataset_segments(conn, mode, min_confidence)
     total_dur = sum((r["duration_secs"] or 0.0) for r in kept)
     if total_dur < 300.0:
         msg = f"insufficient dataset ({total_dur:.1f}s selected, 300s required)"
-        _fail_model(msg)
+        _fail_model(conn, model_id, msg)
         _fail_job(project_id, job_id, msg)
-        _recompute_project_status(project_id)
         return
 
     # Clean only segments that lack cleaned dataset audio; cleanup occupies 0-80%.
@@ -1761,9 +1737,8 @@ async def _handle_dataset_build(
         try:
             results = await _run_cleanup(project_id, project, to_clean, job_id, on_progress)
         except CleanupError as exc:
-            _fail_model(str(exc))
+            _fail_model(conn, model_id, str(exc))
             _fail_job(project_id, job_id, str(exc))
-            _recompute_project_status(project_id)
             return
         _apply_dataset_cleanup_results(conn, results)
 
@@ -1790,50 +1765,26 @@ async def _handle_dataset_build(
     models_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_segments = []
-    total_duration = 0.0
     for r in final:
         text = r["transcript_edited"] or r["transcript"]
         if text is None:
             logger.warning("Segment %s has no transcript, excluding from dataset", r["id"])
             continue
-        dur = r["duration_secs"] or 0.0
-        total_duration += dur
-        manifest_segments.append({
-            "id": r["id"],
-            "audio_file": f"{data_prefix}/projects/{project_id}/{r['cleaned_path']}",
-            "text": text,
-            "source_id": r["source_id"],
-            "source": r["source_filename"],
-            "start_secs": r["start_secs"],
-            "end_secs": r["end_secs"],
-            "duration_secs": dur,
-            "match_confidence": r["match_confidence"],
-            "transcript_confidence": r["transcript_confidence"],
-        })
+        manifest_segments.append(_manifest_entry(
+            r, audio_file=f"{data_prefix}/projects/{project_id}/{r['cleaned_path']}", text=text,
+        ))
 
     if not manifest_segments:
         msg = "no usable segments after cleanup (missing transcripts or cleaned audio)"
-        _fail_model(msg)
+        _fail_model(conn, model_id, msg)
         _fail_job(project_id, job_id, msg)
-        _recompute_project_status(project_id)
         return
 
-    manifest = {
-        "version": "1",
-        "project_id": project_id,
-        "exported_at": _now(),
-        "speaker": "target",
-        "segments": manifest_segments,
-        "selection": {
-            "mode": mode,
-            "min_confidence": min_confidence,
-            "dropped": dropped,
-        },
-        "stats": {
-            "segment_count": len(manifest_segments),
-            "total_duration_secs": total_duration,
-        },
-    }
+    manifest = _manifest_envelope(
+        project_id, manifest_segments,
+        selection={"mode": mode, "min_confidence": min_confidence, "dropped": dropped},
+    )
+    total_duration = manifest["stats"]["total_duration_secs"]
     (models_dir / "dataset.json").write_text(json.dumps(manifest, indent=2))
 
     conn.execute(
@@ -1871,7 +1822,6 @@ async def _handle_finetune(
     model = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
     if model is None:
         _fail_job(project_id, job_id, "model row not found")
-        _recompute_project_status(project_id)
         return
     if model["dataset_manifest_path"] is None or model["status"] != "pending":
         if model["status"] == "training":
@@ -1887,13 +1837,8 @@ async def _handle_finetune(
         # statuses, and there is no cancel endpoint. Mark it failed so the
         # user can delete it and start a new fine-tune (no resume machinery).
         if model["status"] in ("pending", "training"):
-            conn.execute(
-                "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
-                (msg, _now(), model_id),
-            )
-            conn.commit()
+            _fail_model(conn, model_id, msg)
         _fail_job(project_id, job_id, msg)
-        _recompute_project_status(project_id)
         return
 
     conn.execute(
@@ -1944,13 +1889,8 @@ async def _handle_finetune(
         _update_progress_detail(project_id, job_id, detail)
 
     def _fail(msg: str) -> None:
-        conn.execute(
-            "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
-            (msg, _now(), model_id),
-        )
-        conn.commit()
+        _fail_model(conn, model_id, msg)
         _fail_job(project_id, job_id, msg)
-        _recompute_project_status(project_id)
 
     payload = make_payload(hyperparams)
     try:
@@ -2091,7 +2031,6 @@ async def _handle_preview(
         model = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
         if model is None or model["status"] != "ready":
             _fail_job(project_id, job_id, "model_not_ready")
-            _recompute_project_status(project_id)
             return
         cp = model["checkpoint_dir"] or f"models/{model_id}"
         checkpoint_dir = f"{_data_prefix()}/projects/{project_id}/{cp}"
@@ -2102,7 +2041,6 @@ async def _handle_preview(
         )
     except LookupError as exc:
         _fail_job(project_id, job_id, f"conditioning_unavailable: {exc}")
-        _recompute_project_status(project_id)
         return
 
     previews_dir = project_dir(project_id) / "previews"
@@ -2124,14 +2062,12 @@ async def _handle_preview(
         await _submit_with_retry("xtts", payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
-        _recompute_project_status(project_id)
         return
 
     result = await service_client.poll_until_complete("xtts", job_id)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))
-        _recompute_project_status(project_id)
         return
 
     _complete_job(project_id, job_id)

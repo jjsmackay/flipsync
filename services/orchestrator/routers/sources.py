@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from db import project_dir, require_project, utc_now
 from errors import AppError
-from jobs import enqueue
+from jobs import delete_source_segments, enqueue
 from status import invalidate_export
 
 router = APIRouter(prefix="/projects/{project_id}/sources", tags=["sources"])
@@ -91,15 +91,10 @@ async def delete_source(project_id: str, source_id: str, body: SourceDelete):
         "SELECT COUNT(*) FROM segments WHERE source_id=?", (source_id,)
     ).fetchone()[0]
 
-    # Delete segment WAV files
+    # Delete segment rows and their WAVs (shared with the reprocess endpoint
+    # and the diarisation handler so segment deletion never orphans WAVs).
     pdir = project_dir(project_id)
-    segments = conn.execute("SELECT raw_path, export_path FROM segments WHERE source_id=?", (source_id,)).fetchall()
-    for seg in segments:
-        for p in [seg["raw_path"], seg["export_path"]]:
-            if p:
-                f = pdir / p
-                if f.exists():
-                    f.unlink()
+    delete_source_segments(conn, project_id, source_id)
 
     # Delete source file and derived audio files
     for path_col in ["file_path", "audio_path", "vocals_path"]:
@@ -109,7 +104,6 @@ async def delete_source(project_id: str, source_id: str, body: SourceDelete):
             if f.exists():
                 f.unlink()
 
-    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
     conn.execute("DELETE FROM sources WHERE id=?", (source_id,))
     conn.commit()
 

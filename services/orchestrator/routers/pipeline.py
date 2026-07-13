@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from db import require_project, utc_now
 from errors import AppError
-from jobs import delete_source_segments, enqueue, has_active_diarisation_job
+from jobs import delete_source_segments, enqueue, enqueue_bulk_transcription, has_active_diarisation_job
 from state_machines import validate_source_transition
 from status import invalidate_export, recompute_project_status
 
@@ -215,31 +215,17 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
 
 @router.post("/transcription/run", status_code=202)
 async def run_transcription(project_id: str):
-    conn = require_project(project_id)
+    require_project(project_id)
 
-    segments = conn.execute(
-        """
-        SELECT id, raw_path FROM segments
-        WHERE project_id=? AND status IN ('pending','maybe') AND transcript IS NULL
-        """,
-        (project_id,),
-    ).fetchall()
-
-    if not segments:
+    result = enqueue_bulk_transcription(project_id)
+    if result is None:
         raise AppError(
             409, "no_segments_to_transcribe",
             "No pending segments without transcripts.",
         )
+    job_id, segment_count = result
 
-    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
-    params = {
-        "segment_ids": [s["id"] for s in segments],
-        "model": project["whisper_model"],
-        "language": project["language"],
-    }
-    job_id = enqueue(project_id, "transcription_bulk", params=params)
-
-    return {"enqueued_job": {"id": job_id, "type": "transcription_bulk", "segment_count": len(segments)}}
+    return {"enqueued_job": {"id": job_id, "type": "transcription_bulk", "segment_count": segment_count}}
 
 
 @router.post("/segments/{segment_id}/transcription/rerun", status_code=202)

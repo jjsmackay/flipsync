@@ -1,5 +1,6 @@
 """Models API (v1.5) — XTTS-v2 fine-tune trigger, listing, deletion, download."""
 
+import asyncio
 import json
 import shutil
 import tarfile
@@ -194,7 +195,8 @@ async def delete_model(project_id: str, model_id: str):
         )
 
     cp = model["checkpoint_dir"] or f"models/{model_id}"
-    shutil.rmtree(project_dir(project_id) / cp, ignore_errors=True)
+    # Checkpoint dirs hold a multi-GB model.pth — keep the event loop free.
+    await asyncio.to_thread(shutil.rmtree, project_dir(project_id) / cp, ignore_errors=True)
     conn.execute("DELETE FROM models WHERE id=?", (model_id,))
     conn.commit()
     return Response(status_code=204)
