@@ -188,27 +188,27 @@ class TestSourceTransitions:
 
 class TestProjectStatusComputation:
     def test_no_sources_is_new(self):
-        assert compute_project_status("new", False, False, False, False) == "new"
+        assert compute_project_status(frozenset(), False, False, False) == "new"
 
     def test_has_sources_no_jobs_not_complete_is_ready(self):
-        assert compute_project_status("ready", True, False, False, False) == "ready"
+        assert compute_project_status(frozenset(), True, False, False) == "ready"
 
     def test_has_active_jobs_is_processing(self):
-        assert compute_project_status("ready", True, True, False, False) == "processing"
+        assert compute_project_status({"vocal_separation"}, True, False, False) == "processing"
 
     def test_all_sources_complete_no_active_jobs_is_review(self):
-        assert compute_project_status("processing", True, False, True, False) == "review"
+        assert compute_project_status(frozenset(), True, True, False) == "review"
 
     def test_export_complete_is_exported(self):
-        # Note: export_complete here means the status was 'exported' before
-        assert compute_project_status("exported", True, False, True, True) == "exported"
+        assert compute_project_status(frozenset(), True, True, True) == "exported"
 
-    def test_active_jobs_during_export_is_exporting(self):
-        # When status is 'exporting' and jobs are active, stay exporting
-        assert compute_project_status("exporting", True, True, False, False) == "exporting"
+    def test_active_export_job_is_exporting(self):
+        # An active export job derives 'exporting' — even alongside other jobs.
+        assert compute_project_status({"export"}, True, False, False) == "exporting"
+        assert compute_project_status({"export", "extract_audio"}, True, False, False) == "exporting"
 
     def test_active_jobs_override_all_else(self):
-        assert compute_project_status("review", True, True, True, False) == "processing"
+        assert compute_project_status({"diarisation"}, True, True, False) == "processing"
 
 
 # ---------------------------------------------------------------------------

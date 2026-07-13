@@ -39,13 +39,23 @@ Base URL: `http://localhost:8000`
 
 #### `GET /capabilities`
 
-Deployment-level feature flags for the frontend. Fetched once per dashboard load (not on the project poll).
+Deployment-level feature flags and server-owned tables for the frontend. Fetched once per dashboard load (not on the project poll).
 
 ```json
-{ "xtts": true }
+{
+  "xtts": true,
+  "bulk_action_sources": {
+    "approve": ["auto_approved", "clipping_warning", "maybe", "pending"],
+    "reject": ["approved", "auto_approved", "clipping_warning", "maybe", "pending"],
+    "maybe": ["approved", "auto_approved", "pending"],
+    "pending": ["auto_approved", "maybe", "rejected"]
+  }
+}
 ```
 
 `xtts` is a point-in-time health probe of the profile-gated XTTS voice service (`true` iff it responds `200` to `/health`). The dashboard uses it to decide whether the terminal stage is **Train** (present) or **Export** (absent). Always `200`.
+
+`bulk_action_sources` serves the orchestrator's bulk transition table (the statuses each bulk action may move FROM — the same table `POST /segments/bulk` enforces). The frontend uses it for live bulk-preview counts so they cannot drift from what Apply affects; it keeps a baked-in copy only as a fallback for older orchestrators.
 
 ---
 

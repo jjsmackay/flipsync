@@ -22,6 +22,10 @@ import httpx
 
 from audio import get_duration
 from db import get_conn, project_dir, utc_now as _now
+# Job-type properties (GPU gating, per-type service, voice classification)
+# live in the job_types registry; re-exported here for existing importers.
+from job_types import JOB_TYPES, GPU_JOB_TYPES, GPU_JOB_SERVICES, VOICE_JOB_TYPES
+from state_machines import APPROVED_STATUSES, EXPORTABLE_STATUSES, sql_status_list
 import service_client
 from status import auto_approve_promote, recompute_project_status as _recompute_project_status
 
@@ -30,42 +34,6 @@ logger = logging.getLogger(__name__)
 # One asyncio.Lock per project to enforce one-at-a-time execution.
 _project_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-# GPU-bound job types additionally serialise host-wide: at most one GPU job
-# runs across ALL projects at any time (all projects share the same GPU;
-# concurrent GPU jobs contend for VRAM and OOM). CPU jobs (extract_audio,
-# export, dataset_build — FFmpeg subprocess / CPU-only cleanup service) are
-# not gated.
-GPU_JOB_TYPES = frozenset(
-    {
-        "vocal_separation",
-        "diarisation",
-        "scout_speakers",
-        "transcription_bulk",
-        "transcription_segment",
-        "finetune",
-        "preview",
-    }
-)
-
-# Which processing service each GPU job type talks to. Must mirror the
-# service names used by each handler's submit path (_submit_with_retry).
-GPU_JOB_SERVICES: dict[str, str] = {
-    "vocal_separation": "vocal_separation",
-    "diarisation": "diarisation",
-    "scout_speakers": "diarisation",
-    "transcription_bulk": "transcription",
-    "transcription_segment": "transcription",
-    "finetune": "xtts",
-    "preview": "xtts",
-}
-
-# Voice jobs (v1.5 XTTS work) are excluded from the active-jobs count that
-# drives project-status recomputation: a running dataset build, fine-tune or
-# preview must not flip the project out of 'review'/'exported' (which would
-# block export). They still appear in active_jobs API responses, still block
-# project deletion, and still serialise via the per-project FIFO and the
-# host-wide GPU lock.
-VOICE_JOB_TYPES = frozenset({"dataset_build", "finetune", "preview"})
 
 # The global GPU lock is created lazily per event loop: an asyncio.Lock binds
 # to the loop it is first awaited on, and tests run each case in a fresh loop
@@ -1398,10 +1366,10 @@ def _select_dataset_segments(
         ).fetchall()
     else:
         rows = conn.execute(
-            """
+            f"""
             SELECT seg.*, src.filename AS source_filename
             FROM segments seg JOIN sources src ON src.id = seg.source_id
-            WHERE seg.status IN ('approved', 'auto_approved')
+            WHERE seg.status IN ({sql_status_list(APPROVED_STATUSES)})
             """,
         ).fetchall()
 
@@ -1445,11 +1413,11 @@ async def _handle_export(
     # clipping_warning: keep-unless-rejected semantics — clipping segments
     # export with the flag recorded in the manifest. Cleanup re-flags them.
     approved = conn.execute(
-        """
+        f"""
         SELECT seg.*, src.filename AS source_filename
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
-        WHERE seg.project_id=? AND seg.status IN ('approved', 'auto_approved', 'clipping_warning')
+        WHERE seg.project_id=? AND seg.status IN ({sql_status_list(EXPORTABLE_STATUSES)})
         """,
         (project_id,),
     ).fetchall()
@@ -1570,10 +1538,12 @@ async def _handle_export(
             staging_dir.rename(export_dir)
             os.replace(archive_tmp, archive_path)
 
-            # Mark project as exported and record when, so a later approval or
-            # source change can invalidate it (see status.invalidate_export).
+            # Record when the export completed, so a later approval or source
+            # change can invalidate it (see status.invalidate_export). The
+            # 'exported' status itself is derived by the recompute below once
+            # the job row completes.
             conn.execute(
-                "UPDATE projects SET status='exported', exported_at=?, updated_at=? WHERE id=?",
+                "UPDATE projects SET exported_at=?, updated_at=? WHERE id=?",
                 (now, now, project_id),
             )
             conn.commit()
@@ -1583,6 +1553,7 @@ async def _handle_export(
             raise
 
         _complete_job(project_id, job_id)
+        _recompute_project_status(project_id)
     finally:
         # Success renames staging away; on any failure remove leftovers so the
         # previous export/ and archive remain the only visible state.
@@ -1605,14 +1576,14 @@ def _write_manifest(
 
     # Get segments that were successfully cleaned (have export_path and are still approved)
     rows = conn.execute(
-        """
+        f"""
         SELECT seg.id, seg.export_path, COALESCE(seg.transcript_edited, seg.transcript) AS text,
                seg.source_id, src.filename AS source_filename, seg.start_secs, seg.end_secs, seg.duration_secs,
                seg.match_confidence, seg.transcript_confidence, seg.clipping_warning
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
         WHERE seg.project_id=? AND seg.export_path IS NOT NULL
-          AND seg.status IN ('approved', 'auto_approved', 'clipping_warning')
+          AND seg.status IN ({sql_status_list(EXPORTABLE_STATUSES)})
         """,
         (project_id,),
     ).fetchall()
@@ -2109,6 +2080,13 @@ HANDLERS: dict[str, Callable] = {
     "finetune": _handle_finetune,
     "preview": _handle_preview,
 }
+
+# A job type missing from either side would otherwise only fail when first
+# enqueued at runtime; fail at import instead.
+assert set(HANDLERS) == set(JOB_TYPES), (
+    f"HANDLERS and job_types.JOB_TYPES disagree: "
+    f"{set(HANDLERS) ^ set(JOB_TYPES)}"
+)
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, require_project, utc_now
 from errors import AppError
+from state_machines import APPROVED_STATUSES, sql_status_list
 from status import auto_approve_demote, auto_approve_promote, invalidate_export
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -24,12 +25,12 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 def _project_stats(project_id: str) -> dict:
     conn = get_conn(project_id)
     row = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) AS total_segments,
             SUM(status='approved') AS approved_count,
             SUM(status='auto_approved') AS auto_approved_count,
-            SUM(CASE WHEN status IN ('approved','auto_approved') THEN duration_secs ELSE 0 END) AS approved_duration_secs,
+            SUM(CASE WHEN status IN ({sql_status_list(APPROVED_STATUSES)}) THEN duration_secs ELSE 0 END) AS approved_duration_secs,
             SUM(status='pending') AS pending_count,
             SUM(status='maybe') AS maybe_count,
             SUM(status='rejected') AS rejected_count,
@@ -270,11 +271,11 @@ async def list_projects():
         if p is None:
             continue
         stats_row = conn.execute(
-            """
+            f"""
             SELECT
                 SUM(status='approved') AS approved_count,
                 SUM(status='auto_approved') AS auto_approved_count,
-                SUM(CASE WHEN status IN ('approved','auto_approved') THEN duration_secs ELSE 0 END) AS approved_duration_secs,
+                SUM(CASE WHEN status IN ({sql_status_list(APPROVED_STATUSES)}) THEN duration_secs ELSE 0 END) AS approved_duration_secs,
                 SUM(status='pending') AS pending_count
             FROM segments WHERE project_id=?
             """,

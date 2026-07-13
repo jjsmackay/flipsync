@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { BulkOperations, BULK_ACTION_SOURCES, effectiveBulkStatuses } from './BulkOperations'
 import { ALL_SEGMENT_STATUSES } from '../../constants'
-import { getSegmentsCount, bulkSegmentAction } from '../../api/client'
+import { getSegmentsCount, bulkSegmentAction, getCapabilities } from '../../api/client'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -11,16 +11,20 @@ vi.mock('../../api/client', async () => {
     ...actual,
     getSegmentsCount: vi.fn(),
     bulkSegmentAction: vi.fn(),
+    getCapabilities: vi.fn(),
   }
 })
 
 const mockGetSegmentsCount = vi.mocked(getSegmentsCount)
 const mockBulkSegmentAction = vi.mocked(bulkSegmentAction)
+const mockGetCapabilities = vi.mocked(getCapabilities)
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockGetSegmentsCount.mockResolvedValue({ total: 7 })
   mockBulkSegmentAction.mockResolvedValue({ affected_count: 7 })
+  // No served table by default — the baked-in fallback applies.
+  mockGetCapabilities.mockResolvedValue({ xtts: false })
 })
 
 describe('effectiveBulkStatuses', () => {
@@ -57,6 +61,24 @@ describe('BulkOperations preview intersection', () => {
     await waitFor(() => expect(mockGetSegmentsCount).toHaveBeenCalled())
     const [, filter] = mockGetSegmentsCount.mock.calls[0]
     expect(filter.status).toBe(BULK_ACTION_SOURCES.approve.join(','))
+  })
+
+  it('adopts the transition table served by /capabilities over the baked-in copy', async () => {
+    mockGetCapabilities.mockResolvedValue({
+      xtts: false,
+      bulk_action_sources: {
+        approve: ['pending'],
+        reject: ['pending'],
+        maybe: ['pending'],
+        pending: ['maybe'],
+      },
+    })
+    await renderExpanded()
+
+    await waitFor(() => expect(mockGetSegmentsCount).toHaveBeenCalled())
+    const calls = mockGetSegmentsCount.mock.calls
+    const [, filter] = calls[calls.length - 1]
+    expect(filter.status).toBe('pending')
   })
 
   it('empty intersection: shows the hint, disables Apply, and skips the count call', async () => {

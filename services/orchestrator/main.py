@@ -15,6 +15,7 @@ from errors import AppError, app_error_handler
 from jobs import recover_jobs, shutdown_runners
 from routers import projects, sources, reference, pipeline, segments, models, previews
 from service_client import SERVICE_URLS, check_health, close_client, is_healthy
+from state_machines import BULK_ACTION_SOURCES
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +117,22 @@ async def health():
 
 @app.get("/capabilities")
 async def capabilities():
-    """Deployment-level feature flags for the frontend.
+    """Deployment-level feature flags and server-owned tables for the frontend.
 
     `xtts` reflects whether the profile-gated voice service is deployed and
     healthy — the frontend uses it to decide whether the terminal stage is Train
     (XTTS present) or Export. Fetched once per dashboard load, deliberately not
     folded into the polled project response so an absent XTTS adds no probe
     latency to the 3 s poll.
+
+    `bulk_action_sources` is the transition table bulk Apply enforces, served
+    so the frontend's live preview counts can't drift from it (the frontend
+    keeps a baked-in copy only as a fallback).
     """
-    return {"xtts": await is_healthy("xtts")}
+    return {
+        "xtts": await is_healthy("xtts"),
+        "bulk_action_sources": {
+            action: sorted(statuses)
+            for action, statuses in BULK_ACTION_SOURCES.items()
+        },
+    }

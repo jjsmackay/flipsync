@@ -111,35 +111,35 @@ class TestComputeStatusAwaitingReference:
         # A running scout counts as an active job → processing, even with no
         # reference and a diarisation_pending source.
         assert compute_project_status(
-            "processing", has_sources=True, has_active_jobs=True,
+            {"scout_speakers"}, has_sources=True,
             all_sources_complete=False, export_complete=False,
             reference_set=False, has_diarisation_pending=True,
         ) == "processing"
 
     def test_review_wins_when_all_complete(self):
         assert compute_project_status(
-            "processing", has_sources=True, has_active_jobs=False,
+            frozenset(), has_sources=True,
             all_sources_complete=True, export_complete=False,
             reference_set=False, has_diarisation_pending=False,
         ) == "review"
 
     def test_awaiting_reference_when_diarisation_pending_and_no_reference(self):
         assert compute_project_status(
-            "processing", has_sources=True, has_active_jobs=False,
+            frozenset(), has_sources=True,
             all_sources_complete=False, export_complete=False,
             reference_set=False, has_diarisation_pending=True,
         ) == "awaiting_reference"
 
     def test_ready_when_reference_set(self):
         assert compute_project_status(
-            "processing", has_sources=True, has_active_jobs=False,
+            frozenset(), has_sources=True,
             all_sources_complete=False, export_complete=False,
             reference_set=True, has_diarisation_pending=True,
         ) == "ready"
 
     def test_ready_when_nothing_diarisation_pending(self):
         assert compute_project_status(
-            "processing", has_sources=True, has_active_jobs=False,
+            frozenset(), has_sources=True,
             all_sources_complete=False, export_complete=False,
             reference_set=False, has_diarisation_pending=False,
         ) == "ready"

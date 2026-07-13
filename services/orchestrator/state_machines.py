@@ -41,6 +41,20 @@ def validate_segment_transition(from_status: str, to_status: str) -> bool:
     return to_status in allowed
 
 
+# Statuses counted as approved (auto_approved is system-assigned but treated
+# identically for export and duration stats), and the superset the export
+# actually ships — segments a previous export flagged clipping_warning stay in
+# the archive until re-reviewed. Interpolate via sql_status_list so every
+# selector stays in lockstep; the frontend mirrors these in src/constants.ts.
+APPROVED_STATUSES: tuple[str, ...] = ("approved", "auto_approved")
+EXPORTABLE_STATUSES: tuple[str, ...] = APPROVED_STATUSES + ("clipping_warning",)
+
+
+def sql_status_list(statuses: tuple[str, ...]) -> str:
+    """Render a status tuple as a quoted SQL IN-list fragment."""
+    return ",".join(f"'{s}'" for s in statuses)
+
+
 # ---------------------------------------------------------------------------
 # Source status transitions
 # ---------------------------------------------------------------------------
@@ -80,9 +94,8 @@ PROJECT_STATUSES = {
 
 
 def compute_project_status(
-    current_status: str,
+    active_job_types: frozenset[str] | set[str],
     has_sources: bool,
-    has_active_jobs: bool,
     all_sources_complete: bool,
     export_complete: bool,
     reference_set: bool = True,
@@ -92,14 +105,16 @@ def compute_project_status(
 
     This is called after each job completion or user action; it does not
     enforce transitions, it derives the correct status from facts.
+    ``active_job_types`` is the set of queued/running job types, voice jobs
+    already excluded (they never drive project status).
 
-    Precedence: processing (any active job, incl. a running scout) → review
-    (all sources complete) → awaiting_reference (no reference yet, step 1 done
-    on ≥1 source) → ready.
+    Precedence: exporting (an active export job) → processing (any other
+    active job, incl. a running scout) → review (all sources complete) →
+    awaiting_reference (no reference yet, step 1 done on ≥1 source) → ready.
     """
-    if has_active_jobs:
-        if current_status == "exporting":
-            return "exporting"
+    if "export" in active_job_types:
+        return "exporting"
+    if active_job_types:
         return "processing"
 
     if export_complete:

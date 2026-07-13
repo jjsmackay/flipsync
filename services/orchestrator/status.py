@@ -4,6 +4,7 @@ jobs and routers."""
 import sqlite3
 
 from db import get_conn, project_dir, utc_now
+from job_types import VOICE_JOB_TYPES
 from state_machines import compute_project_status
 
 # Auto-approve eligibility (spec/pipeline.md §Auto-approval), minus the two
@@ -101,19 +102,19 @@ def recompute_project_status(project_id: str) -> None:
     # running fine-tune leaves the project in 'review'/'exported' and export
     # can still be enqueued. They remain visible in active_jobs API responses
     # and still block project deletion — only this status computation ignores
-    # them. Imported lazily: jobs.py imports this module at load time.
-    from jobs import VOICE_JOB_TYPES
-
+    # them.
     voice_placeholders = ",".join("?" * len(VOICE_JOB_TYPES))
     sources = conn.execute("SELECT status FROM sources WHERE project_id=?", (project_id,)).fetchall()
-    active_jobs = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE project_id=? AND status IN ('queued','running')"
-        f" AND type NOT IN ({voice_placeholders})",
-        (project_id, *VOICE_JOB_TYPES),
-    ).fetchone()[0]
+    active_job_types = frozenset(
+        r["type"]
+        for r in conn.execute(
+            "SELECT DISTINCT type FROM jobs WHERE project_id=? AND status IN ('queued','running')"
+            f" AND type NOT IN ({voice_placeholders})",
+            (project_id, *VOICE_JOB_TYPES),
+        ).fetchall()
+    )
 
     has_sources = len(sources) > 0
-    has_active_jobs = active_jobs > 0
     all_sources_complete = has_sources and all(s["status"] == "complete" for s in sources)
     reference_set = project["reference_path"] is not None
     has_diarisation_pending = any(s["status"] == "diarisation_pending" for s in sources)
@@ -128,7 +129,7 @@ def recompute_project_status(project_id: str) -> None:
     export_complete = archive_exists and project["exported_at"] is not None
 
     new_status = compute_project_status(
-        project["status"], has_sources, has_active_jobs, all_sources_complete, export_complete,
+        active_job_types, has_sources, all_sources_complete, export_complete,
         reference_set=reference_set, has_diarisation_pending=has_diarisation_pending,
     )
 
