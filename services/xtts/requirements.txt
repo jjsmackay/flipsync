@@ -1,28 +1,16 @@
+# Lighter, more frequently-bumped deps. The heavy accelerator stack
+# (torch/torchaudio/torchcodec) lives in requirements-accel.txt so it installs
+# in an earlier, cache-friendly layer — bumping a pin here won't re-pull torch.
 fastapi
 uvicorn
 # coqui-tts is the Idiap-maintained fork of the discontinued Coqui TTS; it ships
-# the XTTS-v2 GPTTrainer recipe and pulls the `trainer` package. It does NOT
-# declare torch as a hard dependency (it expects the environment to provide a
-# torch matching the target CUDA/accelerator), so torch/torchaudio are pinned
-# explicitly below. Without them the image has no torch at all, and every
-# CUDA-touching call — including the VRAM pre-flight — fails, surfacing as
-# "insufficient_vram: 12 GB required, 0.0 GB available".
-# Pinned: coqui-tts declares loose lower bounds only (e.g. transformers>=4.57
-# with no upper cap), so an unpinned build drifts to bleeding-edge transitive
-# deps that break its own code. Pin the whole known-good set instead.
+# the XTTS-v2 GPTTrainer recipe. It does NOT declare torch as a hard dependency,
+# and its lower bounds are loose (e.g. transformers>=4.57 with no upper cap), so
+# an unpinned build drifts to bleeding-edge transitive deps that break its own
+# code. Pin the known-good set.
 coqui-tts==0.27.5
 soundfile
-# PyPI's linux x86_64 torch wheel is the CUDA build (bundles its own CUDA
-# runtime), so no CUDA base image or system toolkit is needed — the host just
-# needs a recent NVIDIA driver.
-torch==2.13.0
-torchaudio==2.11.0
-# torch >= 2.9 makes coqui-tts require torchcodec for audio IO (it raises an
-# ImportError at `import TTS` otherwise). Only declared under coqui-tts's
-# `codec` extra, so pin it directly. Needs FFmpeg shared libs — already
-# installed in the image.
-torchcodec==0.14.0
-# coqui-tts 0.27.5 needs transformers>=4.57 but has no upper bound; transformers
-# 5.x removed `isin_mps_friendly` from transformers.pytorch_utils, which coqui
-# imports. Cap below 5 — 4.57.6 is the current 4.x that satisfies coqui.
+# transformers 5.x removed `isin_mps_friendly` from transformers.pytorch_utils,
+# which coqui imports. Cap below 5 — 4.57.6 is the current 4.x that satisfies
+# coqui-tts 0.27.5's transformers>=4.57.
 transformers==4.57.6

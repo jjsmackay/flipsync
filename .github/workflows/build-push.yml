@@ -45,8 +45,9 @@ jobs:
           tags: |
             ghcr.io/jjsmackay/flipsync/${{ matrix.service }}:latest
             ghcr.io/jjsmackay/flipsync/${{ matrix.service }}:${{ github.sha }}
-          # transcription pulls a large CUDA base image; registry cache has no
-          # 10 GB/repo cap (unlike type=gha) and its layers dedupe on pull, so
-          # it caches better than GHA here. Other services stay on GHA cache.
-          cache-from: ${{ matrix.service == 'transcription' && format('type=registry,ref=ghcr.io/jjsmackay/flipsync/{0}:buildcache', matrix.service) || format('type=gha,scope={0}', matrix.service) }}
-          cache-to: ${{ matrix.service == 'transcription' && format('type=registry,ref=ghcr.io/jjsmackay/flipsync/{0}:buildcache,mode=max', matrix.service) || format('type=gha,mode=max,scope={0}', matrix.service) }}
+          # transcription and xtts carry a large torch/CUDA layer (~4 GB of
+          # wheels). The registry cache has no 10 GB/repo cap (unlike type=gha,
+          # which evicts a layer that big) and its layers dedupe on pull, so it
+          # caches far better here. Other services stay on GHA cache.
+          cache-from: ${{ contains(fromJSON('["transcription","xtts"]'), matrix.service) && format('type=registry,ref=ghcr.io/jjsmackay/flipsync/{0}:buildcache', matrix.service) || format('type=gha,scope={0}', matrix.service) }}
+          cache-to: ${{ contains(fromJSON('["transcription","xtts"]'), matrix.service) && format('type=registry,ref=ghcr.io/jjsmackay/flipsync/{0}:buildcache,mode=max', matrix.service) || format('type=gha,mode=max,scope={0}', matrix.service) }}
