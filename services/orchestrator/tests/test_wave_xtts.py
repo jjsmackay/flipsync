@@ -722,6 +722,100 @@ class TestModelsRouter:
         assert resp.json()["error"] == "model_not_found"
 
 
+class TestModelDownload:
+    """GET /projects/{id}/models/{model_id}/download — stream the trained XTTS
+    checkpoint bundle as an uncompressed tar for use outside FlipSync."""
+
+    def _write_bundle(self, pdir, model_id, files):
+        bundle = pdir / "models" / model_id
+        bundle.mkdir(parents=True, exist_ok=True)
+        for name, data in files.items():
+            (bundle / name).write_bytes(data)
+        return bundle
+
+    def test_download_unknown_model_404(self, client, project, isolated_data_dir):
+        resp = client.get(f"/projects/{project}/models/{uuid.uuid4()}/download")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "model_not_found"
+
+    def test_download_not_ready_409(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="training")
+        resp = client.get(f"/projects/{project}/models/{model_id}/download")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "model_not_ready"
+
+    def test_download_missing_bundle_404(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="ready",
+                                 checkpoint_dir=None)  # nothing on disk
+        resp = client.get(f"/projects/{project}/models/{model_id}/download")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "model_bundle_not_found"
+
+    def test_download_streams_tar_bundle(self, client, project, isolated_data_dir):
+        import io
+        import tarfile
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="ready")
+        conn.execute("UPDATE models SET checkpoint_dir=? WHERE id=?",
+                     (f"models/{model_id}", model_id))
+        conn.commit()
+        files = {
+            "model.pth": b"WEIGHTS",
+            "config.json": b'{"x":1}',
+            "vocab.json": b"VOCAB",
+            "speaker_latents.pt": b"LATENTS",
+        }
+        self._write_bundle(isolated_data_dir / "projects" / project, model_id, files)
+
+        resp = client.get(f"/projects/{project}/models/{model_id}/download")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/x-tar"
+        assert "attachment" in resp.headers["content-disposition"]
+        assert f"{model_id}.tar" in resp.headers["content-disposition"]
+
+        tf = tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:")
+        members = {m.name: tf.extractfile(m).read() for m in tf.getmembers()}
+        assert members == files
+
+    def test_download_bundle_without_latents_ok(self, client, project, isolated_data_dir):
+        """speaker_latents.pt is optional; the three mandatory files suffice."""
+        import io
+        import tarfile
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="ready")
+        conn.execute("UPDATE models SET checkpoint_dir=? WHERE id=?",
+                     (f"models/{model_id}", model_id))
+        conn.commit()
+        files = {"model.pth": b"W", "config.json": b"{}", "vocab.json": b"V"}
+        self._write_bundle(isolated_data_dir / "projects" / project, model_id, files)
+
+        resp = client.get(f"/projects/{project}/models/{model_id}/download")
+        assert resp.status_code == 200
+        tf = tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:")
+        assert {m.name for m in tf.getmembers()} == set(files)
+
+    def test_download_incomplete_bundle_404(self, client, project, isolated_data_dir):
+        """A ready model whose checkpoint is missing a mandatory file is a 404."""
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="ready")
+        conn.execute("UPDATE models SET checkpoint_dir=? WHERE id=?",
+                     (f"models/{model_id}", model_id))
+        conn.commit()
+        # vocab.json missing
+        self._write_bundle(isolated_data_dir / "projects" / project, model_id,
+                           {"model.pth": b"W", "config.json": b"{}"})
+        resp = client.get(f"/projects/{project}/models/{model_id}/download")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "model_bundle_not_found"
+
+
 # ========================================================================
 # Task 11 — previews router + progress_detail in job summaries
 # ========================================================================

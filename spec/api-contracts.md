@@ -721,6 +721,21 @@ Delete a model row and its checkpoint directory.
 
 ---
 
+#### `GET /projects/{project_id}/models/{model_id}/download`
+
+Download the trained XTTS-v2 checkpoint bundle as an uncompressed tar archive, for use with an external XTTS runtime (e.g. a Wyoming/Home Assistant TTS server). The archive contains the checkpoint files from `models/{model_id}/`:
+
+- `model.pth`, `config.json`, `vocab.json` — mandatory; sufficient for `Xtts.load_checkpoint(checkpoint_dir=…)`
+- `speaker_latents.pt` — included when present (cached `{gpt_cond_latent, speaker_embedding}` conditioning)
+
+The tar is streamed in chunks (no temp file, no full-file buffering), so a multi-GB `model.pth` transfers without a memory or disk spike. It is uncompressed because model weights do not gzip meaningfully.
+
+**Response 200:** `Content-Type: application/x-tar`, `Content-Disposition: attachment; filename="{model_id}.tar"`, streamed tar body.
+**Response 409** `model_not_ready` if the model status is not `ready` (still training/failed), with `detail.status`.
+**Response 404** `model_not_found` if the model row does not exist; `model_bundle_not_found` if a mandatory checkpoint file is missing on disk.
+
+---
+
 ### Previews (v1.5)
 
 #### `POST /projects/{project_id}/previews`
