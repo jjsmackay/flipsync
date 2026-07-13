@@ -12,7 +12,7 @@ import os
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -186,23 +186,25 @@ def _check_channel_clipping(
     min_consecutive: int,
 ) -> bool:
     """Check a 1D float array for consecutive clipping samples."""
-    # Convert to dBFS: 20 * log10(|sample| + 1e-9)
-    dbfs = 20.0 * np.log10(np.abs(samples.astype(np.float64)) + 1e-9)
-    clipping = dbfs >= threshold_db
+    # Compare directly in linear amplitude (computed once) rather than
+    # converting every sample to dBFS: |sample| >= threshold is equivalent to
+    # 20*log10(|sample|) >= threshold_db for any sample that could plausibly
+    # clip, and skips a log10 call per sample.
+    linear_threshold = 10.0 ** (threshold_db / 20.0)
+    clipping = np.abs(samples) >= linear_threshold
 
     if not np.any(clipping):
         return False
+    if min_consecutive <= 1:
+        return True
 
-    # Count consecutive runs
-    count = 0
-    for val in clipping:
-        if val:
-            count += 1
-            if count >= min_consecutive:
-                return True
-        else:
-            count = 0
-    return False
+    # A run of >= min_consecutive True values has some window of that length
+    # fully True. Convolving the mask with a ones kernel sums each window, so
+    # any window reaching min_consecutive confirms a run — vectorised
+    # equivalent of the previous per-sample counting loop.
+    kernel = np.ones(min_consecutive, dtype=np.int64)
+    window_sums = np.convolve(clipping.astype(np.int64), kernel, mode="valid")
+    return bool(window_sums.size and window_sums.max() >= min_consecutive)
 
 
 def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResult:
@@ -222,17 +224,29 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
     input_path = segment.input_path
     output_path = segment.output_path
 
-    # Ensure output directory exists
-    try:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
+    def _err(message: str) -> SegmentResult:
         return SegmentResult(
             id=segment_id,
             output_path=None,
             clipping_warning=False,
             auto_rejected=False,
-            error=f"ffmpeg_error: could not create output directory: {e}",
+            error=message,
         )
+
+    def _auto_reject() -> SegmentResult:
+        return SegmentResult(
+            id=segment_id,
+            output_path=None,
+            clipping_warning=False,
+            auto_rejected=True,
+            error=None,
+        )
+
+    # Ensure output directory exists
+    try:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return _err(f"ffmpeg_error: could not create output directory: {e}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         intermediate = os.path.join(tmpdir, "normalised.wav")
@@ -250,24 +264,14 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         ]
         rc, stdout, stderr = run_ffmpeg(pass1_args)
         if rc != 0:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: loudnorm pass 1 failed (exit {rc}): {stderr.strip()[:300]}",
+            return _err(
+                f"ffmpeg_error: loudnorm pass 1 failed (exit {rc}): {stderr.strip()[:300]}"
             )
 
         try:
             loudnorm_data = _extract_loudnorm_json(stderr)
         except ValueError as e:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: could not parse loudnorm output: {e}",
-            )
+            return _err(f"ffmpeg_error: could not parse loudnorm output: {e}")
 
         measured_i = loudnorm_data["input_i"]
         measured_tp = loudnorm_data["input_tp"]
@@ -279,13 +283,7 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         # Auto-reject it now: feeding measured_I=-inf into pass 2 makes ffmpeg
         # exit non-zero, which would be misreported as an ffmpeg_error.
         if _is_silent_measurement(measured_i):
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=True,
-                error=None,
-            )
+            return _auto_reject()
 
         # -----------------------------------------------------------------------
         # Pass 2: Apply loudness normalisation + sample rate / channel conversion
@@ -305,12 +303,8 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         ]
         rc, stdout, stderr = run_ffmpeg(pass2_args)
         if rc != 0:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: loudnorm pass 2 failed (exit {rc}): {stderr.strip()[:300]}",
+            return _err(
+                f"ffmpeg_error: loudnorm pass 2 failed (exit {rc}): {stderr.strip()[:300]}"
             )
 
         # -----------------------------------------------------------------------
@@ -340,12 +334,8 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         ]
         rc, stdout, stderr = run_ffmpeg(trim_args)
         if rc != 0:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: silence trim failed (exit {rc}): {stderr.strip()[:300]}",
+            return _err(
+                f"ffmpeg_error: silence trim failed (exit {rc}): {stderr.strip()[:300]}"
             )
 
         # -----------------------------------------------------------------------
@@ -358,21 +348,9 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         try:
             duration = _get_audio_duration(trimmed)
         except ProbeError as e:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: could not probe trimmed output: {e}",
-            )
+            return _err(f"ffmpeg_error: could not probe trimmed output: {e}")
         if duration < 0.05:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=True,
-                error=None,
-            )
+            return _auto_reject()
 
         # -----------------------------------------------------------------------
         # Copy trimmed output to final destination
@@ -381,13 +359,7 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         try:
             shutil.copy2(trimmed, output_path)
         except Exception as e:
-            return SegmentResult(
-                id=segment_id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: could not write output file: {e}",
-            )
+            return _err(f"ffmpeg_error: could not write output file: {e}")
 
         # -----------------------------------------------------------------------
         # Clipping detection on the final output

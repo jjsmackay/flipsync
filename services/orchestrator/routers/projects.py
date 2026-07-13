@@ -1,5 +1,6 @@
 """Project CRUD endpoints."""
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -8,9 +9,9 @@ from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
 
-from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, project_exists, utc_now
+from db import create_project_db, get_conn, list_project_ids, close_conn, project_dir, require_project, utc_now
 from errors import AppError
-from state_machines import validate_segment_transition
+from state_machines import APPROVED_STATUSES, sql_status_list
 from status import auto_approve_demote, auto_approve_promote, invalidate_export
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -24,12 +25,12 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 def _project_stats(project_id: str) -> dict:
     conn = get_conn(project_id)
     row = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) AS total_segments,
             SUM(status='approved') AS approved_count,
             SUM(status='auto_approved') AS auto_approved_count,
-            SUM(CASE WHEN status IN ('approved','auto_approved') THEN duration_secs ELSE 0 END) AS approved_duration_secs,
+            SUM(CASE WHEN status IN ({sql_status_list(APPROVED_STATUSES)}) THEN duration_secs ELSE 0 END) AS approved_duration_secs,
             SUM(status='pending') AS pending_count,
             SUM(status='maybe') AS maybe_count,
             SUM(status='rejected') AS rejected_count,
@@ -98,12 +99,8 @@ def _recent_failed_jobs(project_id: str) -> list[dict]:
 
 
 def _project_detail(project_id: str) -> dict:
-    if not project_exists(project_id):
-        return None
-    conn = get_conn(project_id)
+    conn = require_project(project_id)
     p = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        return None
     return {
         "id": p["id"],
         "name": p["name"],
@@ -274,11 +271,11 @@ async def list_projects():
         if p is None:
             continue
         stats_row = conn.execute(
-            """
+            f"""
             SELECT
                 SUM(status='approved') AS approved_count,
                 SUM(status='auto_approved') AS auto_approved_count,
-                SUM(CASE WHEN status IN ('approved','auto_approved') THEN duration_secs ELSE 0 END) AS approved_duration_secs,
+                SUM(CASE WHEN status IN ({sql_status_list(APPROVED_STATUSES)}) THEN duration_secs ELSE 0 END) AS approved_duration_secs,
                 SUM(status='pending') AS pending_count
             FROM segments WHERE project_id=?
             """,
@@ -340,48 +337,28 @@ async def create_project(body: ProjectCreate):
 
 @router.get("/{project_id}")
 async def get_project(project_id: str):
-    detail = _project_detail(project_id)
-    if detail is None:
-        raise AppError(404, "not_found", "Project not found.")
-    return detail
+    return _project_detail(project_id)
 
 
 @router.patch("/{project_id}")
 async def patch_project(project_id: str, body: ProjectPatch):
-    if not project_exists(project_id):
-        raise AppError(404, "not_found", "Project not found.")
-    conn = get_conn(project_id)
+    conn = require_project(project_id)
     p = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        raise AppError(404, "not_found", "Project not found.")
 
     provided = body.model_fields_set
     updates: dict = {}
-    if "name" in provided and body.name is not None:
-        updates["name"] = body.name
-    if "whisper_model" in provided and body.whisper_model is not None:
-        updates["whisper_model"] = body.whisper_model
     if "language" in provided:
         updates["language"] = body.language  # allows setting to None (auto-detect)
-    if "target_duration_secs" in provided and body.target_duration_secs is not None:
-        updates["target_duration_secs"] = body.target_duration_secs
 
-    if "match_threshold" in provided and body.match_threshold is not None:
-        updates["match_threshold"] = body.match_threshold
-    if "auto_approve_enabled" in provided and body.auto_approve_enabled is not None:
-        updates["auto_approve_enabled"] = int(body.auto_approve_enabled)
-    if "auto_approve_match_threshold" in provided and body.auto_approve_match_threshold is not None:
-        updates["auto_approve_match_threshold"] = body.auto_approve_match_threshold
-    if "auto_approve_transcript_threshold" in provided and body.auto_approve_transcript_threshold is not None:
-        updates["auto_approve_transcript_threshold"] = body.auto_approve_transcript_threshold
-    if "whisper_batch_size" in provided and body.whisper_batch_size is not None:
-        updates["whisper_batch_size"] = body.whisper_batch_size
-    if "whisper_compute_type" in provided and body.whisper_compute_type is not None:
-        updates["whisper_compute_type"] = body.whisper_compute_type
-
-    # Pipeline tuning knobs (migration 011). Plain per-project config: a change
-    # applies to the next run of that stage; no segment re-evaluation.
+    # Every other field follows "provided and not null". SQLite has no bool
+    # type; boolean knobs are stored as 0/1.
     for f in (
+        "name", "whisper_model", "target_duration_secs",
+        "match_threshold", "auto_approve_enabled",
+        "auto_approve_match_threshold", "auto_approve_transcript_threshold",
+        "whisper_batch_size", "whisper_compute_type",
+        # Pipeline tuning knobs (migration 011). Plain per-project config: a
+        # change applies to the next run of that stage; no re-evaluation.
         "demucs_model", "demucs_shifts",
         "diar_min_speakers", "diar_max_speakers", "diar_min_segment_duration",
         "whisper_beam_size", "whisper_vad_filter",
@@ -390,7 +367,6 @@ async def patch_project(project_id: str, body: ProjectPatch):
     ):
         if f in provided and getattr(body, f) is not None:
             val = getattr(body, f)
-            # SQLite has no bool type; store the one boolean knob as 0/1.
             updates[f] = int(val) if isinstance(val, bool) else val
 
     # Changing match_threshold or any auto-approve field triggers a synchronous
@@ -450,12 +426,7 @@ async def delete_project(project_id: str, body: ProjectDelete):
     if not body.confirm:
         raise AppError(422, "confirm_required", "Pass confirm=true to delete.")
 
-    if not project_exists(project_id):
-        raise AppError(404, "not_found", "Project not found.")
-    conn = get_conn(project_id)
-    p = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    if p is None:
-        raise AppError(404, "not_found", "Project not found.")
+    conn = require_project(project_id)
 
     # Reject if jobs are actively running
     active = conn.execute(
@@ -471,6 +442,7 @@ async def delete_project(project_id: str, body: ProjectDelete):
     pdir = project_dir(project_id)
     close_conn(project_id)
     if pdir.exists():
-        shutil.rmtree(pdir)
+        # Project dirs hold multi-GB videos — keep the event loop free.
+        await asyncio.to_thread(shutil.rmtree, pdir)
 
     return {"deleted": True}

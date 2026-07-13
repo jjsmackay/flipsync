@@ -9,6 +9,7 @@ import type {
   GetSegmentsParams,
   PaginatedSegments,
   Segment,
+  SegmentStatus,
   Job,
   ScoutStatus,
   Model,
@@ -75,6 +76,9 @@ function toQueryString(params: Record<string, unknown>): string {
 
 export interface Capabilities {
   xtts: boolean
+  /** Server-owned bulk transition table (action -> allowed source statuses).
+   *  Absent on older orchestrators; the baked-in copy applies as fallback. */
+  bulk_action_sources?: Record<string, SegmentStatus[]>
 }
 
 export function getCapabilities(): Promise<Capabilities> {

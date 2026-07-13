@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ProjectConfig } from '../../types/api'
-import { patchProject, ApiError } from '../../api/client'
+import { patchProject } from '../../api/client'
+import { errorMessage } from '../../utils/errors'
 
 interface ProjectSettingsPanelProps {
   projectId: string
@@ -43,7 +44,7 @@ export function ProjectSettingsPanel({ projectId, config, onSaved }: ProjectSett
       onSaved()
       setSaved(true)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Save failed')
+      setError(errorMessage(err, 'Save failed'))
     } finally {
       setSaving(false)
     }

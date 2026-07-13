@@ -164,13 +164,23 @@ class TestCapabilities:
         with patch("main.is_healthy", AsyncMock(return_value=True)):
             resp = client.get("/capabilities")
         assert resp.status_code == 200
-        assert resp.json() == {"xtts": True}
+        assert resp.json()["xtts"] is True
 
     def test_xtts_false_when_unhealthy(self, client):
         with patch("main.is_healthy", AsyncMock(return_value=False)):
             resp = client.get("/capabilities")
         assert resp.status_code == 200
-        assert resp.json() == {"xtts": False}
+        assert resp.json()["xtts"] is False
+
+    def test_serves_bulk_action_sources_table(self, client):
+        from state_machines import BULK_ACTION_SOURCES
+
+        with patch("main.is_healthy", AsyncMock(return_value=False)):
+            resp = client.get("/capabilities")
+        served = resp.json()["bulk_action_sources"]
+        assert served == {
+            action: sorted(statuses) for action, statuses in BULK_ACTION_SOURCES.items()
+        }
 
 
 # ========================================================================

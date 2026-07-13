@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import type { ProjectDetail, Segment } from '../../types/api'
 import { triggerExport, getExportDownloadUrl, getSegments } from '../../api/client'
 import { formatDurationCoarse as formatDuration } from '../../utils/format'
+import { errorMessage } from '../../utils/errors'
+import { EXPORTABLE_STATUSES_CSV } from '../../constants'
 
 type ExportState = 'idle' | 'confirm' | 'exporting' | 'ready'
 
@@ -64,32 +66,33 @@ export function ExportButton({ project, onStarted, size = 'sm' }: ExportButtonPr
   }, [project, state, exportJobId])
 
   // When the confirmation panel is open, compute the real clipping / missing-transcript
-  // counts among the approved segments that will be exported.
+  // counts across the full set the server will export (including segments left in
+  // clipping_warning status by a previous export).
   useEffect(() => {
     if (state !== 'confirm') return
     let cancelled = false
     setCounts(null)
     ;(async () => {
-      const approved: Segment[] = []
+      const exportable: Segment[] = []
       let page = 1
       let pages = 1
       do {
         const res = await getSegments(project.id, {
-          status: 'approved,auto_approved',
+          status: EXPORTABLE_STATUSES_CSV,
           sort: 'start_secs',
           order: 'asc',
           page,
           per_page: 200,
         })
         if (cancelled) return
-        approved.push(...res.segments)
+        exportable.push(...res.segments)
         pages = res.pagination.pages
         page++
       } while (page <= pages)
       if (cancelled) return
       setCounts({
-        clipping: approved.filter(s => s.clipping_warning).length,
-        noTranscript: approved.filter(s => !(s.transcript_edited ?? s.transcript)).length,
+        clipping: exportable.filter(s => s.clipping_warning).length,
+        noTranscript: exportable.filter(s => !(s.transcript_edited ?? s.transcript)).length,
       })
     })().catch(() => {
       if (!cancelled) setCounts(null)
@@ -107,7 +110,7 @@ export function ExportButton({ project, onStarted, size = 'sm' }: ExportButtonPr
       setExportJobId(res.enqueued_job.id)
       onStarted?.()
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : String(err))
+      setExportError(errorMessage(err, 'Export failed.'))
       setState('confirm')
     }
   }

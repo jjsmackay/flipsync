@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ProjectDetail, Model, CreateModelRequest, JobSummary } from '../../types/api'
 import { createModel, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
+import { errorMessage } from '../../utils/errors'
 import { jobLabel } from '../../utils/labels'
 import { ProgressBar } from '../ui/ProgressBar'
 
@@ -105,7 +106,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
       if (err instanceof ApiError) {
         setError(ERROR_MESSAGES[err.error] ?? err.message)
       } else {
-        setError(err instanceof Error ? err.message : 'Failed to start training.')
+        setError(errorMessage(err, 'Failed to start training.'))
       }
     } finally {
       setSubmitting(false)

@@ -1,5 +1,6 @@
 import { useRef, useState, DragEvent, ChangeEvent } from 'react'
 import { uploadSource } from '../../api/client'
+import { errorMessage } from '../../utils/errors'
 
 interface UploadAreaProps {
   projectId: string
@@ -27,7 +28,7 @@ export function UploadArea({ projectId, onUploaded, compact = false }: UploadAre
       await uploadSource(projectId, file, (f) => setProgress(f))
       onUploaded()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
+      setError(errorMessage(err, 'Upload failed'))
     } finally {
       setUploading(false)
       setUploadingName(null)

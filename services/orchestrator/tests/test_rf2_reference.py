@@ -286,17 +286,17 @@ class FakeHangingProc:
 
 class TestFfprobeKill:
     def test_hanging_ffprobe_is_killed(self, monkeypatch):
-        from routers import reference
+        import audio
 
         proc = FakeHangingProc()
 
         async def fake_exec(*args, **kwargs):
             return proc
 
-        monkeypatch.setattr(reference.asyncio, "create_subprocess_exec", fake_exec)
-        monkeypatch.setattr(reference, "_FFPROBE_TIMEOUT_SECS", 0.05)
+        monkeypatch.setattr(audio.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(audio, "_FFPROBE_TIMEOUT_SECS", 0.05)
 
-        duration = asyncio.run(reference._get_duration("/nonexistent/file.wav"))
+        duration = asyncio.run(audio.get_duration("/nonexistent/file.wav"))
 
         assert proc.killed is True
         assert duration == 0.0  # wave fallback on a nonexistent path

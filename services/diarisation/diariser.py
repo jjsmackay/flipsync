@@ -109,15 +109,17 @@ def load_embedding_model():
     return inference
 
 
+def _to_1d_embedding(embedding) -> np.ndarray:
+    """Normalise a pyannote embedding result (SlidingWindowFeature or ndarray) to 1D."""
+    if hasattr(embedding, "data"):
+        return np.squeeze(embedding.data)
+    return np.squeeze(np.array(embedding))
+
+
 def extract_embedding(inference, audio_path: str) -> np.ndarray:
     """Extract a single speaker embedding from an audio file."""
     embedding = inference(audio_path)
-    # Inference returns an SlidingWindowFeature or ndarray; normalise to 1D ndarray
-    if hasattr(embedding, "data"):
-        arr = np.squeeze(embedding.data)
-    else:
-        arr = np.squeeze(np.array(embedding))
-    return arr
+    return _to_1d_embedding(embedding)
 
 
 def extract_segment_embedding(inference, audio_path: str, start: float, end: float) -> np.ndarray:
@@ -126,11 +128,7 @@ def extract_segment_embedding(inference, audio_path: str, start: float, end: flo
 
     seg = Segment(start, end)
     embedding = inference.crop(audio_path, seg)
-    if hasattr(embedding, "data"):
-        arr = np.squeeze(embedding.data)
-    else:
-        arr = np.squeeze(np.array(embedding))
-    return arr
+    return _to_1d_embedding(embedding)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -205,6 +203,59 @@ def select_pool_turns(
     return pool
 
 
+def _diarise_turns(
+    pipeline,
+    input_path: str,
+    min_segment_duration: float,
+    min_speakers: int,
+    max_speakers: int,
+    num_speakers: Optional[int] = None,
+    progress_callback=None,
+    log_label: str = "diarisation",
+) -> tuple[list[dict], dict[str, list[dict]]]:
+    """Run pyannote diarisation and group the surviving turns by speaker.
+
+    Shared phase-1 logic for both scout mode (``run_scout``) and match mode
+    (``run_diarisation``): runs the pipeline (forced to ``num_speakers`` when
+    given, otherwise bounded by ``min_speakers``/``max_speakers``), drops
+    turns shorter than ``min_segment_duration``, reports progress at 10%, and
+    groups the surviving turns by speaker label.
+
+    Returns (raw_turns, turns_by_speaker) — ``turns_by_speaker`` groups by
+    reference, so turns mutated in place afterwards (e.g. run_diarisation
+    attaching an "embedding" key) are reflected in both.
+    """
+    logger.info("Running pyannote diarisation (%s) on %s", log_label, input_path)
+    if num_speakers is not None:
+        diarization = pipeline(input_path, num_speakers=num_speakers).speaker_diarization
+    else:
+        diarization = pipeline(
+            input_path,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        ).speaker_diarization
+
+    raw_turns = []
+    for turn, _, speaker_label in diarization.itertracks(yield_label=True):
+        duration = turn.end - turn.start
+        if duration >= min_segment_duration:
+            raw_turns.append({
+                "start": turn.start,
+                "end": turn.end,
+                "speaker_label": speaker_label,
+            })
+
+    logger.info("%s found %d turns (after duration filter)", log_label.capitalize(), len(raw_turns))
+    if progress_callback:
+        progress_callback(10)
+
+    speakers: dict[str, list[dict]] = {}
+    for turn in raw_turns:
+        speakers.setdefault(turn["speaker_label"], []).append(turn)
+
+    return raw_turns, speakers
+
+
 def run_scout(
     pipeline,
     input_path: str,
@@ -239,37 +290,20 @@ def run_scout(
             progress_callback(pct)
 
     # ---- Phase 1: Diarisation (identical to match mode) ----
-    logger.info("Running pyannote diarisation (scout) on %s", input_path)
-    if num_speakers is not None:
-        diarization = pipeline(input_path, num_speakers=num_speakers).speaker_diarization
-    else:
-        diarization = pipeline(
-            input_path,
-            min_speakers=min_speakers,
-            max_speakers=max_speakers,
-        ).speaker_diarization
-
-    raw_turns = []
-    for turn, _, speaker_label in diarization.itertracks(yield_label=True):
-        duration = turn.end - turn.start
-        if duration >= min_segment_duration:
-            raw_turns.append({
-                "start": turn.start,
-                "end": turn.end,
-                "speaker_label": speaker_label,
-            })
-
-    logger.info("Scout found %d turns (after duration filter)", len(raw_turns))
-    _progress(10)
+    raw_turns, speakers = _diarise_turns(
+        pipeline,
+        input_path,
+        min_segment_duration,
+        min_speakers,
+        max_speakers,
+        num_speakers=num_speakers,
+        progress_callback=_progress,
+        log_label="scout",
+    )
 
     if not raw_turns:
         logger.warning("No turns found after diarisation")
         return []
-
-    # Group turns by speaker
-    speakers: dict[str, list[dict]] = {}
-    for turn in raw_turns:
-        speakers.setdefault(turn["speaker_label"], []).append(turn)
 
     _progress(50)
 
@@ -335,25 +369,15 @@ def run_diarisation(
             progress_callback(pct)
 
     # ---- Phase 1: Diarisation ----
-    logger.info("Running pyannote diarisation on %s", input_path)
-    diarization = pipeline(
+    raw_turns, speakers = _diarise_turns(
+        pipeline,
         input_path,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
-    ).speaker_diarization
-
-    raw_turns = []
-    for turn, _, speaker_label in diarization.itertracks(yield_label=True):
-        duration = turn.end - turn.start
-        if duration >= min_segment_duration:
-            raw_turns.append({
-                "start": turn.start,
-                "end": turn.end,
-                "speaker_label": speaker_label,
-            })
-
-    logger.info("Diarisation found %d segments (after duration filter)", len(raw_turns))
-    _progress(10)
+        min_segment_duration,
+        min_speakers,
+        max_speakers,
+        progress_callback=_progress,
+        log_label="match",
+    )
 
     if not raw_turns:
         logger.warning("No segments found after diarisation")
@@ -379,11 +403,8 @@ def run_diarisation(
             )
             turn["embedding"] = None
 
-    # Group turns by speaker
-    speakers: dict[str, list[dict]] = {}
-    for turn in raw_turns:
-        label = turn["speaker_label"]
-        speakers.setdefault(label, []).append(turn)
+    # `speakers` (grouped in _diarise_turns) references the same turn dicts as
+    # raw_turns, so it already reflects the "embedding" key set above.
 
     # Compute per-speaker average embedding from the successful per-segment embeddings
     speaker_embeddings: dict[str, np.ndarray] = {}

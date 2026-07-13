@@ -6,6 +6,8 @@ import { ConfidenceBadge } from '../ui/ConfidenceBadge'
 import { StatusBadge } from '../ui/StatusBadge'
 import { WaveformCanvas } from './WaveformCanvas'
 import { AudioControls } from './AudioControls'
+import { formatTimestamp, formatSecondsPrecise } from '../../utils/format'
+import { errorMessage } from '../../utils/errors'
 
 interface SegmentDetailProps {
   projectId: string
@@ -22,13 +24,6 @@ const MATCH_TOOLTIP =
   'Speaker match: cosine similarity between this segment and your reference clip (0–1). Higher means more likely to be the target speaker.'
 const TRANSCRIPT_TOOLTIP =
   'Transcript confidence: the average word probability reported by Whisper for this segment (0–1). Lower values often mean unclear speech.'
-
-function formatTimestamp(secs: number): string {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = Math.floor(secs % 60)
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-}
 
 const PLAYBACK_RATES = [0.75, 1.0, 1.25, 1.5]
 
@@ -63,7 +58,7 @@ export function SegmentDetail({
       // The job runs asynchronously; the new transcript lands on the next
       // queue refresh. Leave the button disabled to signal it's queued.
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Re-transcribe failed')
+      setError(errorMessage(e, 'Re-transcribe failed'))
       setRetranscribing(false)
     }
   }
@@ -188,7 +183,7 @@ export function SegmentDetail({
       setIsEditing(false)
       onFocusChange(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Save failed')
+      setError(errorMessage(e, 'Save failed'))
     } finally {
       setSaving(false)
     }
@@ -210,7 +205,7 @@ export function SegmentDetail({
       await patchSegment(projectId, segment.id, { status })
       onStatusChange(segment.id, status)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Action failed')
+      setError(errorMessage(e, 'Action failed'))
     }
   }
 
@@ -234,7 +229,7 @@ export function SegmentDetail({
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
           {segment.source_filename} &nbsp;·&nbsp; {formatTimestamp(segment.start_secs)} – {formatTimestamp(segment.end_secs)}
-          &nbsp;({segment.duration_secs.toFixed(1)}s)
+          &nbsp;({formatSecondsPrecise(segment.duration_secs)})
         </p>
         {segment.speaker_match_confidence != null && (
           <p
@@ -325,7 +320,7 @@ export function SegmentDetail({
                       // and the Undo button disappears (SC2).
                       onTranscriptChange(segment.id, null)
                     } catch (e) {
-                      setError(e instanceof Error ? e.message : 'Undo failed')
+                      setError(errorMessage(e, 'Undo failed'))
                     }
                   }}
                   className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-400 focus:outline-none"

@@ -9,8 +9,13 @@ from pydantic import BaseModel
 
 from db import require_project, utc_now
 from errors import AppError
-from jobs import delete_source_segments, enqueue, has_active_diarisation_job
-from state_machines import validate_source_transition
+from jobs import delete_source_segments, enqueue, enqueue_bulk_transcription, has_active_diarisation_job
+from state_machines import (
+    APPROVED_STATUSES,
+    EXPORTABLE_STATUSES,
+    sql_status_list,
+    validate_source_transition,
+)
 from status import invalidate_export, recompute_project_status
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["pipeline"])
@@ -44,11 +49,8 @@ async def start_pipeline(project_id: str):
         job_id = enqueue(project_id, "vocal_separation", source_id=s["id"])
         enqueued.append({"id": job_id, "type": "vocal_separation", "source_id": s["id"]})
 
-    conn.execute(
-        "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
-        (utc_now(), project_id),
-    )
-    conn.commit()
+    # The queued jobs drive the derived status to 'processing'.
+    recompute_project_status(project_id)
 
     return {"enqueued_jobs": enqueued}
 
@@ -99,11 +101,8 @@ async def continue_pipeline(project_id: str):
         job_id = enqueue(project_id, "diarisation", source_id=s["id"])
         enqueued.append({"id": job_id, "type": "diarisation", "source_id": s["id"]})
 
-    conn.execute(
-        "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
-        (utc_now(), project_id),
-    )
-    conn.commit()
+    # The queued jobs drive the derived status to 'processing'.
+    recompute_project_status(project_id)
 
     return {"enqueued_jobs": enqueued}
 
@@ -140,7 +139,7 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
     # step deletes and recreates this source's segments, so both discard
     # approvals; the message names the steps actually requested.
     approved_count = conn.execute(
-        "SELECT COUNT(*) FROM segments WHERE source_id=? AND status IN ('approved', 'auto_approved')",
+        f"SELECT COUNT(*) FROM segments WHERE source_id=? AND status IN ({sql_status_list(APPROVED_STATUSES)})",
         (source_id,),
     ).fetchone()[0]
     if approved_count > 0 and not body.confirm:
@@ -197,12 +196,8 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
         job_id = enqueue(project_id, "diarisation", source_id=source_id)
         enqueued.append({"id": job_id, "type": "diarisation", "source_id": source_id})
 
-    # Update project status to processing and mark any prior export stale.
-    conn.execute(
-        "UPDATE projects SET status='processing', updated_at=? WHERE id=?",
-        (now, project_id),
-    )
-    conn.commit()
+    # Mark any prior export stale; its recompute derives 'processing' from the
+    # queued jobs.
     invalidate_export(project_id)
 
     return {"enqueued_jobs": enqueued}
@@ -215,31 +210,17 @@ async def reprocess_source(project_id: str, source_id: str, body: ReprocessReque
 
 @router.post("/transcription/run", status_code=202)
 async def run_transcription(project_id: str):
-    conn = require_project(project_id)
+    require_project(project_id)
 
-    segments = conn.execute(
-        """
-        SELECT id, raw_path FROM segments
-        WHERE project_id=? AND status IN ('pending','maybe') AND transcript IS NULL
-        """,
-        (project_id,),
-    ).fetchall()
-
-    if not segments:
+    result = enqueue_bulk_transcription(project_id)
+    if result is None:
         raise AppError(
             409, "no_segments_to_transcribe",
             "No pending segments without transcripts.",
         )
+    job_id, segment_count = result
 
-    project = conn.execute("SELECT whisper_model, language FROM projects WHERE id=?", (project_id,)).fetchone()
-    params = {
-        "segment_ids": [s["id"] for s in segments],
-        "model": project["whisper_model"],
-        "language": project["language"],
-    }
-    job_id = enqueue(project_id, "transcription_bulk", params=params)
-
-    return {"enqueued_job": {"id": job_id, "type": "transcription_bulk", "segment_count": len(segments)}}
+    return {"enqueued_job": {"id": job_id, "type": "transcription_bulk", "segment_count": segment_count}}
 
 
 @router.post("/segments/{segment_id}/transcription/rerun", status_code=202)
@@ -296,10 +277,8 @@ async def list_jobs(project_id: str, status: Optional[str] = None, limit: int = 
 async def trigger_export(project_id: str):
     conn = require_project(project_id)
 
-    # Match the export handler's payload set: clipping_warning segments are
-    # exported with the flag recorded (keep-unless-rejected).
     approved_count = conn.execute(
-        "SELECT COUNT(*) FROM segments WHERE project_id=? AND status IN ('approved','auto_approved','clipping_warning')",
+        f"SELECT COUNT(*) FROM segments WHERE project_id=? AND status IN ({sql_status_list(EXPORTABLE_STATUSES)})",
         (project_id,),
     ).fetchone()[0]
 
@@ -332,11 +311,8 @@ async def trigger_export(project_id: str):
 
     job_id = enqueue(project_id, "export", params={"segment_count": approved_count})
 
-    conn.execute(
-        "UPDATE projects SET status='exporting', updated_at=? WHERE id=?",
-        (utc_now(), project_id),
-    )
-    conn.commit()
+    # The queued export job drives the derived status to 'exporting'.
+    recompute_project_status(project_id)
 
     return {"enqueued_job": {"id": job_id, "type": "export", "segment_count": approved_count}}
 

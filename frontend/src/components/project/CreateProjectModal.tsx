@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { createProject } from '../../api/client'
 import type { CreateProjectRequest } from '../../types/api'
+import { errorMessage } from '../../utils/errors'
 
 interface CreateProjectModalProps {
   onCreated: (id: string) => void
@@ -45,7 +46,7 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
       const result = await createProject(req)
       onCreated(result.id)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create project')
+      setError(errorMessage(err, 'Failed to create project'))
     } finally {
       setSubmitting(false)
     }

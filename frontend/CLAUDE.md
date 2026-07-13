@@ -24,7 +24,8 @@ You own the frontend (`frontend/`). Do not modify any service directory or the o
 
 ## Shared utilities
 
-- `src/utils/format.ts` — `formatDuration` (h/m/s) and `formatDurationCoarse` (h/m). Use these instead of local helpers.
+- `src/utils/format.ts` — `formatDuration` (h/m/s), `formatDurationCoarse` (h/m), `formatTimestamp` (HH:MM:SS), `formatClock` (M:SS), `formatSecondsPrecise` (X.Xs). Use these instead of local helpers.
+- `src/utils/errors.ts` — `errorMessage(err, fallback)` for extracting a message from a caught value (including `ApiError`, which extends `Error`). Use instead of inlining `err instanceof Error ? err.message : '...'`.
 
 ## Commands
 

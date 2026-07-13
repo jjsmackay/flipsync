@@ -52,6 +52,13 @@ const NON_PIPELINE_JOB_TYPES = new Set([
   'preview',
 ])
 
+/** Active jobs that belong to the extract/separate/diarise/transcribe/cleanup
+ *  pipeline proper — excludes export, scout, and voice (dataset/train/preview)
+ *  jobs, which must not drive the Process stage or its "busy" chip. */
+export function pipelineJobs(jobs: ProjectDetail['active_jobs']): ProjectDetail['active_jobs'] {
+  return jobs.filter((j) => !NON_PIPELINE_JOB_TYPES.has(j.type))
+}
+
 export function deriveStage(project: ProjectDetail, xttsEnabled = false): Stage {
   const sources = project.stats.source_coverage
   if (sources.length === 0) return 'upload'
@@ -64,8 +71,7 @@ export function deriveStage(project: ProjectDetail, xttsEnabled = false): Stage 
   // Everything downstream of a committed reference is the pipeline proper.
   if (!project.reference_path) return 'speaker'
 
-  const processingJobs = project.active_jobs.filter((j) => !NON_PIPELINE_JOB_TYPES.has(j.type))
-  if (processingJobs.length > 0) return 'process'
+  if (pipelineJobs(project.active_jobs).length > 0) return 'process'
 
   if (sources.some((s) => PROCESSING_SOURCE_STATUSES.has(s.status))) return 'process'
 
@@ -93,7 +99,7 @@ export function stageStates(
   const stages = stagesFor(xttsEnabled)
   const current = deriveStage(project, xttsEnabled)
   const currentIdx = stages.indexOf(current)
-  const busy = project.active_jobs.length > 0
+  const busy = pipelineJobs(project.active_jobs).length > 0
   const states = {} as Record<Stage, StageState>
   for (const [idx, stage] of stages.entries()) {
     if (idx < currentIdx) states[stage] = 'done'

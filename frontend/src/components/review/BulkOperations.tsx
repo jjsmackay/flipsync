@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react'
-import { bulkSegmentAction, getSegmentsCount } from '../../api/client'
+import { bulkSegmentAction, getCapabilities, getSegmentsCount } from '../../api/client'
 import type { BulkFilter, BulkSegmentRequest, SegmentStatus } from '../../types/api'
 import { ALL_SEGMENT_STATUSES } from '../../constants'
+import { errorMessage } from '../../utils/errors'
 
 type BulkAction = BulkSegmentRequest['action']
+type BulkActionSources = Record<BulkAction, readonly SegmentStatus[]>
 
-// Mirror of the orchestrator's BULK_ACTION_SOURCES (state_machines.py): the
-// segment statuses each bulk action is allowed to move FROM. The server
-// intersects the filter with these; mirroring them here keeps the preview
-// count equal to what Apply will actually affect.
-export const BULK_ACTION_SOURCES: Record<BulkAction, readonly SegmentStatus[]> = {
+// Fallback copy of the orchestrator's BULK_ACTION_SOURCES (state_machines.py):
+// the segment statuses each bulk action is allowed to move FROM. The live
+// table is served by GET /capabilities and overrides this at runtime, so the
+// preview count can't drift from what Apply actually affects; this copy only
+// covers older orchestrators and a failed capabilities fetch.
+export const BULK_ACTION_SOURCES: BulkActionSources = {
   approve: ['pending', 'maybe', 'clipping_warning', 'auto_approved'],
   reject: ['pending', 'maybe', 'clipping_warning', 'approved', 'auto_approved'],
   maybe: ['pending', 'approved', 'auto_approved'],
@@ -23,8 +26,9 @@ export const BULK_ACTION_SOURCES: Record<BulkAction, readonly SegmentStatus[]> =
 export function effectiveBulkStatuses(
   action: BulkAction,
   filterStatus: SegmentStatus | '',
+  actionSources: BulkActionSources = BULK_ACTION_SOURCES,
 ): SegmentStatus[] {
-  const allowed = BULK_ACTION_SOURCES[action]
+  const allowed = actionSources[action]
   const selected: readonly SegmentStatus[] = filterStatus ? [filterStatus] : ALL_SEGMENT_STATUSES
   return selected.filter((s) => allowed.includes(s))
 }
@@ -67,21 +71,29 @@ const PRESETS: Preset[] = [
   },
 ]
 
-const STATUS_VALUES: SegmentStatus[] = [
-  'pending',
-  'approved',
-  'auto_approved',
-  'rejected',
-  'maybe',
-  'below_threshold',
-  'clipping_warning',
-  'auto_rejected',
-]
-
 export function BulkOperations({ projectId, onApplied, sources }: BulkOperationsProps) {
   const [expanded, setExpanded] = useState(false)
   const [resultCount, setResultCount] = useState<number | null>(null)
   const [skippedNoTranscript, setSkippedNoTranscript] = useState(0)
+
+  // Adopt the server's transition table when it serves one (see /capabilities);
+  // the baked-in copy stays as the fallback.
+  const [actionSources, setActionSources] = useState<BulkActionSources>(BULK_ACTION_SOURCES)
+  useEffect(() => {
+    let cancelled = false
+    getCapabilities()
+      .then((caps) => {
+        const served = caps.bulk_action_sources
+        const actions: BulkAction[] = ['approve', 'reject', 'maybe', 'pending']
+        if (!cancelled && served && actions.every((a) => Array.isArray(served[a]))) {
+          setActionSources(served as unknown as BulkActionSources)
+        }
+      })
+      .catch(() => {}) // fallback copy stays in effect
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Custom form state
   const [action, setAction] = useState<BulkSegmentRequest['action']>('approve')
@@ -98,7 +110,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
 
   // Statuses this action can actually affect, given the selected status filter.
   // Empty means the combination is a no-op (e.g. Approve over rejected segments).
-  const effectiveStatuses = effectiveBulkStatuses(action, filterStatus)
+  const effectiveStatuses = effectiveBulkStatuses(action, filterStatus, actionSources)
 
   function buildFilter(): BulkFilter {
     const f: BulkFilter = {}
@@ -137,7 +149,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
         .catch((err) => {
           if (!cancelled) {
             setPreviewCount(null)
-            setBulkError(err instanceof Error ? err.message : 'Preview failed')
+            setBulkError(errorMessage(err, 'Preview failed'))
           }
         })
         .finally(() => {
@@ -149,7 +161,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       clearTimeout(timer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, projectId, action, filterStatus, minConfidence, minDuration, maxDuration, sourceId])
+  }, [expanded, projectId, action, filterStatus, minConfidence, minDuration, maxDuration, sourceId, actionSources])
 
   async function handlePreset(index: number) {
     setApplyingPreset(index)
@@ -160,7 +172,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       setSkippedNoTranscript(result.skipped_no_transcript ?? 0)
       onApplied()
     } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
+      setBulkError(errorMessage(err, 'Bulk action failed'))
     } finally {
       setApplyingPreset(null)
     }
@@ -177,7 +189,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       setSkippedNoTranscript(result.skipped_no_transcript ?? 0)
       onApplied()
     } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
+      setBulkError(errorMessage(err, 'Bulk action failed'))
     } finally {
       setApplying(false)
     }
@@ -251,7 +263,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 >
                   <option value="">Any</option>
-                  {STATUS_VALUES.map(s => (
+                  {ALL_SEGMENT_STATUSES.map(s => (
                     <option key={s} value={s}>{s}</option>
                   ))}
                 </select>

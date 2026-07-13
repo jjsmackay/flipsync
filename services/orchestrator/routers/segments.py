@@ -60,6 +60,50 @@ def _has_no_transcript(seg) -> bool:
     return seg["transcript"] is None and seg["transcript_edited"] is None
 
 
+def _range_filter_conditions(
+    source_id: Optional[str],
+    min_confidence: Optional[float],
+    max_confidence: Optional[float],
+    min_duration: Optional[float],
+    max_duration: Optional[float],
+    prefix: str = "",
+) -> tuple[list[str], list]:
+    """The five optional segment filters shared by GET /segments and
+    POST /segments/bulk — one builder so the bulk preview (queried via GET)
+    always matches what bulk Apply affects."""
+    conditions: list[str] = []
+    params: list = []
+    if source_id:
+        conditions.append(f"{prefix}source_id=?")
+        params.append(source_id)
+    if min_confidence is not None:
+        conditions.append(f"{prefix}match_confidence>=?")
+        params.append(min_confidence)
+    if max_confidence is not None:
+        conditions.append(f"{prefix}match_confidence<=?")
+        params.append(max_confidence)
+    if min_duration is not None:
+        conditions.append(f"{prefix}duration_secs>=?")
+        params.append(min_duration)
+    if max_duration is not None:
+        conditions.append(f"{prefix}duration_secs<=?")
+        params.append(max_duration)
+    return conditions, params
+
+
+def _fetch_segment(conn, project_id: str, segment_id: str):
+    """Fetch one segment row (with source_filename) or None."""
+    return conn.execute(
+        """
+        SELECT seg.*, src.filename AS source_filename
+        FROM segments seg
+        JOIN sources src ON src.id = seg.source_id
+        WHERE seg.id=? AND seg.project_id=?
+        """,
+        (segment_id, project_id),
+    ).fetchone()
+
+
 @router.get("")
 async def list_segments(
     project_id: str,
@@ -111,34 +155,21 @@ async def list_segments(
 
     conditions = [f"seg.project_id=?", f"seg.status IN ({placeholders})"]
     params: list = [project_id, *statuses]
-
-    if source_id:
-        conditions.append("seg.source_id=?")
-        params.append(source_id)
-    if min_confidence is not None:
-        conditions.append("seg.match_confidence>=?")
-        params.append(min_confidence)
-    if max_confidence is not None:
-        conditions.append("seg.match_confidence<=?")
-        params.append(max_confidence)
-    if min_duration is not None:
-        conditions.append("seg.duration_secs>=?")
-        params.append(min_duration)
-    if max_duration is not None:
-        conditions.append("seg.duration_secs<=?")
-        params.append(max_duration)
+    extra_conditions, extra_params = _range_filter_conditions(
+        source_id, min_confidence, max_confidence, min_duration, max_duration,
+        prefix="seg.",
+    )
+    conditions += extra_conditions
+    params += extra_params
 
     where = " AND ".join(conditions)
-
-    if count_only:
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM segments seg WHERE {where}", params
-        ).fetchone()[0]
-        return {"total": total}
 
     total = conn.execute(
         f"SELECT COUNT(*) FROM segments seg WHERE {where}", params
     ).fetchone()[0]
+
+    if count_only:
+        return {"total": total}
 
     offset = (page - 1) * per_page
     rows = conn.execute(
@@ -190,15 +221,7 @@ class SegmentPatch(BaseModel):
 @router.patch("/{segment_id}")
 async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
     conn = require_project(project_id)
-    seg = conn.execute(
-        """
-        SELECT seg.*, src.filename AS source_filename
-        FROM segments seg
-        JOIN sources src ON src.id = seg.source_id
-        WHERE seg.id=? AND seg.project_id=?
-        """,
-        (segment_id, project_id),
-    ).fetchone()
+    seg = _fetch_segment(conn, project_id, segment_id)
     if seg is None:
         raise AppError(404, "not_found", "Segment not found.")
 
@@ -249,15 +272,7 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
     # is derived from approvals + COALESCE(transcript_edited, transcript)).
     invalidate_export(project_id)
 
-    updated = conn.execute(
-        """
-        SELECT seg.*, src.filename AS source_filename
-        FROM segments seg
-        JOIN sources src ON src.id = seg.source_id
-        WHERE seg.id=?
-        """,
-        (segment_id,),
-    ).fetchone()
+    updated = _fetch_segment(conn, project_id, segment_id)
     return _serialize_segment(updated, project_id)
 
 
@@ -313,22 +328,11 @@ async def bulk_action(project_id: str, body: BulkRequest):
     placeholders = ",".join("?" * len(target_statuses))
     conditions = ["project_id=?", f"status IN ({placeholders})"]
     params: list = [project_id, *target_statuses]
-
-    if f.source_id:
-        conditions.append("source_id=?")
-        params.append(f.source_id)
-    if f.min_confidence is not None:
-        conditions.append("match_confidence>=?")
-        params.append(f.min_confidence)
-    if f.max_confidence is not None:
-        conditions.append("match_confidence<=?")
-        params.append(f.max_confidence)
-    if f.min_duration is not None:
-        conditions.append("duration_secs>=?")
-        params.append(f.min_duration)
-    if f.max_duration is not None:
-        conditions.append("duration_secs<=?")
-        params.append(f.max_duration)
+    extra_conditions, extra_params = _range_filter_conditions(
+        f.source_id, f.min_confidence, f.max_confidence, f.min_duration, f.max_duration,
+    )
+    conditions += extra_conditions
+    params += extra_params
 
     where = " AND ".join(conditions)
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ProjectDetail, Model } from '../../types/api'
 import { getModels } from '../../api/client'
+import { errorMessage } from '../../utils/errors'
 import { TrainPanel } from './TrainPanel'
 import { ModelsList } from './ModelsList'
 import { PreviewPanel } from './PreviewPanel'
@@ -33,7 +34,7 @@ export function VoiceSection({ project, refetch }: VoiceSectionProps) {
       setModels(res.models)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load models.')
+      setError(errorMessage(err, 'Failed to load models.'))
     } finally {
       setLoading(false)
     }
