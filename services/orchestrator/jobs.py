@@ -496,7 +496,13 @@ async def _handle_vocal_separation(
 
     pdir = project_dir(project_id)
     data_prefix = _data_prefix()
-    model = params.get("demucs_model", "htdemucs")
+    project = conn.execute(
+        "SELECT demucs_model, demucs_shifts FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
+    # A params override (none today) beats project config; config beats the
+    # historical default.
+    model = params.get("demucs_model") or project["demucs_model"]
+    shifts = params.get("shifts", project["demucs_shifts"])
     chunk_secs = params.get("chunk_secs", None)
 
     payload = {
@@ -504,6 +510,7 @@ async def _handle_vocal_separation(
         "input_path": f"{data_prefix}/projects/{project_id}/audio/raw/{source_id}.wav",
         "output_path": f"{data_prefix}/projects/{project_id}/audio/vocals/{source_id}.wav",
         "model": model,
+        "shifts": shifts,
         "chunk_secs": chunk_secs,
     }
 
@@ -537,6 +544,7 @@ async def _handle_vocal_separation(
                 "input_path": payload["input_path"],
                 "output_path": payload["output_path"],
                 "model": model,
+                "shifts": shifts,
                 "chunk_secs": retry_chunk,
             }
             try:
@@ -679,9 +687,9 @@ async def _handle_diarisation(
         "reference_path": f"{data_prefix}/projects/{project_id}/{project['reference_path']}",
         "output_dir": f"{data_prefix}/projects/{project_id}/segments/raw/",
         "params": {
-            "min_segment_duration": 1.0,
-            "min_speakers": 1,
-            "max_speakers": 10,
+            "min_segment_duration": project["diar_min_segment_duration"],
+            "min_speakers": project["diar_min_speakers"],
+            "max_speakers": project["diar_max_speakers"],
         },
     }
 
@@ -817,12 +825,18 @@ async def _handle_scout_speakers(
         return
 
     # An optional expected speaker count (from the scout request) forces
-    # pyannote to that exact count; absent, the default 1–10 range applies.
+    # pyannote to that exact count; absent, the project's configured range
+    # applies.
+    project = conn.execute(
+        "SELECT diar_min_speakers, diar_max_speakers, diar_min_segment_duration "
+        "FROM projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
     expected = params.get("expected_speaker_count")
     scout_params: dict = {
-        "min_segment_duration": 1.0,
-        "min_speakers": 1,
-        "max_speakers": 10,
+        "min_segment_duration": project["diar_min_segment_duration"],
+        "min_speakers": project["diar_min_speakers"],
+        "max_speakers": project["diar_max_speakers"],
     }
     if isinstance(expected, int) and expected > 0:
         scout_params["num_speakers"] = expected
@@ -916,7 +930,8 @@ async def _handle_transcription_bulk(
         return
 
     project = conn.execute(
-        "SELECT whisper_model, language, whisper_batch_size, whisper_compute_type "
+        "SELECT whisper_model, language, whisper_batch_size, whisper_compute_type, "
+        "whisper_beam_size, whisper_vad_filter "
         "FROM projects WHERE id=?",
         (project_id,),
     ).fetchone()
@@ -962,6 +977,8 @@ async def _handle_transcription_bulk(
         "language": language,
         "batch_size": batch_size,
         "compute_type": project["whisper_compute_type"],
+        "beam_size": project["whisper_beam_size"],
+        "vad_filter": bool(project["whisper_vad_filter"]),
     }
 
     try:
@@ -1020,7 +1037,8 @@ async def _handle_transcription_segment(
         return
 
     project = conn.execute(
-        "SELECT whisper_model, language, whisper_compute_type FROM projects WHERE id=?",
+        "SELECT whisper_model, language, whisper_compute_type, "
+        "whisper_beam_size, whisper_vad_filter FROM projects WHERE id=?",
         (project_id,),
     ).fetchone()
     data_prefix = _data_prefix()
@@ -1035,6 +1053,8 @@ async def _handle_transcription_segment(
         "language": project["language"],
         "batch_size": 1,
         "compute_type": project["whisper_compute_type"],
+        "beam_size": project["whisper_beam_size"],
+        "vad_filter": bool(project["whisper_vad_filter"]),
     }
 
     try:
@@ -1295,9 +1315,9 @@ async def _run_cleanup(
             "target_lufs": project_row["target_lufs"],
             "true_peak_dbtp": -2.0,
             "lra": 7.0,
-            "highpass_hz": 80,
-            "silence_threshold_db": -50.0,
-            "silence_min_duration_secs": 0.1,
+            "highpass_hz": project_row["highpass_hz"],
+            "silence_threshold_db": project_row["silence_threshold_db"],
+            "silence_min_duration_secs": project_row["silence_min_duration_secs"],
             "clipping_threshold_db": -0.1,
             "clipping_min_consecutive_samples": 3,
             "output_sample_rate": 22050,
@@ -1484,9 +1504,9 @@ async def _handle_export(
                 "target_lufs": project["target_lufs"],
                 "true_peak_dbtp": -2.0,
                 "lra": 7.0,
-                "highpass_hz": 80,
-                "silence_threshold_db": -50.0,
-                "silence_min_duration_secs": 0.1,
+                "highpass_hz": project["highpass_hz"],
+                "silence_threshold_db": project["silence_threshold_db"],
+                "silence_min_duration_secs": project["silence_min_duration_secs"],
                 "clipping_threshold_db": -0.1,
                 "clipping_min_consecutive_samples": 3,
                 "output_sample_rate": 22050,
@@ -1883,18 +1903,24 @@ async def _handle_finetune(
     )
     conn.commit()
 
-    project = conn.execute("SELECT language FROM projects WHERE id=?", (project_id,)).fetchone()
+    project = conn.execute(
+        "SELECT language, xtts_epochs, xtts_batch_size, xtts_grad_accum, xtts_learning_rate "
+        "FROM projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
     language = project["language"] or "en"
 
     data_prefix = _data_prefix()
     manifest_path = f"{data_prefix}/projects/{project_id}/{model['dataset_manifest_path']}"
     output_dir = f"{data_prefix}/projects/{project_id}/models/{model_id}"
 
+    # Per-run params (from the Train request) override project config, which
+    # overrides the historical defaults.
     hyperparams = {
-        "epochs": hyper.get("epochs", 10),
-        "batch_size": hyper.get("batch_size", 3),
-        "grad_accum": hyper.get("grad_accum", 1),
-        "learning_rate": hyper.get("learning_rate", 5e-6),
+        "epochs": hyper.get("epochs", project["xtts_epochs"]),
+        "batch_size": hyper.get("batch_size", project["xtts_batch_size"]),
+        "grad_accum": hyper.get("grad_accum", project["xtts_grad_accum"]),
+        "learning_rate": hyper.get("learning_rate", project["xtts_learning_rate"]),
     }
 
     def make_payload(hp: dict) -> dict:
