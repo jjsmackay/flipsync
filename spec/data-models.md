@@ -49,7 +49,24 @@ CREATE TABLE projects (
     auto_approve_match_threshold     REAL NOT NULL DEFAULT 0.85,
     auto_approve_transcript_threshold REAL NOT NULL DEFAULT 0.90,
     whisper_batch_size    INTEGER NOT NULL DEFAULT 16,             -- segments transcribed concurrently on GPU (OOM lever)
-    whisper_compute_type  TEXT NOT NULL DEFAULT 'default'          -- 'default' | 'float16' | 'int8_float16' | 'int8' (VRAM lever)
+    whisper_compute_type  TEXT NOT NULL DEFAULT 'default',         -- 'default' | 'float16' | 'int8_float16' | 'int8' (VRAM lever)
+    -- Pipeline tuning knobs (migration 011). Defaults match the values the
+    -- orchestrator previously hardcoded, so a change only takes effect on the
+    -- next run of that stage (no retro-apply).
+    demucs_model              TEXT NOT NULL DEFAULT 'htdemucs',    -- 'htdemucs' | 'mdx_extra'
+    demucs_shifts             INTEGER NOT NULL DEFAULT 0,          -- Demucs test-time augmentation passes (0-10)
+    diar_min_speakers         INTEGER NOT NULL DEFAULT 1,
+    diar_max_speakers         INTEGER NOT NULL DEFAULT 10,
+    diar_min_segment_duration REAL NOT NULL DEFAULT 1.0,
+    whisper_beam_size         INTEGER NOT NULL DEFAULT 5,          -- faster-whisper beam width
+    whisper_vad_filter        INTEGER NOT NULL DEFAULT 0,          -- boolean; drop non-speech before decode
+    highpass_hz               INTEGER NOT NULL DEFAULT 80,         -- cleanup high-pass cutoff
+    silence_threshold_db      REAL NOT NULL DEFAULT -50.0,         -- cleanup silence-trim threshold
+    silence_min_duration_secs REAL NOT NULL DEFAULT 0.1,
+    xtts_epochs               INTEGER NOT NULL DEFAULT 10,         -- fine-tune hyperparameters (per-run Train params override)
+    xtts_batch_size           INTEGER NOT NULL DEFAULT 3,
+    xtts_grad_accum           INTEGER NOT NULL DEFAULT 1,
+    xtts_learning_rate        REAL NOT NULL DEFAULT 5e-06
 );
 ```
 

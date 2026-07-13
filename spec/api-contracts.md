@@ -170,7 +170,7 @@ Full project state, including per-source status and summary stats.
 
 #### `PATCH /projects/{project_id}`
 
-Update project config. Only `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, `auto_approve_transcript_threshold`, `whisper_batch_size` (1–64), and `whisper_compute_type` (`default` | `float16` | `int8_float16` | `int8`) are patchable. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
+Update project config. Patchable: `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, `auto_approve_transcript_threshold`, `whisper_batch_size` (1–64), `whisper_compute_type` (`default` | `float16` | `int8_float16` | `int8`), plus the pipeline tuning knobs: `demucs_model` (`htdemucs` | `mdx_extra`), `demucs_shifts` (0–10), `diar_min_speakers`/`diar_max_speakers` (1–20), `diar_min_segment_duration` (>0, ≤30), `whisper_beam_size` (1–10), `whisper_vad_filter` (bool), `target_lufs` (−70…−5), `highpass_hz` (0–1000), `silence_threshold_db` (−90…0), `silence_min_duration_secs` (0–10), and the fine-tune hyperparameters `xtts_epochs` (1–200), `xtts_batch_size` (1–64), `xtts_grad_accum` (1–64), `xtts_learning_rate` (>0, ≤1). All tuning knobs are accepted on `POST /projects` too, with the same bounds. Out-of-range values return 422. Changing a tuning knob applies to the next run of that stage; it does not reprocess existing work. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
 
 1. **Auto-approve demotion:** segments with status `auto_approved` that no longer meet the auto-approve eligibility rule (see [Pipeline](pipeline.md) §Auto-approval) are moved to `pending`.
 2. **Auto-approve promotion:** segments with status `pending` that meet the eligibility rule are moved to `auto_approved`.
@@ -761,7 +761,8 @@ Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
 {
   "text": "This is what the cloned voice sounds like.",
   "model_id": null,
-  "conditioning": { "source": "segments_cleaned", "segment_count": 5 }
+  "conditioning": { "source": "segments_cleaned", "segment_count": 5 },
+  "temperature": 0.65
 }
 ```
 
@@ -771,6 +772,7 @@ Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
 | `model_id` | string or null | null | Fine-tuned model to synthesise with; null = base model zero-shot |
 | `conditioning.source` | string | best available | `reference_clip`, `segments_raw`, or `segments_cleaned`. Default resolves to the best available stage (cleaned > raw > reference) |
 | `conditioning.segment_count` | int | 5 | Segment sources only: top-N segments by match confidence, duration 2–12 s |
+| `temperature` | float | 0.65 | XTTS sampling temperature (>0, ≤2). Per-run only — not stored on the project. Higher = more varied delivery. |
 
 The orchestrator resolves the conditioning source to absolute WAV paths. The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
 
@@ -868,7 +870,8 @@ Returns 200 when the service is ready to accept jobs. The orchestrator should re
   "input_path": "/data/projects/{project_id}/audio/raw/{source_id}.wav",
   "output_path": "/data/projects/{project_id}/audio/vocals/{source_id}.wav",
   "model": "htdemucs",
-  "chunk_secs": null
+  "chunk_secs": null,
+  "shifts": 0
 }
 ```
 
@@ -879,6 +882,7 @@ Returns 200 when the service is ready to accept jobs. The orchestrator should re
 | `output_path` | string | yes | Absolute path for output vocals WAV |
 | `model` | string | yes | `htdemucs` (default, best quality) or `mdx_extra` (fallback for poor htdemucs output) |
 | `chunk_secs` | int or null | no | If set, process audio in chunks of this duration (seconds) with 1-second overlap, then stitch. Used for OOM retry. If null, attempt whole-file processing. |
+| `shifts` | int | no | Demucs test-time augmentation passes (0–10, default 0). Higher = cleaner separation at N+1× the runtime. Sourced from project `demucs_shifts`. |
 
 **Response 202:**
 ```json
@@ -1064,7 +1068,9 @@ The `mode` field (`"scout"` | `"match"`) is present on every completion response
   "model": "large-v2",
   "language": null,
   "batch_size": 16,
-  "compute_type": "default"
+  "compute_type": "default",
+  "beam_size": 5,
+  "vad_filter": false
 }
 ```
 
@@ -1078,6 +1084,8 @@ The `mode` field (`"scout"` | `"match"`) is present on every completion response
 | `language` | string or null | no | ISO 639-1 language code (e.g. `en`, `fr`, `ja`). If null, faster-whisper auto-detects per segment. |
 | `batch_size` | int | no | Number of segments to transcribe concurrently on GPU. Default 16. Reduce if GPU OOMs during transcription. |
 | `compute_type` | string | no | CTranslate2 precision: `default` (float16 on GPU, int8 on CPU), `float16`, `int8_float16`, or `int8`. Default `default`. A lighter type cuts VRAM on a constrained GPU. |
+| `beam_size` | int | no | faster-whisper beam width. Default 5. Sourced from project `whisper_beam_size`. |
+| `vad_filter` | bool | no | Drop non-speech with faster-whisper's VAD before decoding. Default false. Sourced from project `whisper_vad_filter`. |
 
 Transcription always runs with word-level timestamps enabled; they are consumed internally for re-segmentation and not returned per word.
 
