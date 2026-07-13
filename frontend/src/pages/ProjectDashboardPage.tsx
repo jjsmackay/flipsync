@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useProjectPolling } from '../hooks/useProjectPolling'
 import {
@@ -7,15 +7,14 @@ import {
   triggerExport,
   startScout,
   getCapabilities,
+  getModels,
   ApiError,
 } from '../api/client'
-import type { FailedJob } from '../types/api'
+import type { FailedJob, Model } from '../types/api'
 import { retryPlan } from '../utils/retry'
 import { errorMessage } from '../utils/errors'
 import { deriveStage } from '../utils/stage'
 import { FailedJobsPanel } from '../components/project/FailedJobsPanel'
-import { StatsPanel } from '../components/project/StatsPanel'
-import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel'
 import { StageStrip } from '../components/project/StageStrip'
 import { NextActionCard } from '../components/project/NextActionCard'
 import { SourcesTable } from '../components/project/SourcesTable'
@@ -24,8 +23,7 @@ import { CompareSettingsModal } from '../components/project/CompareSettingsModal
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { CollapsibleSection, type CollapsibleSectionHandle } from '../components/ui/CollapsibleSection'
-import { ExportButton } from '../components/export/ExportButton'
-import { VoiceSection } from '../components/voice/VoiceSection'
+import { ModelsSection } from '../components/voice/ModelsSection'
 
 // XTTS presence is a deployment fact, fetched once. Memoise a resolved `true` at
 // module scope so a later transient probe failure can't flip an enabled
@@ -79,10 +77,35 @@ export function ProjectDashboardPage() {
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
   const [compareOpen, setCompareOpen] = useState(false)
   const xttsEnabled = useXttsEnabled()
-  const processRef = useRef<CollapsibleSectionHandle>(null)
-  const reviewRef = useRef<CollapsibleSectionHandle>(null)
-  const settingsAnchorRef = useRef<HTMLDivElement>(null)
-  const voiceRef = useRef<CollapsibleSectionHandle>(null)
+  const pipelineRef = useRef<CollapsibleSectionHandle>(null)
+  const reviewSettingsRef = useRef<HTMLDetailsElement>(null)
+  const trainRowRef = useRef<HTMLDivElement>(null)
+  const modelsRef = useRef<CollapsibleSectionHandle>(null)
+
+  // Models state lives here (not in VoiceSection): the pipeline's Train row
+  // needs it for its chip too. Reload on mount and around voice-job edges —
+  // model rows change status (pending → training → ready|failed) there.
+  const [models, setModels] = useState<Model[]>([])
+  const [modelsLoading, setModelsLoading] = useState(true)
+  const [modelsError, setModelsError] = useState<string | null>(null)
+  const reloadModels = useCallback(async () => {
+    if (!projectId) return
+    try {
+      const res = await getModels(projectId)
+      setModels(res.models)
+      setModelsError(null)
+    } catch (err) {
+      setModelsError(err instanceof Error ? err.message : 'Failed to load models.')
+    } finally {
+      setModelsLoading(false)
+    }
+  }, [projectId])
+  const voiceJobActive = Boolean(
+    project?.active_jobs.some((j) => j.type === 'finetune' || j.type === 'dataset_build'),
+  )
+  useEffect(() => {
+    void reloadModels()
+  }, [reloadModels, voiceJobActive])
 
   function openAndScroll(handle: CollapsibleSectionHandle | null) {
     handle?.open()
@@ -90,20 +113,32 @@ export function ProjectDashboardPage() {
     requestAnimationFrame(() => handle?.el?.scrollIntoView({ behavior: 'smooth' }))
   }
 
-  // Settings now lives as a subheading inside the Review section — open Review,
-  // then scroll to the Settings block within it.
+  // Review settings live in the Review step row's disclosure — open the
+  // Pipeline section, then expand + scroll to the disclosure.
   function openSettings() {
-    reviewRef.current?.open()
-    requestAnimationFrame(() => settingsAnchorRef.current?.scrollIntoView({ behavior: 'smooth' }))
+    pipelineRef.current?.open()
+    requestAnimationFrame(() => {
+      const el = reviewSettingsRef.current
+      if (!el) return
+      el.open = true
+      el.scrollIntoView({ behavior: 'smooth' })
+    })
   }
 
-  function goToVoice() {
-    openAndScroll(voiceRef.current)
+  function goToModels() {
+    openAndScroll(modelsRef.current)
+  }
+
+  // Training lives on the pipeline's Train row — open the Pipeline section,
+  // then scroll to that row.
+  function goToTrain() {
+    pipelineRef.current?.open()
+    requestAnimationFrame(() => trainRowRef.current?.scrollIntoView({ behavior: 'smooth' }))
   }
 
   // Target of the strip's pipeline chips (Separate/Match/Transcribe).
-  function goToProcess() {
-    openAndScroll(processRef.current)
+  function goToPipeline() {
+    openAndScroll(pipelineRef.current)
   }
 
   async function submitReprocess(sourceId: string, steps: string[], confirm: boolean) {
@@ -234,18 +269,12 @@ export function ProjectDashboardPage() {
   const hasSources = project.stats.source_coverage.length > 0
   const hasSegments = project.stats.total_segments > 0
 
-  // Smart-default open state: expand the section matching the current stage,
-  // collapse the rest. CollapsibleSection lets an explicit user toggle override
-  // and persist this.
+  // Smart-default open state: Sources and Pipeline are always default-open
+  // (Pipeline hosts the whole journey including Review and Train); Models
+  // opens by default once the project reaches the Train stage.
+  // CollapsibleSection lets an explicit user toggle override and persist this.
   const stage = deriveStage(project, xttsEnabled)
-  const processDefaultOpen =
-    stage === 'upload' ||
-    stage === 'speaker' ||
-    stage === 'separate' ||
-    stage === 'match' ||
-    stage === 'transcribe'
-  const reviewDefaultOpen = stage === 'review' || stage === 'export'
-  const voiceDefaultOpen = stage === 'train'
+  const modelsDefaultOpen = stage === 'train'
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
@@ -281,8 +310,8 @@ export function ProjectDashboardPage() {
       <StageStrip
         project={project}
         xttsEnabled={xttsEnabled}
-        onGoToVoice={goToVoice}
-        onGoToProcess={goToProcess}
+        onGoToTrain={goToTrain}
+        onGoToPipeline={goToPipeline}
       />
 
       {/* Next action */}
@@ -291,7 +320,7 @@ export function ProjectDashboardPage() {
         onAction={() => void refetch()}
         onOpenSettings={openSettings}
         xttsEnabled={xttsEnabled}
-        onGoToVoice={goToVoice}
+        onGoToTrain={goToTrain}
       />
 
       {/* Failed jobs — own slot so appearing doesn't reflow the card */}
@@ -303,94 +332,66 @@ export function ProjectDashboardPage() {
         />
       )}
 
-      {/* Process — sources and the pipeline stepper */}
+      {/* Sources */}
+      {hasSources && (
+        <CollapsibleSection title="Sources" sectionKey="sources" defaultOpen>
+          <div className="space-y-2">
+            <SourcesTable
+              sources={project.stats.source_coverage}
+              onReprocess={handleReprocess}
+            />
+            <UploadArea projectId={project.id} onUploaded={() => void refetch()} compact />
+            {reprocessError && (
+              <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
+                {reprocessError}
+              </p>
+            )}
+          </div>
+        </CollapsibleSection>
+      )}
+
+      {/* Pipeline — the six-step stepper */}
       {hasSources && (
         <CollapsibleSection
-          ref={processRef}
-          title="Process"
-          sectionKey="process"
-          defaultOpen={processDefaultOpen}
+          ref={pipelineRef}
+          title="Pipeline"
+          sectionKey="pipeline"
+          defaultOpen
         >
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Sources
-              </h3>
-              <SourcesTable
-                sources={project.stats.source_coverage}
-                onReprocess={handleReprocess}
-              />
-              <UploadArea projectId={project.id} onUploaded={() => void refetch()} compact />
-              {reprocessError && (
-                <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
-                  {reprocessError}
-                </p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Pipeline
-              </h3>
-              <PipelineSteps
-                project={project}
-                xttsEnabled={xttsEnabled}
-                onSaved={() => void refetch()}
-                onReprocessAll={(steps) => void handleReprocessAll(steps)}
-                onRunTranscription={() => void handleRunTranscription()}
-                onOpenCompare={() => setCompareOpen(true)}
-              />
-            </div>
-          </div>
+          <PipelineSteps
+            project={project}
+            xttsEnabled={xttsEnabled}
+            onSaved={() => void refetch()}
+            onReprocessAll={(steps) => void handleReprocessAll(steps)}
+            onRunTranscription={() => void handleRunTranscription()}
+            onOpenCompare={() => setCompareOpen(true)}
+            reviewSettingsRef={reviewSettingsRef}
+            models={models}
+            onGoToModels={goToModels}
+            onTrainStarted={() => {
+              void refetch()
+              void reloadModels()
+            }}
+            trainRowRef={trainRowRef}
+          />
         </CollapsibleSection>
       )}
 
-      {/* Review — settings, segment stats, and direct access to the review queue + export */}
-      {hasSegments && (
+      {/* Models (XTTS deployments) — trained models + voice preview */}
+      {xttsEnabled && hasSegments && (
         <CollapsibleSection
-          ref={reviewRef}
-          title="Review"
-          sectionKey="review"
-          defaultOpen={reviewDefaultOpen}
+          ref={modelsRef}
+          title="Models"
+          sectionKey="models"
+          defaultOpen={modelsDefaultOpen}
         >
-          <div className="space-y-4">
-            <div ref={settingsAnchorRef} className="space-y-2 scroll-mt-4">
-              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Settings
-              </h3>
-              <ProjectSettingsPanel
-                projectId={project.id}
-                config={project.config}
-                onSaved={() => void refetch()}
-              />
-            </div>
-            <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Segments
-              </h3>
-              <StatsPanel stats={project.stats} config={project.config} />
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Link
-                to={`/projects/${project.id}/review`}
-                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Open review
-              </Link>
-              <ExportButton project={project} onStarted={() => void refetch()} size="md" />
-            </div>
-          </div>
-        </CollapsibleSection>
-      )}
-
-      {/* Voice (XTTS-v2) — same gate as Review */}
-      {hasSegments && (
-        <CollapsibleSection
-          ref={voiceRef}
-          title="Voice"
-          sectionKey="voice"
-          defaultOpen={voiceDefaultOpen}
-        >
-          <VoiceSection project={project} refetch={() => void refetch()} />
+          <ModelsSection
+            project={project}
+            models={models}
+            modelsLoading={modelsLoading}
+            modelsError={modelsError}
+            reloadModels={() => void reloadModels()}
+          />
         </CollapsibleSection>
       )}
 

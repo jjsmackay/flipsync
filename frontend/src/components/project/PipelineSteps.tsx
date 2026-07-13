@@ -1,6 +1,8 @@
-import { useState } from 'react'
-import type { ProjectDetail } from '../../types/api'
+import { useState, type RefObject } from 'react'
+import { Link } from 'react-router-dom'
+import type { Model, ProjectDetail } from '../../types/api'
 import {
+  deriveStage,
   hasActivePipelineJob,
   stepChip,
   type PipelineStep,
@@ -11,10 +13,16 @@ import {
   DIARISATION_KNOBS,
   SEPARATION_KNOBS,
   TRANSCRIPTION_KNOBS,
+  XTTS_KNOBS,
   type Knob,
 } from '../../utils/tuning'
+import { formatDurationCoarse } from '../../utils/format'
+import { ProgressBar } from '../ui/ProgressBar'
 import { StageSettingsPanel } from './StageSettingsPanel'
+import { ProjectSettingsPanel } from './ProjectSettingsPanel'
 import { VocalsButton } from './VocalsButton'
+import { ExportButton } from '../export/ExportButton'
+import { TrainPanel } from '../voice/TrainPanel'
 
 interface PipelineStepsProps {
   project: ProjectDetail
@@ -27,6 +35,17 @@ interface PipelineStepsProps {
   onRunTranscription: () => void
   /** Open the cleanup A/B compare modal. */
   onOpenCompare: () => void
+  /** The Review row's settings disclosure — the header gear and the
+   *  adjust-threshold shortcut expand + scroll to it imperatively. */
+  reviewSettingsRef?: RefObject<HTMLDetailsElement>
+  /** Trained models (dashboard-owned) — drives the Train row's chip. */
+  models?: Model[]
+  /** Open + scroll the Models section (the Train row's Models link). */
+  onGoToModels?: () => void
+  /** A train was enqueued → parent refetches the project AND reloads models. */
+  onTrainStarted?: () => void
+  /** The Train row — the strip's Train chip and the next-action card scroll to it. */
+  trainRowRef?: RefObject<HTMLDivElement>
 }
 
 const CHIP_CLASSES: Record<StepChip['tone'], string> = {
@@ -67,7 +86,7 @@ function StepRow({
 }) {
   return (
     <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 space-y-2">
-      <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap mb-1">
         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700 text-xs font-semibold text-gray-500 dark:text-gray-400">
           {index}
         </span>
@@ -110,6 +129,18 @@ function RunButton({
 // The pipeline as four distinct rows: state, that stage's tuning knobs, and a
 // run/re-run affordance. Settings changes apply on the step's next run — the
 // Re-run button sits right there so the config → rerun link is explicit.
+// Compact count pills for the Review row — the same information as the old
+// stats grid, one line tall.
+const COUNT_CHIP_CLASSES = 'px-2 py-0.5 rounded-full text-xs font-medium'
+
+function CountChip({ value, label, tone }: { value: number; label: string; tone: string }) {
+  return (
+    <span className={`${COUNT_CHIP_CLASSES} ${tone} ${value === 0 ? 'opacity-40' : ''}`}>
+      {value} {label}
+    </span>
+  )
+}
+
 export function PipelineSteps({
   project,
   xttsEnabled,
@@ -117,6 +148,11 @@ export function PipelineSteps({
   onReprocessAll,
   onRunTranscription,
   onOpenCompare,
+  reviewSettingsRef,
+  models,
+  onGoToModels,
+  onTrainStarted,
+  trainRowRef,
 }: PipelineStepsProps) {
   const busy = hasActivePipelineJob(project)
   const sources = project.stats.source_coverage
@@ -146,15 +182,43 @@ export function PipelineSteps({
   const hasSegments = project.stats.total_segments > 0
   const vocalsReady = sources.filter((s) => VOCALS_READY_STATUSES.has(s.status))
 
-  function settingsFor(knobs: Knob[], step: PipelineStep | 'cleanup') {
+  // Review sits between transcription and cleanup in the pipeline — it's the
+  // human step, so its chip counts work owed rather than tracking a job.
+  const toReview = project.stats.pending_count + project.stats.maybe_count
+  const reviewed = project.stats.approved_count + project.stats.auto_approved_count
+  const reviewChip: StepChip =
+    toReview > 0
+      ? { label: `${toReview} to review`, tone: 'blue' }
+      : reviewed > 0
+        ? { label: 'Done', tone: 'green' }
+        : { label: 'Not run yet', tone: 'grey' }
+
+  // Train row (XTTS deployments only): job-aware first, then model state.
+  const trainActive = project.active_jobs.some(
+    (j) => j.type === 'finetune' || j.type === 'dataset_build',
+  )
+  const trainChip: StepChip = trainActive
+    ? { label: 'Running', tone: 'blue' }
+    : (models ?? []).some((m) => m.status === 'ready')
+      ? { label: 'Done', tone: 'green' }
+      : deriveStage(project, xttsEnabled) === 'train'
+        ? { label: 'Ready', tone: 'amber' }
+        : { label: 'Not run yet', tone: 'grey' }
+
+  /** A step's settings disclosure. Steps that don't track "already ran"
+   *  (cleanup applies at export; train defaults apply at the next train)
+   *  omit the step and get the plain saved message. */
+  function settingsFor(knobs: Knob[], step?: PipelineStep) {
     return (
-      <StageSettingsPanel
-        projectId={project.id}
-        config={project.config}
-        knobs={knobs}
-        ranAlready={step !== 'cleanup' && ranAlready(step)}
-        onSaved={onSaved}
-      />
+      <div className="pt-2">
+        <StageSettingsPanel
+          projectId={project.id}
+          config={project.config}
+          knobs={knobs}
+          ranAlready={step !== undefined && ranAlready(step)}
+          onSaved={onSaved}
+        />
+      </div>
     )
   }
 
@@ -232,6 +296,61 @@ export function PipelineSteps({
 
       <StepRow
         index={4}
+        title="Review"
+        chip={reviewChip}
+        actions={
+          hasSegments ? (
+            <Link
+              to={`/projects/${project.id}/review`}
+              className="px-2.5 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50"
+            >
+              Open review →
+            </Link>
+          ) : undefined
+        }
+      >
+        {hasSegments && (
+          <>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <CountChip value={project.stats.approved_count} label="approved" tone="bg-green-50 text-green-800 dark:bg-green-900/30 dark:text-green-300" />
+              <CountChip value={project.stats.auto_approved_count} label="auto-approved" tone="bg-teal-50 text-teal-800 dark:bg-teal-900/30 dark:text-teal-300" />
+              <CountChip value={project.stats.pending_count} label="pending" tone="bg-gray-100 text-gray-700 dark:bg-gray-700/60 dark:text-gray-300" />
+              <CountChip value={project.stats.maybe_count} label="maybe" tone="bg-yellow-50 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300" />
+              <CountChip value={project.stats.rejected_count} label="rejected" tone="bg-red-50 text-red-800 dark:bg-red-900/30 dark:text-red-300" />
+              <CountChip value={project.stats.below_threshold_count} label="below threshold" tone="bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400" />
+            </div>
+            <div>
+              <div className="flex items-baseline justify-between mb-1">
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                  Approved duration
+                  <span className="ml-1 font-normal text-gray-400 dark:text-gray-500">(includes auto-approved)</span>
+                </span>
+              </div>
+              <ProgressBar
+                value={
+                  project.config.target_duration_secs > 0
+                    ? (project.stats.approved_duration_secs / project.config.target_duration_secs) * 100
+                    : 0
+                }
+                label={`${formatDurationCoarse(project.stats.approved_duration_secs)} / ${formatDurationCoarse(project.config.target_duration_secs)}`}
+                color="green"
+              />
+            </div>
+          </>
+        )}
+        <details ref={reviewSettingsRef} className="group scroll-mt-4 pt-2">
+          <summary className="cursor-pointer select-none text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors list-none flex items-center gap-1">
+            <span className="inline-block transition-transform group-open:rotate-90">▸</span>
+            Settings
+          </summary>
+          <div className="mt-3">
+            <ProjectSettingsPanel projectId={project.id} config={project.config} onSaved={onSaved} />
+          </div>
+        </details>
+      </StepRow>
+
+      <StepRow
+        index={5}
         title="Clean & package"
         chip={{ label: 'Runs during export', tone: 'grey' }}
         actions={
@@ -243,8 +362,35 @@ export function PipelineSteps({
           />
         }
       >
-        {settingsFor(CLEANUP_KNOBS, 'cleanup')}
+        <ExportButton project={project} onStarted={onSaved} size="sm" />
+        {settingsFor(CLEANUP_KNOBS)}
       </StepRow>
+
+      {xttsEnabled && (
+        <div ref={trainRowRef} className="scroll-mt-4">
+          <StepRow
+            index={6}
+            title="Train"
+            chip={trainChip}
+            actions={
+              <RunButton
+                label="Models →"
+                onClick={() => onGoToModels?.()}
+                title="Trained models and voice preview"
+              />
+            }
+          >
+            <TrainPanel
+              project={project}
+              models={models ?? []}
+              onStarted={() => onTrainStarted?.()}
+            />
+            {/* Persisted fine-tune defaults (xtts_* config). The train dialog's
+                Advanced fields prefill from these; edits there are per-run. */}
+            {settingsFor(XTTS_KNOBS)}
+          </StepRow>
+        </div>
+      )}
     </div>
   )
 }

@@ -96,7 +96,6 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
   }
 
   const approvedDuration = project.stats.approved_duration_secs
-  const progressValue = (approvedDuration / TRAIN_TARGET_SECS) * 100
 
   const activeJob =
     project.active_jobs.find((j) => j.type === 'finetune') ??
@@ -152,22 +151,22 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
     )
   }
 
+  // Rendered inside the pipeline's Train step row — no card wrapper of its own.
+  // Approved-duration progress lives on the Review row; only the training-
+  // specific thresholds (300 s minimum, 30 min recommended) are surfaced here.
   return (
-    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
-      <div>
-        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Approved audio for training</p>
-        <ProgressBar
-          value={progressValue}
-          label={`${formatDuration(approvedDuration)} / ${formatDuration(TRAIN_TARGET_SECS)}`}
-          color="green"
-        />
-      </div>
-
+    <div className="space-y-3">
       {!confirming ? (
         <>
           <button
             type="button"
-            onClick={() => setConfirming(true)}
+            onClick={() => {
+              // Reseed from config on every open: defaults saved via the Train
+              // settings disclosure since mount must not read as stale per-run
+              // overrides (changedValues compares against the CURRENT config).
+              setAdvancedValues(configValues(project.config, XTTS_KNOBS))
+              setConfirming(true)
+            }}
             disabled={reviewedBlocked}
             className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -178,7 +177,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
           )}
         </>
       ) : (
-        <div className="space-y-3 border-t border-gray-100 dark:border-gray-700 pt-3">
+        <div className="space-y-3">
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Training data</legend>
             <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">

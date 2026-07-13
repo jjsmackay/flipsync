@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { PipelineSteps } from './PipelineSteps'
 import { TUNING_DEFAULTS } from '../../utils/tuning'
 import type { ProjectDetail, SourceStatus, JobSummary } from '../../types/api'
@@ -70,6 +71,7 @@ function renderSteps(
   }> = {},
 ) {
   render(
+    <MemoryRouter>
     <PipelineSteps
       project={project}
       xttsEnabled={false}
@@ -77,20 +79,64 @@ function renderSteps(
       onReprocessAll={handlers.onReprocessAll ?? (() => {})}
       onRunTranscription={handlers.onRunTranscription ?? (() => {})}
       onOpenCompare={handlers.onOpenCompare ?? (() => {})}
-    />,
+    />
+    </MemoryRouter>,
   )
 }
 
 describe('PipelineSteps', () => {
-  it('renders the four step rows with status chips', () => {
+  it('renders the five step rows with status chips', () => {
     renderSteps(makeProject({}))
     expect(screen.getByText('Separate vocals')).toBeInTheDocument()
     expect(screen.getByText('Match speaker')).toBeInTheDocument()
     expect(screen.getByText('Transcribe')).toBeInTheDocument()
+    expect(screen.getByText('Review')).toBeInTheDocument()
     expect(screen.getByText('Clean & package')).toBeInTheDocument()
-    // Complete project in review: all pipeline steps read Done.
+    // Complete project mid-review: the machine steps read Done, the Review
+    // row counts the work owed.
     expect(screen.getAllByText('Done')).toHaveLength(3)
+    expect(screen.getByText('10 to review')).toBeInTheDocument()
     expect(screen.getByText('Runs during export')).toBeInTheDocument()
+  })
+
+  it('shows segment count chips and duration in the Review row', () => {
+    const p = makeProject({})
+    p.stats.approved_count = 3
+    p.stats.rejected_count = 1
+    renderSteps(p)
+    expect(screen.getByText('3 approved')).toBeInTheDocument()
+    expect(screen.getByText('10 pending')).toBeInTheDocument()
+    expect(screen.getByText('1 rejected')).toBeInTheDocument()
+    expect(screen.getByText(/Approved duration/)).toBeInTheDocument()
+  })
+
+  it('holds the review thresholds in the Review row settings disclosure', () => {
+    renderSteps(makeProject({}))
+    // ProjectSettingsPanel's match-threshold slider renders inside the row.
+    expect(screen.getByLabelText(/Match threshold/)).toBeInTheDocument()
+  })
+
+  it('puts the export flow on the Clean & package row', () => {
+    renderSteps(makeProject({}))
+    expect(screen.getByRole('button', { name: /Export dataset/ })).toBeInTheDocument()
+  })
+
+  it('links the Review row to the review queue', () => {
+    renderSteps(makeProject({}))
+    expect(screen.getByRole('link', { name: 'Open review →' })).toHaveAttribute(
+      'href',
+      '/projects/p1/review',
+    )
+  })
+
+  it('marks the Review row Done once nothing is left to review', () => {
+    const p = makeProject({ totalSegments: 0 })
+    p.stats.pending_count = 0
+    p.stats.maybe_count = 0
+    p.stats.approved_count = 6
+    p.stats.total_segments = 6
+    renderSteps(p)
+    expect(screen.getAllByText('Done')).toHaveLength(4)
   })
 
   it('shows Running on the active step', () => {
@@ -151,6 +197,53 @@ describe('PipelineSteps', () => {
   it('disables Compare… when there are no segments', () => {
     renderSteps(makeProject({ sourceStatuses: ['separation_pending'], totalSegments: 0 }))
     expect(screen.getByRole('button', { name: 'Compare…' })).toBeDisabled()
+  })
+
+  it('hides the Train row when XTTS is disabled', () => {
+    renderSteps(makeProject({}))
+    expect(screen.queryByText('Train')).not.toBeInTheDocument()
+  })
+
+  it('shows the Train row with a model-aware chip when XTTS is enabled', () => {
+    render(
+      <MemoryRouter>
+        <PipelineSteps
+          project={makeProject({})}
+          xttsEnabled={true}
+          onSaved={() => {}}
+          onReprocessAll={() => {}}
+          onRunTranscription={() => {}}
+          onOpenCompare={() => {}}
+          models={[{ status: 'ready' } as never]}
+          onGoToModels={() => {}}
+        />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Train')).toBeInTheDocument()
+    // ready model → Done (4th Done: three machine steps + train; review shows a count)
+    expect(screen.getAllByText('Done')).toHaveLength(4)
+    // The train affordance itself lives on the row (TrainPanel), with a link
+    // out to the models/preview section.
+    expect(screen.getByRole('button', { name: 'Train voice model' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Models →' })).toBeInTheDocument()
+  })
+
+  it('marks the Train row Running while a finetune job is active', () => {
+    render(
+      <MemoryRouter>
+        <PipelineSteps
+          project={makeProject({ activeJobs: [{ type: 'finetune' }] })}
+          xttsEnabled={true}
+          onSaved={() => {}}
+          onReprocessAll={() => {}}
+          onRunTranscription={() => {}}
+          onOpenCompare={() => {}}
+          models={[]}
+          onGoToModels={() => {}}
+        />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Running')).toBeInTheDocument()
   })
 
   it('shows vocals players only for sources past separation', () => {

@@ -91,4 +91,21 @@ describe('TrainPanel advanced params', () => {
     openAdvanced()
     expect(screen.getByLabelText('Epochs')).toHaveValue(42)
   })
+
+  it('reseeds from config on confirm open, so saved defaults are not sent as stale overrides', async () => {
+    // Mount with the default config, then update it (the Train settings
+    // disclosure PATCHed it and the poll refetched) BEFORE opening confirm.
+    const { rerender } = render(
+      <TrainPanel project={makeProject()} models={[]} onStarted={vi.fn()} />,
+    )
+    rerender(<TrainPanel project={makeProject({ xttsEpochs: 25 })} models={[]} onStarted={vi.fn()} />)
+    openConfirm()
+    openAdvanced()
+    expect(screen.getByLabelText('Epochs')).toHaveValue(25)
+    // Untouched → matches the current config → no per-run override sent.
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' }))
+    await waitFor(() => expect(createModel).toHaveBeenCalled())
+    const [, body] = vi.mocked(createModel).mock.calls[0]
+    expect(body).not.toHaveProperty('params')
+  })
 })

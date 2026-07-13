@@ -5,10 +5,10 @@ import { stagesFor, STAGE_LABELS, stageStates, type Stage, type StageState } fro
 interface StageStripProps {
   project: ProjectDetail
   xttsEnabled: boolean
-  /** Open + scroll to the Voice section (the Train chip target). */
-  onGoToVoice: () => void
-  /** Open + scroll to the Process section (the pipeline chips' target). */
-  onGoToProcess?: () => void
+  /** Open + scroll to the pipeline Train row (the Train chip target). */
+  onGoToTrain: () => void
+  /** Open + scroll to the Pipeline section (the pipeline chips' target). */
+  onGoToPipeline?: () => void
 }
 
 const PIPELINE_CHIP_STAGES = new Set<Stage>(['separate', 'match', 'transcribe'])
@@ -49,7 +49,7 @@ const CHIP_TEXT: Record<StageState, string> = {
   upcoming: 'text-gray-400 dark:text-gray-500',
 }
 
-export function StageStrip({ project, xttsEnabled, onGoToVoice, onGoToProcess }: StageStripProps) {
+export function StageStrip({ project, xttsEnabled, onGoToTrain, onGoToPipeline }: StageStripProps) {
   const states = stageStates(project, xttsEnabled)
   const stages = stagesFor(xttsEnabled)
   const reviewClickable = project.stats.total_segments > 0
@@ -77,19 +77,19 @@ export function StageStrip({ project, xttsEnabled, onGoToVoice, onGoToProcess }:
       return (
         <button
           type="button"
-          onClick={onGoToVoice}
+          onClick={onGoToTrain}
           className="hover:opacity-75 transition-opacity"
-          title="Go to the voice training section"
+          title="Go to the Train step"
         >
           {inner}
         </button>
       )
     }
-    if (PIPELINE_CHIP_STAGES.has(stage) && onGoToProcess && hasSources) {
+    if (PIPELINE_CHIP_STAGES.has(stage) && onGoToPipeline && hasSources) {
       return (
         <button
           type="button"
-          onClick={onGoToProcess}
+          onClick={onGoToPipeline}
           className="hover:opacity-75 transition-opacity"
           title="Go to the pipeline steps"
         >

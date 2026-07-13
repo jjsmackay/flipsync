@@ -26,8 +26,8 @@ export function NextActionCard({
   onAction,
   onOpenSettings,
   xttsEnabled = false,
-  onGoToVoice,
-}: NextActionCardProps & { xttsEnabled?: boolean; onGoToVoice?: () => void }) {
+  onGoToTrain,
+}: NextActionCardProps & { xttsEnabled?: boolean; onGoToTrain?: () => void }) {
   const stage = deriveStage(project, xttsEnabled)
 
   return (
@@ -45,7 +45,7 @@ export function NextActionCard({
         )}
         {stage === 'export' && <ExportStage project={project} onAction={onAction} />}
         {stage === 'train' && (
-          <TrainStage project={project} onGoToVoice={onGoToVoice ?? (() => {})} />
+          <TrainStage project={project} onGoToTrain={onGoToTrain ?? (() => {})} />
         )}
       </div>
     </div>
@@ -270,14 +270,14 @@ function ExportStage({ project, onAction }: NextActionCardProps) {
 }
 
 // Terminal stage when XTTS is deployed. Kept thin — the real controls (data
-// mode, thresholds, progress) live in the Voice section's TrainPanel; this just
+// mode, thresholds, progress) live on the pipeline's Train row; this just
 // guides the user there.
 function TrainStage({
   project,
-  onGoToVoice,
+  onGoToTrain,
 }: {
   project: ProjectDetail
-  onGoToVoice: () => void
+  onGoToTrain: () => void
 }) {
   const approved = project.stats.approved_duration_secs
   return (
@@ -288,7 +288,7 @@ function TrainStage({
       />
       <button
         type="button"
-        onClick={onGoToVoice}
+        onClick={onGoToTrain}
         className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg
           hover:bg-blue-700 transition-colors"
       >
