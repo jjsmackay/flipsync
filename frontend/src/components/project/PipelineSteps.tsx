@@ -86,7 +86,7 @@ function StepRow({
 }) {
   return (
     <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 space-y-2">
-      <div className="flex items-center gap-3 flex-wrap mb-1">
+      <div className="flex items-center gap-3 flex-wrap mb-3">
         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-700 text-xs font-semibold text-gray-500 dark:text-gray-400">
           {index}
         </span>

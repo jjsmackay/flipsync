@@ -55,7 +55,7 @@ export const SEPARATION_KNOBS: Knob[] = [
     key: 'demucs_model',
     label: 'Separation model',
     options: DEMUCS_MODELS,
-    hint: 'htdemucs_ft is the fine-tuned default; bs_roformer is the strongest (slower, separate weights); mdx_extra is the fallback.',
+    hint: 'htdemucs_ft is the fine-tuned default. bs_roformer separates best but runs slower and downloads its own weights. mdx_extra is the fallback.',
   },
   {
     kind: 'number',
@@ -64,13 +64,29 @@ export const SEPARATION_KNOBS: Knob[] = [
     min: 0,
     max: 10,
     step: 1,
-    hint: 'Extra augmentation passes — cleaner separation at N+1× the runtime.',
+    hint: 'Runs separation again on time-shifted copies and averages them. Cleaner vocals at N+1 times the runtime.',
   },
 ]
 
 export const DIARISATION_KNOBS: Knob[] = [
-  { kind: 'number', key: 'diar_min_speakers', label: 'Min speakers', min: 1, max: 20, step: 1 },
-  { kind: 'number', key: 'diar_max_speakers', label: 'Max speakers', min: 1, max: 20, step: 1 },
+  {
+    kind: 'number',
+    key: 'diar_min_speakers',
+    label: 'Min speakers',
+    min: 1,
+    max: 20,
+    step: 1,
+    hint: 'The fewest voices diarisation may find. Raise it if two people keep merging into one.',
+  },
+  {
+    kind: 'number',
+    key: 'diar_max_speakers',
+    label: 'Max speakers',
+    min: 1,
+    max: 20,
+    step: 1,
+    hint: 'The most voices diarisation may find. Lower it if one person keeps splitting in two.',
+  },
   {
     kind: 'number',
     key: 'diar_min_segment_duration',
@@ -78,7 +94,7 @@ export const DIARISATION_KNOBS: Knob[] = [
     min: 0.1,
     max: 30,
     step: 0.1,
-    hint: 'Speaker turns shorter than this are dropped.',
+    hint: 'Drops speaker turns shorter than this. Raise it to skip grunts and one-word replies.',
   },
 ]
 
@@ -90,14 +106,14 @@ export const TRANSCRIPTION_KNOBS: Knob[] = [
     min: 1,
     max: 64,
     step: 1,
-    hint: 'Segments transcribed concurrently — reduce if the GPU runs out of memory.',
+    hint: 'How many segments transcribe at once. Reduce it if the GPU runs out of memory.',
   },
   {
     kind: 'select',
     key: 'whisper_compute_type',
     label: 'Precision',
     options: WHISPER_COMPUTE_TYPES,
-    hint: 'A lighter precision (e.g. int8_float16) cuts VRAM on a constrained GPU.',
+    hint: 'Lighter precisions like int8_float16 cut VRAM use on a constrained GPU.',
   },
   {
     kind: 'number',
@@ -106,19 +122,19 @@ export const TRANSCRIPTION_KNOBS: Knob[] = [
     min: 1,
     max: 10,
     step: 1,
-    hint: 'Wider beams are slightly more accurate and slower.',
+    hint: 'How many transcript candidates whisper weighs per step. Wider beams gain accuracy and cost time.',
   },
   {
     kind: 'checkbox',
     key: 'whisper_vad_filter',
     label: 'VAD filter',
-    hint: 'Drop non-speech before decoding — helps if transcripts hallucinate on music or silence.',
+    hint: 'Drops non-speech before decoding. Turn it on if transcripts hallucinate over music or silence.',
   },
   {
     kind: 'checkbox',
     key: 'align_words',
     label: 'Align words',
-    hint: 'Forced-alignment pass that refines word timestamps before sentence re-segmentation. Timestamps only — transcripts unaffected.',
+    hint: 'Refines word timestamps with a forced-alignment pass before sentence re-segmentation. Transcripts stay untouched.',
   },
 ]
 
@@ -130,7 +146,7 @@ export const CLEANUP_KNOBS: Knob[] = [
     min: -70,
     max: -5,
     step: 0.5,
-    hint: 'Normalisation target. −23 is broadcast standard; higher (e.g. −19) is louder.',
+    hint: 'Normalisation target. −23 is broadcast standard; −19 comes out louder.',
   },
   {
     kind: 'number',
@@ -139,7 +155,7 @@ export const CLEANUP_KNOBS: Knob[] = [
     min: 0,
     max: 1000,
     step: 5,
-    hint: 'Cuts rumble below this frequency. 0 disables.',
+    hint: 'Cuts rumble below this frequency. 0 disables the filter.',
   },
   {
     kind: 'number',
@@ -148,7 +164,7 @@ export const CLEANUP_KNOBS: Knob[] = [
     min: -90,
     max: 0,
     step: 1,
-    hint: 'Audio quieter than this counts as silence for edge trimming.',
+    hint: 'Audio quieter than this counts as silence when trimming segment edges.',
   },
   {
     kind: 'number',
@@ -157,12 +173,20 @@ export const CLEANUP_KNOBS: Knob[] = [
     min: 0,
     max: 10,
     step: 0.05,
-    hint: 'Silence shorter than this is kept.',
+    hint: 'Silence must last this long before trimming touches it. Shorter gaps survive.',
   },
 ]
 
 export const XTTS_KNOBS: Knob[] = [
-  { kind: 'number', key: 'xtts_epochs', label: 'Epochs', min: 1, max: 200, step: 1 },
+  {
+    kind: 'number',
+    key: 'xtts_epochs',
+    label: 'Epochs',
+    min: 1,
+    max: 200,
+    step: 1,
+    hint: 'Full passes over the dataset. More epochs fit the voice tighter; too many overfit a small dataset.',
+  },
   {
     kind: 'number',
     key: 'xtts_batch_size',
@@ -170,9 +194,17 @@ export const XTTS_KNOBS: Knob[] = [
     min: 1,
     max: 64,
     step: 1,
-    hint: 'Reduce if fine-tuning runs out of GPU memory.',
+    hint: 'Samples per training step. Reduce it if fine-tuning runs out of GPU memory.',
   },
-  { kind: 'number', key: 'xtts_grad_accum', label: 'Grad accum', min: 1, max: 64, step: 1 },
+  {
+    kind: 'number',
+    key: 'xtts_grad_accum',
+    label: 'Grad accum',
+    min: 1,
+    max: 64,
+    step: 1,
+    hint: 'Accumulates gradients across this many steps to mimic a larger batch without the VRAM cost.',
+  },
   {
     kind: 'number',
     key: 'xtts_learning_rate',
@@ -180,6 +212,7 @@ export const XTTS_KNOBS: Knob[] = [
     min: 1e-7,
     max: 1,
     step: 1e-6,
+    hint: 'How far each step moves the model. Lower is safer; higher trains faster and can destabilise.',
   },
 ]
 
