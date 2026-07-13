@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { SourceCoverage } from '../../types/api'
 import { StatusBadge } from '../ui/StatusBadge'
 
@@ -13,7 +14,31 @@ const REPROCESS_ACTIONS: { label: string; steps: string[] }[] = [
 ]
 
 export function SourcesTable({ sources, onReprocess }: SourcesTableProps) {
-  const [menuFor, setMenuFor] = useState<string | null>(null)
+  // The menu is portalled to the body with fixed positioning: rendering it in
+  // the table's overflow-x-auto wrapper made it a scroll container (a stray
+  // slider) and clipped the dropdown. `menu` holds the open row + its anchor.
+  const [menu, setMenu] = useState<{ sourceId: string; top: number; right: number } | null>(null)
+
+  // A fixed-positioned menu doesn't follow the page, so close it on scroll/resize.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [menu])
+
+  function toggleMenu(sourceId: string, btn: HTMLElement) {
+    if (menu?.sourceId === sourceId) {
+      setMenu(null)
+      return
+    }
+    const r = btn.getBoundingClientRect()
+    setMenu({ sourceId, top: r.bottom + 4, right: window.innerWidth - r.right })
+  }
 
   if (sources.length === 0) {
     return (
@@ -71,23 +96,27 @@ export function SourcesTable({ sources, onReprocess }: SourcesTableProps) {
                 </td>
                 {onReprocess && (
                   <td className="py-2 text-right">
-                    <div className="relative inline-block">
-                      <button
-                        onClick={() => setMenuFor(menuFor === src.source_id ? null : src.source_id)}
-                        aria-label={`Actions for ${src.filename}`}
-                        className="px-2 py-1 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-                      >
-                        ⋯
-                      </button>
-                      {menuFor === src.source_id && (
+                    <button
+                      onClick={(e) => toggleMenu(src.source_id, e.currentTarget)}
+                      aria-label={`Actions for ${src.filename}`}
+                      aria-expanded={menu?.sourceId === src.source_id}
+                      className="px-2 py-1 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+                    >
+                      ⋯
+                    </button>
+                    {menu?.sourceId === src.source_id &&
+                      createPortal(
                         <>
-                          <div className="fixed inset-0 z-10" onClick={() => setMenuFor(null)} />
-                          <div className="absolute right-0 z-20 mt-1 w-60 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1 text-left">
+                          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} />
+                          <div
+                            className="fixed z-50 w-60 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg py-1 text-left"
+                            style={{ top: menu.top, right: menu.right }}
+                          >
                             {REPROCESS_ACTIONS.map((action) => (
                               <button
                                 key={action.label}
                                 onClick={() => {
-                                  setMenuFor(null)
+                                  setMenu(null)
                                   onReprocess(src.source_id, action.steps)
                                 }}
                                 className="block w-full px-3 py-2 text-sm text-left text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
@@ -96,9 +125,9 @@ export function SourcesTable({ sources, onReprocess }: SourcesTableProps) {
                               </button>
                             ))}
                           </div>
-                        </>
+                        </>,
+                        document.body,
                       )}
-                    </div>
                   </td>
                 )}
               </tr>

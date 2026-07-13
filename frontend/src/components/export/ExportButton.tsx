@@ -10,6 +10,12 @@ interface ExportButtonProps {
   project: ProjectDetail
   /** Called right after export is triggered so the parent can refetch immediately. */
   onStarted?: () => void
+  /**
+   * Button sizing. 'sm' (default) is the compact style for the review-queue
+   * header and the guided card; 'md' matches the dashboard's primary action
+   * buttons (e.g. the sibling "Open review" link).
+   */
+  size?: 'sm' | 'md'
 }
 
 interface ExportCounts {
@@ -17,7 +23,13 @@ interface ExportCounts {
   noTranscript: number
 }
 
-export function ExportButton({ project, onStarted }: ExportButtonProps) {
+const SIZE_CLASSES: Record<'sm' | 'md', string> = {
+  sm: 'text-xs px-3 py-1.5 rounded',
+  md: 'text-sm font-medium px-4 py-2 rounded-lg',
+}
+
+export function ExportButton({ project, onStarted, size = 'sm' }: ExportButtonProps) {
+  const sizeCls = SIZE_CLASSES[size]
   const [state, setState] = useState<ExportState>(project.status === 'exported' ? 'ready' : 'idle')
   const [exportError, setExportError] = useState<string | null>(null)
   const [exportJobId, setExportJobId] = useState<string | null>(null)
@@ -104,9 +116,9 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
     return (
       <button
         disabled
-        className="text-xs px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 rounded cursor-not-allowed border border-gray-200 dark:border-gray-600"
+        className={`${sizeCls} bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed border border-gray-200 dark:border-gray-600`}
       >
-        Export (no approvals)
+        Export dataset (no approvals)
       </button>
     )
   }
@@ -115,9 +127,9 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
     return (
       <button
         onClick={() => setState('confirm')}
-        className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 border border-blue-600"
+        className={`${sizeCls} bg-blue-600 text-white hover:bg-blue-700 border border-blue-600`}
       >
-        Export ({exportCount} · {formatDuration(approvedDuration)})
+        Export dataset
       </button>
     )
   }
@@ -181,7 +193,7 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
     return (
       <button
         disabled
-        className="text-xs px-3 py-1.5 bg-blue-400 text-white rounded cursor-not-allowed border border-blue-400"
+        className={`${sizeCls} bg-blue-400 text-white cursor-not-allowed border border-blue-400`}
       >
         Exporting…
       </button>
@@ -193,7 +205,7 @@ export function ExportButton({ project, onStarted }: ExportButtonProps) {
     <a
       href={getExportDownloadUrl(project.id)}
       download
-      className="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 border border-green-600 no-underline"
+      className={`${sizeCls} bg-green-600 text-white hover:bg-green-700 border border-green-600 no-underline`}
     >
       ↓ Download export
     </a>

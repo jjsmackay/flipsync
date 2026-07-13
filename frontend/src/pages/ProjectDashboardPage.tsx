@@ -18,6 +18,7 @@ import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel
 import { StageStrip } from '../components/project/StageStrip'
 import { NextActionCard } from '../components/project/NextActionCard'
 import { SourcesTable } from '../components/project/SourcesTable'
+import { TranscribeSettingsPanel } from '../components/project/TranscribeSettingsPanel'
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { CollapsibleSection, type CollapsibleSectionHandle } from '../components/ui/CollapsibleSection'
@@ -65,7 +66,8 @@ export function ProjectDashboardPage() {
   const [reprocessConfirm, setReprocessConfirm] = useState<ReprocessConfirm | null>(null)
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
   const xttsEnabled = useXttsEnabled()
-  const settingsRef = useRef<CollapsibleSectionHandle>(null)
+  const reviewRef = useRef<CollapsibleSectionHandle>(null)
+  const settingsAnchorRef = useRef<HTMLDivElement>(null)
   const voiceRef = useRef<CollapsibleSectionHandle>(null)
 
   function openAndScroll(handle: CollapsibleSectionHandle | null) {
@@ -74,8 +76,11 @@ export function ProjectDashboardPage() {
     requestAnimationFrame(() => handle?.el?.scrollIntoView({ behavior: 'smooth' }))
   }
 
+  // Settings now lives as a subheading inside the Review section — open Review,
+  // then scroll to the Settings block within it.
   function openSettings() {
-    openAndScroll(settingsRef.current)
+    reviewRef.current?.open()
+    requestAnimationFrame(() => settingsAnchorRef.current?.scrollIntoView({ behavior: 'smooth' }))
   }
 
   function goToVoice() {
@@ -174,7 +179,7 @@ export function ProjectDashboardPage() {
   // collapse the rest. CollapsibleSection lets an explicit user toggle override
   // and persist this.
   const stage = deriveStage(project, xttsEnabled)
-  const sourcesDefaultOpen = stage === 'upload' || stage === 'speaker' || stage === 'process'
+  const processDefaultOpen = stage === 'upload' || stage === 'speaker' || stage === 'process'
   const reviewDefaultOpen = stage === 'review' || stage === 'export'
   const voiceDefaultOpen = stage === 'train'
 
@@ -195,14 +200,16 @@ export function ProjectDashboardPage() {
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           <ThemeToggle />
-          <button
-            onClick={openSettings}
-            aria-label="Project settings"
-            title="Project settings"
-            className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-          >
-            ⚙
-          </button>
+          {hasSegments && (
+            <button
+              onClick={openSettings}
+              aria-label="Project settings"
+              title="Project settings"
+              className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              ⚙
+            </button>
+          )}
         </div>
       </div>
 
@@ -227,28 +234,58 @@ export function ProjectDashboardPage() {
         />
       )}
 
-      {/* Sources */}
+      {/* Process — sources and transcription settings */}
       {hasSources && (
-        <CollapsibleSection title="Sources" sectionKey="sources" defaultOpen={sourcesDefaultOpen}>
-          <SourcesTable
-            sources={project.stats.source_coverage}
-            onReprocess={handleReprocess}
-          />
-          <div className="mt-3">
-            <UploadArea projectId={project.id} onUploaded={() => void refetch()} compact />
+        <CollapsibleSection title="Process" sectionKey="process" defaultOpen={processDefaultOpen}>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                Sources
+              </h3>
+              <SourcesTable
+                sources={project.stats.source_coverage}
+                onReprocess={handleReprocess}
+              />
+              <UploadArea projectId={project.id} onUploaded={() => void refetch()} compact />
+              {reprocessError && (
+                <p className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
+                  {reprocessError}
+                </p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                Transcribe
+              </h3>
+              <TranscribeSettingsPanel
+                projectId={project.id}
+                config={project.config}
+                onSaved={() => void refetch()}
+              />
+            </div>
           </div>
-          {reprocessError && (
-            <p className="mt-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-3 py-2">
-              {reprocessError}
-            </p>
-          )}
         </CollapsibleSection>
       )}
 
-      {/* Review — segment stats plus direct access to the review queue and export */}
+      {/* Review — settings, segment stats, and direct access to the review queue + export */}
       {hasSegments && (
-        <CollapsibleSection title="Review" sectionKey="review" defaultOpen={reviewDefaultOpen}>
+        <CollapsibleSection
+          ref={reviewRef}
+          title="Review"
+          sectionKey="review"
+          defaultOpen={reviewDefaultOpen}
+        >
           <div className="space-y-4">
+            <div ref={settingsAnchorRef} className="space-y-2 scroll-mt-4">
+              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                Settings
+              </h3>
+              <ProjectSettingsPanel
+                projectId={project.id}
+                config={project.config}
+                onSaved={() => void refetch()}
+              />
+            </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                 Segments
@@ -262,7 +299,7 @@ export function ProjectDashboardPage() {
               >
                 Open review
               </Link>
-              <ExportButton project={project} onStarted={() => void refetch()} />
+              <ExportButton project={project} onStarted={() => void refetch()} size="md" />
             </div>
           </div>
         </CollapsibleSection>
@@ -279,15 +316,6 @@ export function ProjectDashboardPage() {
           <VoiceSection project={project} refetch={() => void refetch()} />
         </CollapsibleSection>
       )}
-
-      {/* Settings — collapsed by default */}
-      <CollapsibleSection ref={settingsRef} title="Settings" sectionKey="settings" defaultOpen={false}>
-        <ProjectSettingsPanel
-          projectId={project.id}
-          config={project.config}
-          onSaved={() => void refetch()}
-        />
-      </CollapsibleSection>
 
       {/* Reprocess confirmation */}
       {reprocessConfirm && (
