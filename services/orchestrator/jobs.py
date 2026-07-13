@@ -334,9 +334,34 @@ def _fail_job(project_id: str, job_id: str, error: str) -> None:
         (error, _now(), job_id),
     )
     conn.commit()
+    _fail_linked_model(conn, project_id, job_id, error)
     # Every failure path recomputes project status so a failed job can't leave
     # the project stuck in 'processing'.
     _recompute_project_status(project_id)
+
+
+def _fail_linked_model(conn, project_id: str, job_id: str, error: str) -> None:
+    """A failed dataset_build/finetune must never strand its model at
+    'pending'/'training' — that state is unrecoverable (POST /models 409s,
+    DELETE 409s, no cancel endpoint) and the UI reads it as queued forever.
+    The handlers fail the model on the paths they can see; this covers the
+    ones they can't (the runner's catch-all, the service-unavailable gate).
+    Scoped to the two model-producing job types: a failed preview also
+    carries model_id but must not touch its ready model."""
+    row = conn.execute(
+        "SELECT type, params FROM jobs WHERE id=?", (job_id,)
+    ).fetchone()
+    if row is None or row["type"] not in ("dataset_build", "finetune"):
+        return
+    model_id = (json.loads(row["params"] or "{}")).get("model_id")
+    if not model_id:
+        return
+    stranded = conn.execute(
+        "SELECT 1 FROM models WHERE id=? AND status IN ('pending','training')",
+        (model_id,),
+    ).fetchone()
+    if stranded:
+        _fail_model(conn, model_id, error)
 
 
 def _fail_model(conn, model_id: str, msg: str) -> None:

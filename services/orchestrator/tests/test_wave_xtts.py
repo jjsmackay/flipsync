@@ -481,6 +481,59 @@ class TestFinetuneHandler:
         assert m["status"] == "failed"
         assert "insufficient_vram" in m["error"]
 
+    def test_poll_exception_fails_model_not_just_job(self, client, project, isolated_data_dir):
+        """The 2026-07-14 incident: xtts went down mid-run (stack redeploy), the
+        status poll raised ConnectError, and the catch-all failed the job but left
+        the model wedged at 'training' — unrecoverable (POST/DELETE 409, no cancel)."""
+        import db
+        import httpx
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="pending")
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            raise httpx.ConnectError("All connection attempts failed")
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            job_id = _enqueue_and_run(project, "finetune",
+                                      params={"model_id": model_id, "params": {}})
+
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "failed"
+        assert "connection" in m["error"].lower()
+
+    def test_preview_failure_leaves_ready_model_untouched(self, client, project, isolated_data_dir, monkeypatch):
+        """The failed-job → fail-model invariant is scoped to dataset_build and
+        finetune: a preview blowing up must not fail the ready model it used."""
+        import db
+        import httpx
+        import jobs
+        # Shrink the submit retry budget so the ConnectError fails fast.
+        monkeypatch.setattr(jobs, "_SUBMIT_RETRY_BASE_SECS", 0.01)
+        monkeypatch.setattr(jobs, "_SUBMIT_RETRY_MAX_SECS", 0.02)
+        monkeypatch.setattr(jobs, "_SUBMIT_RETRY_TIMEOUT_SECS", 0.1)
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="ready",
+                                 checkpoint_dir="models/x")
+        _set_reference(conn, project, isolated_data_dir / "projects" / project)
+
+        async def mock_submit(service, payload):
+            raise httpx.ConnectError("All connection attempts failed")
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)):
+            job_id = _enqueue_and_run(project, "preview",
+                                      params={"model_id": model_id, "text": "hi"})
+
+        job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+        m = conn.execute("SELECT status FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "ready"
+
     def test_dataset_build_failed_first_fails_fast(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
