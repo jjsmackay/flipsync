@@ -11,6 +11,7 @@ import {
 } from '../api/client'
 import type { FailedJob } from '../types/api'
 import { retryPlan } from '../utils/retry'
+import { errorMessage } from '../utils/errors'
 import { deriveStage } from '../utils/stage'
 import { FailedJobsPanel } from '../components/project/FailedJobsPanel'
 import { StatsPanel } from '../components/project/StatsPanel'
@@ -101,7 +102,7 @@ export function ProjectDashboardPage() {
       if (err instanceof ApiError && err.error === 'would_invalidate_approvals') {
         setReprocessConfirm({ sourceId, steps, message: err.message })
       } else {
-        setReprocessError(err instanceof Error ? err.message : 'Reprocess failed')
+        setReprocessError(errorMessage(err, 'Reprocess failed'))
       }
     }
   }
@@ -114,7 +115,7 @@ export function ProjectDashboardPage() {
     try {
       await submitReprocess(sourceId, steps, true)
     } catch (err) {
-      setReprocessError(err instanceof Error ? err.message : 'Reprocess failed')
+      setReprocessError(errorMessage(err, 'Reprocess failed'))
     }
   }
 
@@ -146,7 +147,7 @@ export function ProjectDashboardPage() {
       }
       void refetch()
     } catch (err) {
-      setReprocessError(err instanceof Error ? err.message : 'Retry failed')
+      setReprocessError(errorMessage(err, 'Retry failed'))
     } finally {
       setRetryingJobId(null)
     }

@@ -11,6 +11,7 @@ import {
   uploadReference,
 } from '../../api/client'
 import { formatDuration } from '../../utils/format'
+import { errorMessage } from '../../utils/errors'
 import { jobLabel } from '../../utils/labels'
 import { usePolling } from '../../hooks/usePolling'
 import { ProgressBar } from '../ui/ProgressBar'
@@ -63,10 +64,6 @@ interface SetReferencePanelProps {
   project: ProjectDetail
   onAction: () => void
   pollIntervalMs?: number
-}
-
-function errorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback
 }
 
 function derivePhase(project: ProjectDetail): Phase {

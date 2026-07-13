@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ProjectDetail } from '../../types/api'
 import { startPipeline, continuePipeline, runTranscription } from '../../api/client'
-import { deriveStage } from '../../utils/stage'
+import { deriveStage, pipelineJobs } from '../../utils/stage'
 import { jobLabel } from '../../utils/labels'
 import { formatDuration } from '../../utils/format'
+import { errorMessage } from '../../utils/errors'
 import { ProgressBar } from '../ui/ProgressBar'
 import { UploadArea } from './UploadArea'
 import { SetReferencePanel } from './SetReferencePanel'
@@ -81,9 +82,7 @@ function ProcessStage({ project, onAction }: NextActionCardProps) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const activeJobs = project.active_jobs.filter(
-    (j) => j.type !== 'export' && j.type !== 'scout_speakers',
-  )
+  const activeJobs = pipelineJobs(project.active_jobs)
   const sources = project.stats.source_coverage
   const hasQueued = sources.some((s) => s.status === 'separation_pending')
   const gatedWithReference =
@@ -99,7 +98,7 @@ function ProcessStage({ project, onAction }: NextActionCardProps) {
       await fn(project.id)
       onAction()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Request failed')
+      setError(errorMessage(err, 'Request failed'))
     } finally {
       setLoading(false)
     }
@@ -200,7 +199,7 @@ function ReviewStage({ project, onAction, onOpenSettings }: NextActionCardProps)
       await runTranscription(project.id)
       onAction()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start transcription')
+      setError(errorMessage(err, 'Failed to start transcription'))
     } finally {
       setTranscribing(false)
     }

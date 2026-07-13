@@ -15,7 +15,6 @@ export type RetryPlan =
 
 export function retryPlan(job: FailedJob): RetryPlan | null {
   switch (job.type) {
-    case 'transcription':
     case 'transcription_bulk':
       return { kind: 'transcription' }
     case 'export':

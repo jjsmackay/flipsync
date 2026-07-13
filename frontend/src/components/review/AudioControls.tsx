@@ -1,3 +1,5 @@
+import { formatClock } from '../../utils/format'
+
 interface AudioControlsProps {
   isPlaying: boolean
   currentTime: number
@@ -9,12 +11,6 @@ interface AudioControlsProps {
 }
 
 const SPEED_OPTIONS = [0.75, 1, 1.25, 1.5]
-
-function formatTime(secs: number): string {
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
-}
 
 export function AudioControls({
   isPlaying,
@@ -49,7 +45,7 @@ export function AudioControls({
 
       {/* Time display */}
       <span className="font-mono text-xs text-gray-600 dark:text-gray-400 tabular-nums min-w-[72px]">
-        {formatTime(currentTime)} / {formatTime(duration)}
+        {formatClock(currentTime)} / {formatClock(duration)}
       </span>
 
       {/* Speed buttons */}

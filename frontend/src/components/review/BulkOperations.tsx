@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { bulkSegmentAction, getSegmentsCount } from '../../api/client'
 import type { BulkFilter, BulkSegmentRequest, SegmentStatus } from '../../types/api'
 import { ALL_SEGMENT_STATUSES } from '../../constants'
+import { errorMessage } from '../../utils/errors'
 
 type BulkAction = BulkSegmentRequest['action']
 
@@ -67,17 +68,6 @@ const PRESETS: Preset[] = [
   },
 ]
 
-const STATUS_VALUES: SegmentStatus[] = [
-  'pending',
-  'approved',
-  'auto_approved',
-  'rejected',
-  'maybe',
-  'below_threshold',
-  'clipping_warning',
-  'auto_rejected',
-]
-
 export function BulkOperations({ projectId, onApplied, sources }: BulkOperationsProps) {
   const [expanded, setExpanded] = useState(false)
   const [resultCount, setResultCount] = useState<number | null>(null)
@@ -137,7 +127,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
         .catch((err) => {
           if (!cancelled) {
             setPreviewCount(null)
-            setBulkError(err instanceof Error ? err.message : 'Preview failed')
+            setBulkError(errorMessage(err, 'Preview failed'))
           }
         })
         .finally(() => {
@@ -160,7 +150,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       setSkippedNoTranscript(result.skipped_no_transcript ?? 0)
       onApplied()
     } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
+      setBulkError(errorMessage(err, 'Bulk action failed'))
     } finally {
       setApplyingPreset(null)
     }
@@ -177,7 +167,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
       setSkippedNoTranscript(result.skipped_no_transcript ?? 0)
       onApplied()
     } catch (err) {
-      setBulkError(err instanceof Error ? err.message : 'Bulk action failed')
+      setBulkError(errorMessage(err, 'Bulk action failed'))
     } finally {
       setApplying(false)
     }
@@ -251,7 +241,7 @@ export function BulkOperations({ projectId, onApplied, sources }: BulkOperations
                   className="w-full text-sm border border-slate-300 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 rounded px-2 py-1"
                 >
                   <option value="">Any</option>
-                  {STATUS_VALUES.map(s => (
+                  {ALL_SEGMENT_STATUSES.map(s => (
                     <option key={s} value={s}>{s}</option>
                   ))}
                 </select>

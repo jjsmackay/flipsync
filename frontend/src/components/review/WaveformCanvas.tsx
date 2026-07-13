@@ -71,6 +71,15 @@ function colormap(t: number): [number, number, number] {
 export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showSpectrogram }: WaveformCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const samplesRef = useRef<Float32Array | null>(null)
+  // Rendered waveform/spectrogram cached offscreen — playback ticks several
+  // times a second and only the playhead moves, so the (expensive, FFT-heavy)
+  // base image is recomputed only when samples, mode, or theme change.
+  const baseRef = useRef<{
+    canvas: HTMLCanvasElement
+    samples: Float32Array
+    spectrogram: boolean
+    theme: string
+  } | null>(null)
   const loadingRef = useRef(false)
   // Incremented on every blob change so a slow decode from a previous segment can't
   // overwrite the current one (stale-response guard).
@@ -172,6 +181,30 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
     ctx.putImageData(image, 0, 0)
   }
 
+  function baseImage(samples: Float32Array): HTMLCanvasElement | null {
+    const cached = baseRef.current
+    if (
+      cached &&
+      cached.samples === samples &&
+      cached.spectrogram === !!showSpectrogram &&
+      cached.theme === resolved
+    ) {
+      return cached.canvas
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = CANVAS_WIDTH
+    canvas.height = CANVAS_HEIGHT
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    if (showSpectrogram) {
+      drawSpectrogram(ctx, samples)
+    } else {
+      drawWaveform(ctx, samples)
+    }
+    baseRef.current = { canvas, samples, spectrogram: !!showSpectrogram, theme: resolved }
+    return canvas
+  }
+
   function draw() {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -192,11 +225,8 @@ export function WaveformCanvas({ audioBlob, currentTime, duration, onSeek, showS
       return
     }
 
-    if (showSpectrogram) {
-      drawSpectrogram(ctx, samples)
-    } else {
-      drawWaveform(ctx, samples)
-    }
+    const base = baseImage(samples)
+    if (base) ctx.drawImage(base, 0, 0)
     drawPlayhead(ctx)
   }
 

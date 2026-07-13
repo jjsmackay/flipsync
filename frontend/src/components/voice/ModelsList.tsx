@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Model } from '../../types/api'
 import { deleteModel, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
+import { errorMessage } from '../../utils/errors'
 import { StatusBadge } from '../ui/StatusBadge'
 
 interface ModelsListProps {
@@ -34,7 +35,7 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
       if (err instanceof ApiError && err.error === 'model_training') {
         setDeleteError('Cannot delete a model while it is training.')
       } else {
-        setDeleteError(err instanceof Error ? err.message : 'Delete failed.')
+        setDeleteError(errorMessage(err, 'Delete failed.'))
       }
     } finally {
       setDeletingId(null)

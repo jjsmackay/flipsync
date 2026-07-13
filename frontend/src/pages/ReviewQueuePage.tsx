@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useFilterState } from '../hooks/useFilterState'
 import { useProjectPolling } from '../hooks/useProjectPolling'
-import { getSegments, patchSegment, ApiError } from '../api/client'
+import { getSegments, patchSegment } from '../api/client'
 import type { Segment, SegmentStatus, PaginatedSegments } from '../types/api'
 import { ALL_SEGMENT_STATUSES_CSV } from '../constants'
 import { FilterBar } from '../components/review/FilterBar'
@@ -15,6 +15,7 @@ import { ExportButton } from '../components/export/ExportButton'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { formatDuration } from '../utils/format'
 import { isWorkQueueFilter } from '../utils/reviewFilters'
+import { errorMessage } from '../utils/errors'
 
 
 export function ReviewQueuePage() {
@@ -56,7 +57,7 @@ export function ReviewQueuePage() {
       })
       .catch((err) => {
         if (!active || controller.signal.aborted) return
-        setFetchError(err instanceof Error ? err.message : 'Failed to load segments')
+        setFetchError(errorMessage(err, 'Failed to load segments'))
       })
       .finally(() => {
         if (active) setSegmentsLoading(false)
@@ -74,11 +75,8 @@ export function ReviewQueuePage() {
     if (!projectId) return
     let cancelled = false
     async function loadAll() {
-      const all: Segment[] = []
-      let page = 1
-      let pages = 1
-      do {
-        const res = await getSegments(projectId!, {
+      const fetchPage = (page: number) =>
+        getSegments(projectId!, {
           status: ALL_SEGMENT_STATUSES_CSV,
           source_id: filter.source_id || undefined,
           sort: 'start_secs',
@@ -86,12 +84,14 @@ export function ReviewQueuePage() {
           page,
           per_page: 200,
         })
-        if (cancelled) return
-        all.push(...res.segments)
-        pages = res.pagination.pages
-        page++
-      } while (page <= pages)
-      if (!cancelled) setTimelineSegments(all)
+      // Page 1 reveals the page count; fetch the rest concurrently.
+      const first = await fetchPage(1)
+      if (cancelled) return
+      const rest = await Promise.all(
+        Array.from({ length: first.pagination.pages - 1 }, (_, i) => fetchPage(i + 2)),
+      )
+      if (cancelled) return
+      setTimelineSegments([first, ...rest].flatMap(res => res.segments))
     }
     loadAll().catch(() => {
       if (!cancelled) setTimelineSegments([])
@@ -178,8 +178,7 @@ export function ReviewQueuePage() {
       setSegments(prev => prev.map(s => s.id === segment.id ? { ...s, status } : s))
       selectNext()
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Action failed'
-      setActionError(msg)
+      setActionError(errorMessage(e, 'Action failed'))
     }
   }
 
@@ -196,9 +195,7 @@ export function ReviewQueuePage() {
   // Axis spans the source: use the furthest segment end across all fetched segments.
   const timelineSpan = timelineSegments.reduce((max, s) => Math.max(max, s.end_secs), 0)
 
-  const activeTranscription = project?.active_jobs.find(
-    j => j.type === 'transcription_bulk' || j.type === 'transcription',
-  )
+  const activeTranscription = project?.active_jobs.find(j => j.type === 'transcription_bulk')
   const lowCoverage = sources.some(s => s.low_coverage_warning)
 
   // "All reviewed" completion state: the work queue (pending/maybe) is empty but the

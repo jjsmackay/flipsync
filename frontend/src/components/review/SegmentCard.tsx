@@ -1,15 +1,12 @@
 import type { Segment } from '../../types/api'
 import { ConfidenceBadge } from '../ui/ConfidenceBadge'
 import { StatusBadge } from '../ui/StatusBadge'
+import { formatSecondsPrecise } from '../../utils/format'
 
 interface SegmentCardProps {
   segment: Segment
   selected: boolean
   onClick: () => void
-}
-
-function formatDuration(secs: number): string {
-  return `${secs.toFixed(1)}s`
 }
 
 export function SegmentCard({ segment, selected, onClick }: SegmentCardProps) {
@@ -28,7 +25,7 @@ export function SegmentCard({ segment, selected, onClick }: SegmentCardProps) {
       {/* Top row: badges, duration, status dot, clipping */}
       <div className="flex items-center gap-1.5 flex-wrap">
         <ConfidenceBadge value={segment.match_confidence} />
-        <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">{formatDuration(segment.duration_secs)}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">{formatSecondsPrecise(segment.duration_secs)}</span>
         <StatusBadge status={segment.status} dot />
         {segment.clipping_warning && (
           <span title="Clipping warning" className="text-orange-500 text-xs">

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '../../types/api'
 import { createPreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
+import { errorMessage } from '../../utils/errors'
 
 interface PreviewPanelProps {
   projectId: string
@@ -108,7 +109,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
         setPreviewId(null)
         loadAudio(previewId).catch((err: unknown) => {
           if (!mountedRef.current) return
-          setError(err instanceof Error ? err.message : 'Failed to load generated audio.')
+          setError(errorMessage(err, 'Failed to load generated audio.'))
           setPhase('error')
         })
       } else if (preview.status === 'failed') {
@@ -155,7 +156,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
       if (err instanceof ApiError) {
         setError(ERROR_MESSAGES[err.error] ?? err.message)
       } else {
-        setError(err instanceof Error ? err.message : 'Failed to start synthesis.')
+        setError(errorMessage(err, 'Failed to start synthesis.'))
       }
       setPhase('error')
     }

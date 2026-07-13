@@ -7,8 +7,7 @@ function job(type: string, sourceId: string | null = 'src-1'): FailedJob {
 }
 
 describe('retryPlan', () => {
-  it('routes transcription and transcription_bulk to a full transcription run', () => {
-    expect(retryPlan(job('transcription'))).toEqual({ kind: 'transcription' })
+  it('routes transcription_bulk to a full transcription run', () => {
     expect(retryPlan(job('transcription_bulk'))).toEqual({ kind: 'transcription' })
   })
 
@@ -47,8 +46,9 @@ describe('retryPlan', () => {
     expect(retryPlan(job('diarisation', null))).toBeNull()
   })
 
-  it('returns null for unknown job types', () => {
+  it('returns null for unknown job types, including the never-emitted "transcription" type', () => {
     expect(retryPlan(job('mystery_job'))).toBeNull()
+    expect(retryPlan(job('transcription'))).toBeNull()
   })
 })
 

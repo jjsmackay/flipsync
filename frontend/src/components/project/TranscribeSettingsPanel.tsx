@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { ProjectConfig } from '../../types/api'
 import { WHISPER_COMPUTE_TYPES } from '../../types/api'
-import { patchProject, ApiError } from '../../api/client'
+import { patchProject } from '../../api/client'
+import { errorMessage } from '../../utils/errors'
 
 interface TranscribeSettingsPanelProps {
   projectId: string
@@ -35,7 +36,7 @@ export function TranscribeSettingsPanel({ projectId, config, onSaved }: Transcri
       onSaved()
       setSaved(true)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Save failed')
+      setError(errorMessage(err, 'Save failed'))
     } finally {
       setSaving(false)
     }

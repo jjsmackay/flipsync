@@ -28,6 +28,9 @@ export function usePolling<T>(
   const onDataRef = useRef(onData)
   const isMountedRef = useRef(true)
   const inFlightRef = useRef(false)
+  // Serialised form of the last payload stored in `data` — polls whose payload
+  // hasn't changed skip setData so consumers don't re-render every tick.
+  const lastJsonRef = useRef<string | null>(null)
 
   useEffect(() => {
     fetchFnRef.current = fetchFn
@@ -49,11 +52,18 @@ export function usePolling<T>(
     // overlapping requests behind the interval timer.
     if (inFlightRef.current) return
     inFlightRef.current = true
-    setIsLoading(true)
+    // isLoading marks the initial load only (all consumers gate first-render
+    // states on it); routine poll ticks don't toggle it, so a tick with an
+    // unchanged payload causes no re-render at all.
+    if (lastJsonRef.current === null) setIsLoading(true)
     try {
       const result = await fetchFnRef.current()
       if (!isMountedRef.current) return
-      setData(result)
+      const json = JSON.stringify(result)
+      if (json !== lastJsonRef.current) {
+        lastJsonRef.current = json
+        setData(result)
+      }
       setError(null)
       onDataRef.current?.(result)
     } catch (err) {
