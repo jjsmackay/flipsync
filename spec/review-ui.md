@@ -27,40 +27,47 @@ The entry point for a project, organised as a **guided stage flow**. Internal id
 
 #### Stage model
 
-Five user-facing stages: **Upload → Speaker → Process → Review → Export**. A pure function `deriveStage(project)` maps the polled project response to the single current stage, by precedence:
+Five user-facing stages. The first four are always **Upload → Speaker → Process → Review**; the terminal stage is **Export** by default, or **Train** when the XTTS voice service is deployed (see *XTTS terminal stage* below). A pure function `deriveStage(project, xttsEnabled)` maps the polled project response to the single current stage, by precedence:
 
 1. No sources → **Upload**
 2. **No reference set → Speaker.** `reference_path` is the Speaker/Process divider. The "whose voice?" prompt is the only trigger for separation, and the upload-a-clip path sets a reference *before* separation runs — so a project with sources but no reference is always still choosing a voice: the prompt, the separation run that feeds the scan, the scout scan, or picking a candidate all live in Speaker. This keeps the strip monotonic (separation no longer flips to Process ahead of the Speaker step).
-3. Reference set, active jobs other than `export` and `scout_speakers` → **Process**
+3. Reference set, active jobs other than `export`, `scout_speakers`, and the voice jobs (`dataset_build`, `finetune`, `preview`) → **Process**
 4. Reference set, any source in `uploaded`, `extracting`, `separation_pending`, `separation_running`, `diarisation_pending`, `diarisation_running`, or a failed state (`extraction_failed`, `separation_failed`, `diarisation_failed`) → **Process**
 5. `pending_count + maybe_count > 0` → **Review**
-6. Otherwise → **Export**
+6. Otherwise → **Export** (or **Train** when XTTS is enabled)
 
-Scout jobs belong to the Speaker stage and export jobs to the Export stage, so neither flips the strip to Process. Stages are not strictly linear — adding a source mid-review (a reference already exists) returns the project to Process; that is expected.
+Scout jobs belong to the Speaker stage, export jobs to Export, and voice jobs to Train, so none flips the strip to Process. Stages are not strictly linear — adding a source mid-review (a reference already exists) returns the project to Process; that is expected.
+
+##### XTTS terminal stage
+
+When the XTTS service is not deployed the flow ends at **Export**. When it *is* deployed the intended end product is a trained voice model, so the terminal stage is **Train** instead — export stays available as a button in the Review section but is no longer a stage. The frontend learns whether XTTS is present from `GET /capabilities` (`{ "xtts": bool }`, a point-in-time health probe of the profile-gated service), fetched once per dashboard load — deliberately not folded into the 3 s project poll so an absent service adds no probe latency. A resolved `true` is memoised for the session, so a momentary probe failure can't flip an enabled deployment back to Export. `stagesFor(xttsEnabled)` returns the ordered strip; `deriveStage`/`stageStates` take the same flag.
 
 #### Page layout (top to bottom)
 
 1. **Header** — project name, settings gear (expands and scrolls to the Settings section), theme toggle. No review-queue button; review is reached via the stage strip and action card.
-2. **Stage strip** — the five stages, each rendered as done (✓) / active (pulsing, jobs running) / needs-you (amber) / upcoming (dimmed). The Review chip links to the review queue once segments exist.
+2. **Stage strip** — the stages, each rendered as done (✓) / active (pulsing, jobs running) / needs-you (amber) / upcoming (dimmed). The Review chip links to the review queue once segments exist; the Train chip (XTTS deployments) opens and scrolls to the Voice section.
 3. **Next-action card** — one card, fixed slot, reserved min-height (no layout shift on the 3 s poll); content cross-fades on stage change:
    - *Upload*: full drag-and-drop upload area.
    - *Speaker*: the Set reference panel (below) — a small state machine over the pre-reference phase.
    - *Process*: active job progress with human labels; or a **Start processing** button (uploaded-clip source queued, nothing running); or **Continue processing** (reference set at the gate); or a "processing stopped" notice pointing at the failed-job alerts.
    - *Review*: "N segments ready to review" with a **Start reviewing →** link and a secondary **Transcribe segments** button.
    - *Export*: export confirmation/summary and download (export flow below).
-4. **Failed-job alerts** — only when present, own slot, error messages with retry/dismiss (sourced from `recent_failed_jobs`). Shown until dismissed or retried. Retry is job-type-aware:
+   - *Train* (XTTS deployments): a thin guide card with a **Go to training →** button that opens and scrolls to the Voice section; the training controls themselves live there, not in the card.
+
+   Sections 5–8 below are **collapsible**. The section matching the current stage is expanded by default (Sources for Upload/Speaker/Process, Review for Review/Export, Voice for Train); the rest start collapsed. An explicit toggle is remembered (per section, in `localStorage`) and overrides the default.
+4. **Failed-job alerts** — only when present, own slot, error messages with retry/dismiss (sourced from `recent_failed_jobs`). Dismissal persists across reloads (`localStorage`; the API keeps returning failed jobs, so an in-memory hide reappeared on refresh) and is pruned when a job stops being returned. Shown until dismissed or retried. Retry is job-type-aware:
    - `vocal_separation` / `diarisation` — retry goes through the same confirm flow as a manual reprocess: submit **without** `confirm`, and if the API returns 409 `would_invalidate_approvals`, surface the confirmation dialog. Never pre-confirm.
    - `scout_speakers` — retry re-runs the scout for the same source (`POST /reference/scout`), not a source reprocess.
    - `extract_audio` — no Retry button; extraction failure is terminal by design. The alert shows guidance instead: "Extraction failed — remove this video and re-upload it."
    - `transcription_segment` — retry calls the per-segment rerun endpoint when the failed job carries a segment id; if it doesn't, no Retry is shown (never a silent no-op).
-5. **Videos** (sources) — filename, human status label, speaker coverage (— until diarisation completes), per-row ⋯ menu with **Re-run from vocal separation** (`steps: ["separation", "diarisation"]`) and **Re-run speaker matching** (`steps: ["diarisation"]`), plus an inline compact **+ Add video** upload button. Hidden while the project has no sources.
-6. **Segments** (stats) — compact grid: approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target (duration includes auto-approved). Hidden until segments exist.
-7. **Voice** (v1.5, XTTS) — directly below Segments, hidden until segments exist (same gate as Segments — an empty project has nothing to train on). Three sub-panels:
+5. **Sources** — filename, human status label, speaker coverage (— until diarisation completes), per-row ⋯ menu with **Re-run from vocal separation** (`steps: ["separation", "diarisation"]`) and **Re-run speaker matching** (`steps: ["diarisation"]`), plus an inline compact **+ Add video** upload button. Hidden while the project has no sources.
+6. **Review** — hidden until segments exist. Contains a **Segments** subheading with the stats grid (approved / auto-approved / pending / maybe / rejected / below threshold counts, approved duration vs target — duration includes auto-approved), then a button row: **Open review** (→ the review queue) and **Export** (the export flow below, always present here regardless of the terminal stage).
+7. **Voice** (v1.5, XTTS) — directly below Review, hidden until segments exist (same gate as Review — an empty project has nothing to train on). Three sub-panels:
    - **Train** — approved-audio progress toward the recommended 30 min floor; a **Train voice model** button that is disabled with a visible reason while approved audio is under the 300 s dataset minimum; a confirm step choosing the dataset mode (Reviewed vs Train without review with a confidence floor). While a `dataset_build`/`finetune` job runs, a progress card (epoch/step/losses/ETA) replaces the train affordance.
    - **Models** — trained model rows: shared status badge (Queued/Training/Ready/Failed/Cancelled), dataset mode, duration/segment count/eval loss, delete with confirm (blocked while training).
    - **Preview** — one text box + conditioning source, then side-by-side zero-shot (base model) and fine-tuned columns generating the same text for A/B listening. Polling for a generating preview is bounded (~10 min) and surfaces a timeout error pointing at the failed-job alerts.
 
-   The Voice section is deliberately **outside** the NextActionCard guided flow — the single next action stays pipeline-focused (upload → speaker → process → review → export); voice training is a post-review activity entered from its own section.
+   The Voice controls live in this section, not in the NextActionCard. On XTTS deployments the guided flow's terminal **Train** card links into this section (**Go to training →**) rather than embedding the controls; on non-XTTS deployments the flow ends at Export and the Voice section is absent from the guided path entirely.
 8. **Settings** — collapsed disclosure: match threshold, auto-approve toggle and its two thresholds (`auto_approve_match_threshold`, `auto_approve_transcript_threshold`). Saving calls `PATCH /projects` and refreshes stats — threshold changes re-evaluate segment statuses synchronously, so counts move immediately.
 
 The dashboard is the place for pipeline operations and error recovery. The review queue is for segment decisions only.

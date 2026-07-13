@@ -35,6 +35,20 @@ Base URL: `http://localhost:8000`
 
 ---
 
+### Capabilities
+
+#### `GET /capabilities`
+
+Deployment-level feature flags for the frontend. Fetched once per dashboard load (not on the project poll).
+
+```json
+{ "xtts": true }
+```
+
+`xtts` is a point-in-time health probe of the profile-gated XTTS voice service (`true` iff it responds `200` to `/health`). The dashboard uses it to decide whether the terminal stage is **Train** (present) or **Export** (absent). Always `200`.
+
+---
+
 ### Projects
 
 #### `GET /projects`

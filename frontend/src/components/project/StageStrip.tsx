@@ -1,9 +1,12 @@
 import { Link } from 'react-router-dom'
 import type { ProjectDetail } from '../../types/api'
-import { STAGES, STAGE_LABELS, stageStates, type Stage, type StageState } from '../../utils/stage'
+import { stagesFor, STAGE_LABELS, stageStates, type Stage, type StageState } from '../../utils/stage'
 
 interface StageStripProps {
   project: ProjectDetail
+  xttsEnabled: boolean
+  /** Open + scroll to the Voice section (the Train chip target). */
+  onGoToVoice: () => void
 }
 
 function ChipIndicator({ state }: { state: StageState }) {
@@ -42,8 +45,9 @@ const CHIP_TEXT: Record<StageState, string> = {
   upcoming: 'text-gray-400 dark:text-gray-500',
 }
 
-export function StageStrip({ project }: StageStripProps) {
-  const states = stageStates(project)
+export function StageStrip({ project, xttsEnabled, onGoToVoice }: StageStripProps) {
+  const states = stageStates(project, xttsEnabled)
+  const stages = stagesFor(xttsEnabled)
   const reviewClickable = project.stats.total_segments > 0
 
   function chip(stage: Stage) {
@@ -64,12 +68,24 @@ export function StageStrip({ project }: StageStripProps) {
         </Link>
       )
     }
+    if (stage === 'train') {
+      return (
+        <button
+          type="button"
+          onClick={onGoToVoice}
+          className="hover:opacity-75 transition-opacity"
+          title="Go to the voice training section"
+        >
+          {inner}
+        </button>
+      )
+    }
     return inner
   }
 
   return (
     <div className="flex items-center gap-2 flex-wrap" aria-label="Project stages">
-      {STAGES.map((stage, idx) => (
+      {stages.map((stage, idx) => (
         <span key={stage} className="flex items-center gap-2">
           {idx > 0 && <span className="text-gray-300 dark:text-gray-600 select-none">—</span>}
           {chip(stage)}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FailedJob } from '../../types/api'
 import { jobLabel } from '../../utils/labels'
 import { retryPlan, retryGuidance } from '../../utils/retry'
@@ -9,6 +9,29 @@ interface FailedJobsPanelProps {
   retryingJobId?: string | null
 }
 
+// Dismissals persist across reloads: the API keeps returning failed jobs, so a
+// purely in-memory hide reappeared on refresh. This is UI dismissal state, not
+// segment state. localStorage can throw (private mode) — degrade to in-memory.
+const STORAGE_KEY = 'flipsync:dismissedFailedJobs'
+
+function readDismissed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) return new Set(JSON.parse(raw) as string[])
+  } catch {
+    /* ignore */
+  }
+  return new Set()
+}
+
+function writeDismissed(ids: Set<string>): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...ids]))
+  } catch {
+    /* ignore */
+  }
+}
+
 function formatTime(iso: string | null): string {
   if (!iso) return ''
   const d = new Date(iso)
@@ -16,9 +39,21 @@ function formatTime(iso: string | null): string {
 }
 
 export function FailedJobsPanel({ failedJobs, onRetry, retryingJobId }: FailedJobsPanelProps) {
-  // Dismissed failed jobs are hidden locally; the API keeps returning them, so this
-  // is a per-session hide (spec: shown until dismissed or retried).
-  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set())
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(readDismissed)
+
+  // Prune stored ids no longer returned by the API (retried/resolved jobs) so the
+  // list can't grow unbounded.
+  useEffect(() => {
+    const live = new Set(failedJobs.map((j) => j.id))
+    setDismissedIds((prev) => {
+      const pruned = new Set([...prev].filter((id) => live.has(id)))
+      if (pruned.size !== prev.size) {
+        writeDismissed(pruned)
+        return pruned
+      }
+      return prev
+    })
+  }, [failedJobs])
 
   const visibleFailed = failedJobs.filter((job) => !dismissedIds.has(job.id))
 
@@ -26,6 +61,7 @@ export function FailedJobsPanel({ failedJobs, onRetry, retryingJobId }: FailedJo
     setDismissedIds((prev) => {
       const next = new Set(prev)
       next.add(jobId)
+      writeDismissed(next)
       return next
     })
   }

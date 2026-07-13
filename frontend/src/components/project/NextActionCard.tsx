@@ -4,6 +4,7 @@ import type { ProjectDetail } from '../../types/api'
 import { startPipeline, continuePipeline, runTranscription } from '../../api/client'
 import { deriveStage } from '../../utils/stage'
 import { jobLabel } from '../../utils/labels'
+import { formatDuration } from '../../utils/format'
 import { ProgressBar } from '../ui/ProgressBar'
 import { UploadArea } from './UploadArea'
 import { SetReferencePanel } from './SetReferencePanel'
@@ -19,8 +20,14 @@ interface NextActionCardProps {
 
 // One card, one slot, always the same place on the page. Content follows the
 // current stage; the reserved min-height keeps the 3s poll from shifting layout.
-export function NextActionCard({ project, onAction, onOpenSettings }: NextActionCardProps) {
-  const stage = deriveStage(project)
+export function NextActionCard({
+  project,
+  onAction,
+  onOpenSettings,
+  xttsEnabled = false,
+  onGoToVoice,
+}: NextActionCardProps & { xttsEnabled?: boolean; onGoToVoice?: () => void }) {
+  const stage = deriveStage(project, xttsEnabled)
 
   return (
     <div
@@ -34,6 +41,9 @@ export function NextActionCard({ project, onAction, onOpenSettings }: NextAction
           <ReviewStage project={project} onAction={onAction} onOpenSettings={onOpenSettings} />
         )}
         {stage === 'export' && <ExportStage project={project} onAction={onAction} />}
+        {stage === 'train' && (
+          <TrainStage project={project} onGoToVoice={onGoToVoice ?? (() => {})} />
+        )}
       </div>
     </div>
   )
@@ -239,6 +249,35 @@ function ExportStage({ project, onAction }: NextActionCardProps) {
         }
       />
       <ExportButton project={project} onStarted={onAction} />
+    </div>
+  )
+}
+
+// Terminal stage when XTTS is deployed. Kept thin — the real controls (data
+// mode, thresholds, progress) live in the Voice section's TrainPanel; this just
+// guides the user there.
+function TrainStage({
+  project,
+  onGoToVoice,
+}: {
+  project: ProjectDetail
+  onGoToVoice: () => void
+}) {
+  const approved = project.stats.approved_duration_secs
+  return (
+    <div>
+      <StageHeading
+        title="Train your voice model"
+        blurb={`Fine-tune an XTTS voice from your approved segments (${formatDuration(approved)} approved so far).`}
+      />
+      <button
+        type="button"
+        onClick={onGoToVoice}
+        className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg
+          hover:bg-blue-700 transition-colors"
+      >
+        Go to training →
+      </button>
     </div>
   )
 }

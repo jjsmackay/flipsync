@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from errors import AppError, app_error_handler
 from jobs import recover_jobs, shutdown_runners
 from routers import projects, sources, reference, pipeline, segments, models, previews
-from service_client import SERVICE_URLS, check_health, close_client
+from service_client import SERVICE_URLS, check_health, close_client, is_healthy
 
 logger = logging.getLogger(__name__)
 
@@ -112,3 +112,16 @@ app.include_router(previews.router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/capabilities")
+async def capabilities():
+    """Deployment-level feature flags for the frontend.
+
+    `xtts` reflects whether the profile-gated voice service is deployed and
+    healthy — the frontend uses it to decide whether the terminal stage is Train
+    (XTTS present) or Export. Fetched once per dashboard load, deliberately not
+    folded into the polled project response so an absent XTTS adds no probe
+    latency to the 3 s poll.
+    """
+    return {"xtts": await is_healthy("xtts")}

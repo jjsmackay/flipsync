@@ -1,8 +1,10 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FailedJobsPanel } from './FailedJobsPanel'
 import type { FailedJob } from '../../types/api'
+
+const STORAGE_KEY = 'flipsync:dismissedFailedJobs'
 
 function job(overrides: Partial<FailedJob>): FailedJob {
   return {
@@ -70,5 +72,32 @@ describe('FailedJobsPanel retry gating', () => {
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1)
     const diarisationRow = screen.getByText('Matching speaker failed').closest('div')!.parentElement!
     expect(within(diarisationRow).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+})
+
+describe('FailedJobsPanel dismissal persistence', () => {
+  beforeEach(() => localStorage.clear())
+
+  it('hides a job whose id is already stored as dismissed (survives reload)', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(['job-1']))
+    const { container } = render(
+      <FailedJobsPanel failedJobs={[job({ id: 'job-1' })]} onRetry={vi.fn()} />,
+    )
+    // Only-dismissed → panel renders nothing.
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('persists a dismissal to localStorage', async () => {
+    const user = userEvent.setup()
+    render(<FailedJobsPanel failedJobs={[job({ id: 'job-1' })]} onRetry={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual(['job-1'])
+  })
+
+  it('prunes stored ids no longer present in failedJobs', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(['old-job', 'job-1']))
+    render(<FailedJobsPanel failedJobs={[job({ id: 'job-1' })]} onRetry={vi.fn()} />)
+    // 'old-job' is gone from the API's list → pruned from storage; 'job-1' kept.
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual(['job-1'])
   })
 })

@@ -71,6 +71,16 @@ function toQueryString(params: Record<string, unknown>): string {
   return '?' + entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&')
 }
 
+// ---- Capabilities ----
+
+export interface Capabilities {
+  xtts: boolean
+}
+
+export function getCapabilities(): Promise<Capabilities> {
+  return request('/capabilities')
+}
+
 // ---- Projects ----
 
 export function getProjects(): Promise<{ projects: ProjectSummary[] }> {

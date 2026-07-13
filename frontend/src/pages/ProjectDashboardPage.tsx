@@ -1,9 +1,17 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useProjectPolling } from '../hooks/useProjectPolling'
-import { reprocessSource, runTranscription, triggerExport, startScout, ApiError } from '../api/client'
+import {
+  reprocessSource,
+  runTranscription,
+  triggerExport,
+  startScout,
+  getCapabilities,
+  ApiError,
+} from '../api/client'
 import type { FailedJob } from '../types/api'
 import { retryPlan } from '../utils/retry'
+import { deriveStage } from '../utils/stage'
 import { FailedJobsPanel } from '../components/project/FailedJobsPanel'
 import { StatsPanel } from '../components/project/StatsPanel'
 import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel'
@@ -12,15 +20,35 @@ import { NextActionCard } from '../components/project/NextActionCard'
 import { SourcesTable } from '../components/project/SourcesTable'
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
+import { CollapsibleSection, type CollapsibleSectionHandle } from '../components/ui/CollapsibleSection'
+import { ExportButton } from '../components/export/ExportButton'
 import { VoiceSection } from '../components/voice/VoiceSection'
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section>
-      <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">{title}</h2>
-      {children}
-    </section>
-  )
+// XTTS presence is a deployment fact, fetched once. Memoise a resolved `true` at
+// module scope so a later transient probe failure can't flip an enabled
+// deployment back to the Export terminal stage.
+let xttsCapabilityResolved = false
+
+function useXttsEnabled(): boolean {
+  const [enabled, setEnabled] = useState(xttsCapabilityResolved)
+  useEffect(() => {
+    if (xttsCapabilityResolved) return
+    let alive = true
+    getCapabilities()
+      .then((caps) => {
+        if (alive && caps.xtts) {
+          xttsCapabilityResolved = true
+          setEnabled(true)
+        }
+      })
+      .catch(() => {
+        /* treat an unreachable/failed probe as XTTS disabled */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+  return enabled
 }
 
 interface ReprocessConfirm {
@@ -36,13 +64,22 @@ export function ProjectDashboardPage() {
   const [reprocessError, setReprocessError] = useState<string | null>(null)
   const [reprocessConfirm, setReprocessConfirm] = useState<ReprocessConfirm | null>(null)
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const settingsRef = useRef<HTMLElement>(null)
+  const xttsEnabled = useXttsEnabled()
+  const settingsRef = useRef<CollapsibleSectionHandle>(null)
+  const voiceRef = useRef<CollapsibleSectionHandle>(null)
+
+  function openAndScroll(handle: CollapsibleSectionHandle | null) {
+    handle?.open()
+    // Wait for the section to expand before scrolling to it.
+    requestAnimationFrame(() => handle?.el?.scrollIntoView({ behavior: 'smooth' }))
+  }
 
   function openSettings() {
-    setSettingsOpen(true)
-    // Wait for the section to expand before scrolling to it.
-    requestAnimationFrame(() => settingsRef.current?.scrollIntoView({ behavior: 'smooth' }))
+    openAndScroll(settingsRef.current)
+  }
+
+  function goToVoice() {
+    openAndScroll(voiceRef.current)
   }
 
   async function submitReprocess(sourceId: string, steps: string[], confirm: boolean) {
@@ -133,6 +170,14 @@ export function ProjectDashboardPage() {
   const hasSources = project.stats.source_coverage.length > 0
   const hasSegments = project.stats.total_segments > 0
 
+  // Smart-default open state: expand the section matching the current stage,
+  // collapse the rest. CollapsibleSection lets an explicit user toggle override
+  // and persist this.
+  const stage = deriveStage(project, xttsEnabled)
+  const sourcesDefaultOpen = stage === 'upload' || stage === 'speaker' || stage === 'process'
+  const reviewDefaultOpen = stage === 'review' || stage === 'export'
+  const voiceDefaultOpen = stage === 'train'
+
   return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
       {/* Header */}
@@ -162,13 +207,15 @@ export function ProjectDashboardPage() {
       </div>
 
       {/* Stage strip */}
-      <StageStrip project={project} />
+      <StageStrip project={project} xttsEnabled={xttsEnabled} onGoToVoice={goToVoice} />
 
       {/* Next action */}
       <NextActionCard
         project={project}
         onAction={() => void refetch()}
         onOpenSettings={openSettings}
+        xttsEnabled={xttsEnabled}
+        onGoToVoice={goToVoice}
       />
 
       {/* Failed jobs — own slot so appearing doesn't reflow the card */}
@@ -182,7 +229,7 @@ export function ProjectDashboardPage() {
 
       {/* Sources */}
       {hasSources && (
-        <Section title="Videos">
+        <CollapsibleSection title="Sources" sectionKey="sources" defaultOpen={sourcesDefaultOpen}>
           <SourcesTable
             sources={project.stats.source_coverage}
             onReprocess={handleReprocess}
@@ -195,41 +242,52 @@ export function ProjectDashboardPage() {
               {reprocessError}
             </p>
           )}
-        </Section>
+        </CollapsibleSection>
       )}
 
-      {/* Stats */}
+      {/* Review — segment stats plus direct access to the review queue and export */}
       {hasSegments && (
-        <Section title="Segments">
-          <StatsPanel stats={project.stats} config={project.config} />
-        </Section>
+        <CollapsibleSection title="Review" sectionKey="review" defaultOpen={reviewDefaultOpen}>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                Segments
+              </h3>
+              <StatsPanel stats={project.stats} config={project.config} />
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Link
+                to={`/projects/${project.id}/review`}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Open review
+              </Link>
+              <ExportButton project={project} onStarted={() => void refetch()} />
+            </div>
+          </div>
+        </CollapsibleSection>
       )}
 
-      {/* Voice (XTTS-v2) — same gate as Segments; deliberately outside the
-          NextActionCard guided flow, which stays pipeline-focused */}
+      {/* Voice (XTTS-v2) — same gate as Review */}
       {hasSegments && (
-        <Section title="Voice">
+        <CollapsibleSection
+          ref={voiceRef}
+          title="Voice"
+          sectionKey="voice"
+          defaultOpen={voiceDefaultOpen}
+        >
           <VoiceSection project={project} refetch={() => void refetch()} />
-        </Section>
+        </CollapsibleSection>
       )}
 
       {/* Settings — collapsed by default */}
-      <section ref={settingsRef}>
-        <button
-          onClick={() => setSettingsOpen(!settingsOpen)}
-          className="flex items-center gap-2 text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          <span className={`inline-block transition-transform ${settingsOpen ? 'rotate-90' : ''}`}>▸</span>
-          Settings
-        </button>
-        {settingsOpen && (
-          <ProjectSettingsPanel
-            projectId={project.id}
-            config={project.config}
-            onSaved={() => void refetch()}
-          />
-        )}
-      </section>
+      <CollapsibleSection ref={settingsRef} title="Settings" sectionKey="settings" defaultOpen={false}>
+        <ProjectSettingsPanel
+          projectId={project.id}
+          config={project.config}
+          onSaved={() => void refetch()}
+        />
+      </CollapsibleSection>
 
       {/* Reprocess confirmation */}
       {reprocessConfirm && (

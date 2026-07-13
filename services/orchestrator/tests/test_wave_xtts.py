@@ -156,6 +156,24 @@ class TestIsHealthy:
 
 
 # ========================================================================
+# Capabilities endpoint — drives the frontend's Train-vs-Export terminal stage
+# ========================================================================
+
+class TestCapabilities:
+    def test_xtts_true_when_healthy(self, client):
+        with patch("main.is_healthy", AsyncMock(return_value=True)):
+            resp = client.get("/capabilities")
+        assert resp.status_code == 200
+        assert resp.json() == {"xtts": True}
+
+    def test_xtts_false_when_unhealthy(self, client):
+        with patch("main.is_healthy", AsyncMock(return_value=False)):
+            resp = client.get("/capabilities")
+        assert resp.status_code == 200
+        assert resp.json() == {"xtts": False}
+
+
+# ========================================================================
 # Task 7 — dataset selection + dataset_build handler
 # ========================================================================
 

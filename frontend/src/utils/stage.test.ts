@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveStage, stageStates } from './stage'
+import { deriveStage, stageStates, stagesFor } from './stage'
 import type { ProjectDetail, SourceStatus, JobSummary } from '../types/api'
 
 function makeProject(overrides: {
@@ -259,5 +259,34 @@ describe('stageStates', () => {
       activeJobs: [{ type: 'vocal_separation' }],
     })
     expect(stageStates(p).speaker).toBe('active')
+  })
+})
+
+describe('XTTS terminal stage', () => {
+  it('stagesFor swaps the terminal chip', () => {
+    expect(stagesFor(false)).toEqual(['upload', 'speaker', 'process', 'review', 'export'])
+    expect(stagesFor(true)).toEqual(['upload', 'speaker', 'process', 'review', 'train'])
+  })
+
+  it('returns train (not export) at the terminal when XTTS is enabled', () => {
+    const p = makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav' })
+    expect(deriveStage(p, true)).toBe('train')
+    expect(deriveStage(p, false)).toBe('export')
+  })
+
+  it('does not affect earlier stages when XTTS is enabled', () => {
+    const p = makeProject({
+      sourceStatuses: ['complete'],
+      referencePath: '/data/ref.wav',
+      pendingCount: 3,
+    })
+    expect(deriveStage(p, true)).toBe('review')
+  })
+
+  it('marks the train chip needs_you at the terminal', () => {
+    const p = makeProject({ sourceStatuses: ['complete'], referencePath: '/data/ref.wav' })
+    const states = stageStates(p, true)
+    expect(states.review).toBe('done')
+    expect(states.train).toBe('needs_you')
   })
 })

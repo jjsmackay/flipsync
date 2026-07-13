@@ -2,10 +2,18 @@ import type { ProjectDetail } from '../types/api'
 
 // The dashboard is organised around five user-facing stages. deriveStage maps
 // the polled project state to the single stage the user should care about now.
+// The terminal stage depends on the deployment: Export by default, or Train when
+// the XTTS voice service is present (export stays reachable as a button).
 
-export type Stage = 'upload' | 'speaker' | 'process' | 'review' | 'export'
+export type Stage = 'upload' | 'speaker' | 'process' | 'review' | 'export' | 'train'
 
-export const STAGES: Stage[] = ['upload', 'speaker', 'process', 'review', 'export']
+const BASE_STAGES: Stage[] = ['upload', 'speaker', 'process', 'review', 'export']
+const XTTS_STAGES: Stage[] = ['upload', 'speaker', 'process', 'review', 'train']
+
+/** The ordered stage strip for this deployment. */
+export function stagesFor(xttsEnabled: boolean): Stage[] {
+  return xttsEnabled ? XTTS_STAGES : BASE_STAGES
+}
 
 export const STAGE_LABELS: Record<Stage, string> = {
   upload: 'Upload',
@@ -13,6 +21,7 @@ export const STAGE_LABELS: Record<Stage, string> = {
   process: 'Process',
   review: 'Review',
   export: 'Export',
+  train: 'Train',
 }
 
 // Source statuses that mean pipeline work is still owed (queued, running, or
@@ -43,7 +52,7 @@ const NON_PIPELINE_JOB_TYPES = new Set([
   'preview',
 ])
 
-export function deriveStage(project: ProjectDetail): Stage {
+export function deriveStage(project: ProjectDetail, xttsEnabled = false): Stage {
   const sources = project.stats.source_coverage
   if (sources.length === 0) return 'upload'
 
@@ -70,18 +79,23 @@ export function deriveStage(project: ProjectDetail): Stage {
   // sending them to Export with a misleading "ready to export".
   if (approved_count + auto_approved_count === 0 && below_threshold_count > 0) return 'review'
 
-  return 'export'
+  // Terminal stage: Train when the voice service is deployed, else Export.
+  return xttsEnabled ? 'train' : 'export'
 }
 
 export type StageState = 'done' | 'active' | 'needs_you' | 'upcoming'
 
 /** Chip state for each stage given the current one. */
-export function stageStates(project: ProjectDetail): Record<Stage, StageState> {
-  const current = deriveStage(project)
-  const currentIdx = STAGES.indexOf(current)
+export function stageStates(
+  project: ProjectDetail,
+  xttsEnabled = false,
+): Record<Stage, StageState> {
+  const stages = stagesFor(xttsEnabled)
+  const current = deriveStage(project, xttsEnabled)
+  const currentIdx = stages.indexOf(current)
   const busy = project.active_jobs.length > 0
   const states = {} as Record<Stage, StageState>
-  for (const [idx, stage] of STAGES.entries()) {
+  for (const [idx, stage] of stages.entries()) {
     if (idx < currentIdx) states[stage] = 'done'
     else if (idx > currentIdx) states[stage] = 'upcoming'
     else states[stage] = busy ? 'active' : 'needs_you'
