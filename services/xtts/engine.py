@@ -170,6 +170,21 @@ def finetune(
     dvae_checkpoint = os.path.join(base_dir, "dvae.pth")
     mel_norm = os.path.join(base_dir, "mel_stats.pth")
 
+    # download_model fetches the XTTS-v2 *inference* files (model/config/vocab/
+    # speakers), but GPTTrainer also needs dvae.pth + mel_stats.pth, which are
+    # in the same HF repo yet not in the model's file list. Fetch any missing
+    # ones into base_dir (idempotent — skipped once cached).
+    _xtts_hf = "https://huggingface.co/coqui/XTTS-v2/resolve/main"
+    aux_missing = [
+        f"{_xtts_hf}/{os.path.basename(p)}"
+        for p in (dvae_checkpoint, mel_norm)
+        if not os.path.exists(p)
+    ]
+    if aux_missing:
+        ModelManager._download_model_files(
+            aux_missing, base_dir, progress_bar=False
+        )
+
     # 3. Recipe config (mirrors recipes/ljspeech/xtts_v2/train_gpt_xtts.py).
     model_args = GPTArgs(
         max_conditioning_length=132300,
