@@ -6,6 +6,7 @@ They test the pure math: chunk index computation and crossfade stitching.
 
 from __future__ import annotations
 
+import inspect
 import math
 
 import numpy as np
@@ -15,6 +16,7 @@ import pytest
 # Skip cleanly (rather than error at collection) in environments without it.
 torch = pytest.importorskip("torch")
 
+import separator as sep
 from separator import compute_chunks, stitch_chunks, CHUNK_OVERLAP_SECS
 
 
@@ -233,3 +235,15 @@ class TestStitchChunks:
         expected = sum(end - start for start, end in chunk_indices) - n_overlaps * overlap_s
         # Allow ±1 sample for rounding
         assert abs(result.shape[1] - expected) <= 1
+
+
+# ---------------------------------------------------------------------------
+# separator model registry and defaults
+# ---------------------------------------------------------------------------
+
+def test_htdemucs_ft_is_a_valid_model():
+    assert "htdemucs_ft" in sep.VALID_MODELS
+
+
+def test_separate_defaults_to_htdemucs_ft():
+    assert inspect.signature(sep.separate).parameters["model_name"].default == "htdemucs_ft"

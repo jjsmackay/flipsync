@@ -10,3 +10,11 @@ torchaudio<2.6
 # "Couldn't find appropriate backend" without this.
 soundfile
 numpy
+
+# RoFormer backend (see docs/superpowers/plans/notes/2026-07-13-roformer-dep-solve.md).
+# Pins below are the versions the dep-solve spike confirmed coexist with
+# demucs 4.0.1 under torch<2.6. onnx is pinned explicitly — otherwise the
+# resolver floats onto an onnx-weekly dev build via audio-separator.
+audio-separator==0.44.3
+onnxruntime-gpu==1.27.0
+onnx==1.17.0

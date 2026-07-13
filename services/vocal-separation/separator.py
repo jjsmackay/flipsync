@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from typing import Optional
 
 import numpy as np
@@ -21,11 +22,43 @@ _model_cache: dict[str, object] = {}
 CHUNK_OVERLAP_SECS = 1
 
 # Supported model names.
-VALID_MODELS = {"htdemucs", "mdx_extra"}
+VALID_MODELS = {"htdemucs", "htdemucs_ft", "mdx_extra", "bs_roformer"}
+
+# Friendly name -> audio-separator checkpoint filename.
+_ROFORMER_CKPT = {
+    "bs_roformer": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+}
+
+# Where audio-separator caches downloaded model weights. Point at the shared
+# model-storage bind mount so weights survive `compose down`.
+_ROFORMER_MODEL_DIR = os.environ.get(
+    "ROFORMER_MODEL_DIR", "/mnt/models/flipsync/audio-separator"
+)
+
+
+def _is_roformer(model_name: str) -> bool:
+    return model_name in _ROFORMER_CKPT
 
 
 def _load_model(model_name: str):
-    """Load a Demucs model, caching it for reuse."""
+    """Load a model (Demucs or RoFormer), caching it for reuse.
+
+    RoFormer engines are cached under the same ``_model_cache`` as Demucs
+    models — one cache, one idle-unload/preload lifecycle for both families.
+    """
+    if _is_roformer(model_name):
+        engine = _model_cache.get(model_name)
+        if engine is None:
+            from audio_separator.separator import Separator  # lazy: heavy import
+
+            logger.info("Loading RoFormer model: %s", model_name)
+            os.makedirs(_ROFORMER_MODEL_DIR, exist_ok=True)
+            engine = Separator(model_file_dir=_ROFORMER_MODEL_DIR)
+            engine.load_model(model_filename=_ROFORMER_CKPT[model_name])
+            _model_cache[model_name] = engine
+            logger.info("RoFormer model %s loaded successfully", model_name)
+        return engine
+
     import torch
     if model_name in _model_cache:
         return _model_cache[model_name]
@@ -73,10 +106,31 @@ def _apply_demucs(model, audio, sample_rate: int, shifts: int = 0):
     return vocals.cpu()
 
 
+def _separate_roformer(input_path: str, output_path: str, model_name: str) -> None:
+    """Separate vocals with a RoFormer checkpoint via audio-separator.
+
+    audio-separator writes stem files into its output dir and returns their
+    paths; we move the vocals stem to `output_path` to match the Demucs
+    contract (a single vocals WAV at the orchestrator-specified path).
+    """
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    sep_engine = _load_model(model_name)
+    sep_engine.output_dir = os.path.dirname(output_path)
+    stem_paths = sep_engine.separate(input_path)
+    vocals = next((p for p in stem_paths if "(Vocals)" in os.path.basename(p)), None)
+    if vocals is None:
+        raise RuntimeError("RoFormer produced no vocals stem")
+    shutil.move(vocals, output_path)
+    logger.info("Wrote RoFormer vocals to %s", output_path)
+
+
 def separate(
     input_path: str,
     output_path: str,
-    model_name: str = "htdemucs",
+    model_name: str = "htdemucs_ft",
     chunk_secs: Optional[int] = None,
     shifts: int = 0,
     progress_callback=None,
@@ -86,8 +140,10 @@ def separate(
     Args:
         input_path: Path to input WAV file.
         output_path: Path to write vocals WAV.
-        model_name: Demucs model name.
-        chunk_secs: If set, process in chunks of this many seconds.
+        model_name: Demucs model name (or `bs_roformer` for the RoFormer
+            backend — see `_is_roformer`).
+        chunk_secs: If set, process in chunks of this many seconds. Ignored
+            for the RoFormer backend, which manages its own segmentation.
         shifts: Demucs test-time augmentation passes (0 = none).
         progress_callback: Optional callable(progress: int) called during processing.
 
@@ -95,14 +151,22 @@ def separate(
         torch.cuda.OutOfMemoryError: On CUDA OOM.
         FileNotFoundError: If input_path does not exist.
     """
-    import torchaudio
+    if _is_roformer(model_name):
+        if progress_callback:
+            progress_callback(50)
+        _separate_roformer(input_path, output_path, model_name)
+        if progress_callback:
+            progress_callback(100)
+        return
 
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
+    model = _load_model(model_name)
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    model = _load_model(model_name)
+    import torchaudio
 
     # Load audio
     audio, sample_rate = torchaudio.load(input_path)
@@ -275,12 +339,12 @@ def stitch_chunks(chunks: list, overlap_samples: int):
 
 
 def is_model_loaded() -> bool:
-    """True while any Demucs model is resident in the cache (and thus VRAM)."""
+    """True while any Demucs or RoFormer model is resident in the cache (and thus VRAM)."""
     return bool(_model_cache)
 
 
 def unload_models() -> None:
-    """Drop all cached Demucs models and return their VRAM to the driver.
+    """Drop all cached Demucs and RoFormer models and return their VRAM to the driver.
 
     Clearing the cache drops the Python refs; ``gc.collect()`` finalises any
     lingering tensors and ``torch.cuda.empty_cache()`` releases Torch's reserved

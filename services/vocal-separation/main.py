@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
     every job failed.
     """
     global _preload_error, _unloader, _idle_watch_task
-    preload = os.environ.get("PRELOAD_MODELS", "htdemucs").split(",")
+    preload = os.environ.get("PRELOAD_MODELS", "htdemucs_ft").split(",")
     preload = [m.strip() for m in preload if m.strip()]
     if preload:
         loop = asyncio.get_running_loop()
@@ -156,7 +156,7 @@ class JobRequest(BaseModel):
     job_id: str
     input_path: str
     output_path: str
-    model: str = "htdemucs"
+    model: str = "htdemucs_ft"
     chunk_secs: Optional[int] = None
     # Demucs test-time augmentation: N random shifts averaged for cleaner
     # separation at N+1x the cost. 0 (default) keeps the historical behaviour.
