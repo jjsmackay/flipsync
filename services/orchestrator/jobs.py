@@ -1614,7 +1614,7 @@ def _write_manifest(
     rows = conn.execute(
         """
         SELECT seg.id, seg.export_path, COALESCE(seg.transcript_edited, seg.transcript) AS text,
-               src.filename AS source_filename, seg.start_secs, seg.end_secs, seg.duration_secs,
+               seg.source_id, src.filename AS source_filename, seg.start_secs, seg.end_secs, seg.duration_secs,
                seg.match_confidence, seg.transcript_confidence, seg.clipping_warning
         FROM segments seg
         JOIN sources src ON src.id = seg.source_id
@@ -1639,6 +1639,7 @@ def _write_manifest(
             "id": r["id"],
             "audio_file": f"{r['id']}.wav",
             "text": transcript,
+            "source_id": r["source_id"],
             "source": r["source_filename"],
             "start_secs": r["start_secs"],
             "end_secs": r["end_secs"],
@@ -1782,6 +1783,7 @@ async def _handle_dataset_build(
             "id": r["id"],
             "audio_file": f"{data_prefix}/projects/{project_id}/{r['cleaned_path']}",
             "text": text,
+            "source_id": r["source_id"],
             "source": r["source_filename"],
             "start_secs": r["start_secs"],
             "end_secs": r["end_secs"],

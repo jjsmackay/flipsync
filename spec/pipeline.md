@@ -297,6 +297,7 @@ After cleanup completes, the orchestrator writes `export/manifest.json` from the
       "id": "7f3c2a1b-...",
       "audio_file": "7f3c2a1b.wav",
       "text": "The transcript text for this segment.",
+      "source_id": "...",
       "source": "s01e01.mkv",
       "start_secs": 142.31,
       "end_secs": 146.88,

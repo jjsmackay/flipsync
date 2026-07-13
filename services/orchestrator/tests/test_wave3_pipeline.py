@@ -540,6 +540,7 @@ class TestExportFlow:
         assert manifest["project_id"] == project
         assert len(manifest["segments"]) == 1
         assert manifest["segments"][0]["text"] == "Hello world"
+        assert manifest["segments"][0]["source_id"] == source_id
 
         # Verify archive exists
         archive = pdir / "export.tar.gz"

@@ -308,6 +308,7 @@ class TestDatasetBuildHandler:
         assert len(manifest["segments"]) == 35
         # audio_file paths are absolute (DATA_DIR-rooted).
         assert all(seg["audio_file"].startswith(str(isolated_data_dir)) for seg in manifest["segments"])
+        assert all(seg["source_id"] == src for seg in manifest["segments"])
         m = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
         assert m["segment_count"] == 35
         assert m["dataset_duration_secs"] == pytest.approx(350.0)
