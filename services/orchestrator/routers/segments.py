@@ -109,6 +109,7 @@ async def list_segments(
     project_id: str,
     status: str = "pending,maybe",
     source_id: Optional[str] = None,
+    q: Optional[str] = None,
     min_confidence: Optional[float] = None,
     max_confidence: Optional[float] = None,
     min_duration: Optional[float] = None,
@@ -161,6 +162,15 @@ async def list_segments(
     )
     conditions += extra_conditions
     params += extra_params
+
+    if q:
+        # Case-insensitive substring match on the effective transcript.
+        # % and _ in the query are literals, not LIKE wildcards.
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(
+            "COALESCE(seg.transcript_edited, seg.transcript) LIKE ? ESCAPE '\\'"
+        )
+        params.append(f"%{escaped}%")
 
     where = " AND ".join(conditions)
 

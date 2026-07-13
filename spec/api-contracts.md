@@ -544,6 +544,7 @@ Paginated segment list with filtering and sorting.
 |-------|------|---------|-------------|
 | `status` | string or comma-list | `pending,maybe` | Filter by status |
 | `source_id` | UUID | — | Filter to one source |
+| `q` | string | — | Case-insensitive substring match against the effective transcript (`transcript_edited` if set, else `transcript`). `%` and `_` are literal characters, not `LIKE` wildcards. |
 | `min_confidence` | float | — | Filter by match confidence |
 | `max_confidence` | float | — | Filter by match confidence |
 | `min_duration` | float | — | Filter by duration in seconds |
@@ -772,7 +773,9 @@ The tar is streamed in chunks (no temp file, no full-file buffering), so a multi
 
 Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
 
-**Request:**
+Either `text` or `segment_id` is required. `segment_id` drives the A/B compare flow: when set, `text` is ignored and the orchestrator synthesises the segment's effective transcript (`transcript_edited` if set, else `transcript`) instead, so the clone says exactly what the original recording says. The target segment is also excluded from the `segments_raw`/`segments_cleaned` conditioning pools (it would be a trivial one-shot copy of the very line being compared).
+
+**Request (free text):**
 ```json
 {
   "text": "This is what the cloned voice sounds like.",
@@ -786,9 +789,19 @@ Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
 }
 ```
 
+**Request (segment compare):**
+```json
+{
+  "segment_id": "7f3c2a1b-...",
+  "model_id": null,
+  "conditioning": { "source": "segments_cleaned", "segment_count": 5 }
+}
+```
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `text` | string | required | 1–500 characters |
+| `text` | string | — | 1–500 characters. Required unless `segment_id` is set. |
+| `segment_id` | UUID or null | null | Compare against this segment: synthesises its effective transcript and excludes it from segment conditioning pools. Ignores `text` when set. Required unless `text` is set. |
 | `model_id` | string or null | null | Fine-tuned model to synthesise with; null = base model zero-shot |
 | `conditioning.source` | string | best available | `reference_clip`, `segments_raw`, or `segments_cleaned`. Default resolves to the best available stage (cleaned > raw > reference) |
 | `conditioning.segment_count` | int | 5 | Segment sources only: top-N segments by match confidence, duration 2–12 s |
@@ -804,6 +817,8 @@ The orchestrator resolves the conditioning source to absolute WAV paths. The voc
 
 **Response 409** `conditioning_unavailable` if the requested source has no audio yet (e.g. `segments_raw` before diarisation has run).
 **Response 409** `model_not_ready` if `model_id` refers to a model that is not `ready`.
+**Response 409** `segment_not_comparable` if `segment_id` doesn't exist or has no transcript.
+**Response 422** if neither `text` nor `segment_id` is given.
 **Response 503** `xtts_unavailable` if the XTTS service is not deployed or unhealthy.
 
 **Response 202:** `{ "enqueued_job": { "id": "...", "type": "preview" } }` — the preview id is the job id.
@@ -824,6 +839,7 @@ List recent previews (derived from `preview` jobs).
       "id": "...",
       "status": "complete",
       "text": "...",
+      "segment_id": null,
       "model_id": null,
       "conditioning": { "source": "segments_cleaned", "segment_count": 5 },
       "created_at": "2026-07-12T04:00:00Z"
@@ -831,6 +847,8 @@ List recent previews (derived from `preview` jobs).
   ]
 }
 ```
+
+`segment_id` is the segment this preview was compared against, or `null` for a plain free-text preview.
 
 ---
 

@@ -3,6 +3,7 @@ import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '
 import { createPreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
+import { SamplingParams, DEFAULT_SAMPLING, SliderRow } from './sampling'
 
 interface PreviewPanelProps {
   projectId: string
@@ -15,22 +16,6 @@ interface PreviewPanelProps {
 const TEXT_MAX = 500
 const POLL_MS = 3000
 
-// Per-run XTTS sampling knobs, shared across both columns so A/B compares
-// models, not sampling noise. Defaults mirror the orchestrator's.
-// repetition_penalty stays server-default only — not a UI dial.
-interface SamplingParams {
-  temperature: number
-  speed: number
-  top_k: number
-  top_p: number
-}
-
-const DEFAULT_SAMPLING: SamplingParams = {
-  temperature: 0.65,
-  speed: 1,
-  top_k: 50,
-  top_p: 0.85,
-}
 // Bounded polling lifetime: a hung preview job (or an id that never appears in the
 // limit-20 previews list) must not spin the poll forever. Synthesis takes seconds;
 // ten minutes is generous even behind a queued GPU job.
@@ -203,50 +188,6 @@ function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disab
           Your browser does not support audio playback.
         </audio>
       )}
-    </div>
-  )
-}
-
-function SliderRow({
-  id,
-  label,
-  min,
-  max,
-  step,
-  value,
-  decimals,
-  hint,
-  onChange,
-}: {
-  id: string
-  label: string
-  min: number
-  max: number
-  step: number
-  value: number
-  decimals: number
-  hint: string
-  onChange: (value: number) => void
-}) {
-  return (
-    <div className="space-y-1">
-      <div className="flex items-baseline justify-between gap-3">
-        <label htmlFor={id} className="text-sm text-gray-700 dark:text-gray-300">
-          {label}
-        </label>
-        <span className="shrink-0 font-mono text-blue-600">{value.toFixed(decimals)}</span>
-      </div>
-      <input
-        id={id}
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full accent-blue-600"
-      />
-      <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
     </div>
   )
 }

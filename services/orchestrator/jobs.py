@@ -1919,7 +1919,8 @@ async def _handle_finetune(
 
 
 def _resolve_conditioning(
-    conn, project_row: Any, project_id: str, source: str | None, segment_count: int
+    conn, project_row: Any, project_id: str, source: str | None, segment_count: int,
+    exclude_segment_id: str | None = None,
 ) -> tuple[str, list[str]]:
     """Resolve a conditioning source to absolute WAV paths on /data.
 
@@ -1932,6 +1933,9 @@ def _resolve_conditioning(
     - ``segments_cleaned`` → same query + cleaned audio present, preferring
       the dataset cache (cleaned_path) and falling back to export_path
     - ``None`` → best available: cleaned, then raw, then reference
+
+    When ``exclude_segment_id`` is set, that segment is excluded from
+    ``segments_raw``/``segments_cleaned`` pools; ``reference_clip`` is unaffected.
     """
     data_prefix = _data_prefix()
 
@@ -1953,16 +1957,22 @@ def _resolve_conditioning(
         else:
             col = "seg.raw_path"
             extra = ""
+        # A compare preview must not be conditioned on the segment it is
+        # judged against.
+        exclude_sql = "AND seg.id != ?" if exclude_segment_id else ""
+        query_params: list = [exclude_segment_id] if exclude_segment_id else []
+        query_params.append(segment_count)
         rows = conn.execute(
             f"""
             SELECT {col} AS p FROM segments seg
             WHERE seg.status NOT IN ('rejected', 'auto_rejected')
               AND seg.duration_secs BETWEEN 2 AND 12
               {extra}
+              {exclude_sql}
             ORDER BY seg.match_confidence DESC
             LIMIT ?
             """,
-            (segment_count,),
+            query_params,
         ).fetchall()
         if rows:
             return ("segments_cleaned" if cleaned else "segments_raw"), [_abs(r["p"]) for r in rows]
@@ -2023,7 +2033,8 @@ async def _handle_preview(
 
     try:
         _resolved, reference_wavs = _resolve_conditioning(
-            conn, project, project_id, source, segment_count
+            conn, project, project_id, source, segment_count,
+            exclude_segment_id=params.get("segment_id"),
         )
     except LookupError as exc:
         _fail_job(project_id, job_id, f"conditioning_unavailable: {exc}")

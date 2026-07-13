@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import service_client
 from db import project_dir, require_project
@@ -21,7 +21,11 @@ class ConditioningSpec(BaseModel):
 
 
 class CreatePreviewRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
+    # Either free text or a segment to compare against. When segment_id is
+    # set, text is ignored — the segment's transcript is synthesised so the
+    # clone says exactly what the original says.
+    text: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    segment_id: Optional[str] = Field(default=None, min_length=1)
     model_id: Optional[str] = None
     conditioning: ConditioningSpec = Field(default_factory=ConditioningSpec)
     # XTTS sampling knobs. Per-run (not project config) — the point of a
@@ -32,6 +36,12 @@ class CreatePreviewRequest(BaseModel):
     repetition_penalty: float = Field(default=10.0, ge=1.0, le=20.0)
     top_k: int = Field(default=50, ge=1, le=100)
     top_p: float = Field(default=0.85, gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _require_text_or_segment(self):
+        if self.text is None and self.segment_id is None:
+            raise ValueError("either text or segment_id is required")
+        return self
 
 
 @router.post("", status_code=202)
@@ -54,10 +64,26 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
                 "The requested model is not ready for previews.",
             )
 
+    # Resolve the effective text: use segment transcript if segment_id is set.
+    text = body.text
+    if body.segment_id is not None:
+        seg = conn.execute(
+            "SELECT COALESCE(transcript_edited, transcript) AS t FROM segments "
+            "WHERE id=? AND project_id=?",
+            (body.segment_id, project_id),
+        ).fetchone()
+        if seg is None or not (seg["t"] or "").strip():
+            raise AppError(
+                409, "segment_not_comparable",
+                "The segment does not exist or has no transcript.",
+            )
+        text = seg["t"]
+
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     try:
         _resolve_conditioning(
-            conn, project, project_id, body.conditioning.source, body.conditioning.segment_count
+            conn, project, project_id, body.conditioning.source, body.conditioning.segment_count,
+            exclude_segment_id=body.segment_id,
         )
     except LookupError as exc:
         raise AppError(
@@ -69,7 +95,8 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
     job_id = enqueue(
         project_id, "preview",
         params={
-            "text": body.text,
+            "text": text,
+            "segment_id": body.segment_id,
             "model_id": body.model_id,
             "conditioning": {
                 "source": body.conditioning.source,
@@ -100,6 +127,7 @@ async def list_previews(project_id: str, limit: int = 20):
             "id": r["id"],
             "status": r["status"],
             "text": p.get("text"),
+            "segment_id": p.get("segment_id"),
             "model_id": p.get("model_id"),
             "conditioning": p.get("conditioning"),
             "created_at": r["created_at"],

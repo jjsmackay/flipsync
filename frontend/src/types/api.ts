@@ -326,11 +326,13 @@ export interface Preview {
   text: string
   model_id: string | null
   conditioning: PreviewConditioning | null
+  segment_id: string | null
   created_at: string
 }
 
 export interface CreatePreviewRequest {
-  text: string
+  text?: string
+  segment_id?: string
   model_id: string | null
   conditioning?: PreviewConditioning
   // XTTS sampling knobs. Per-run only — not project config. Bounds mirror the
@@ -383,4 +385,5 @@ export interface GetSegmentsParams {
   page?: number
   per_page?: number
   count_only?: boolean
+  q?: string
 }

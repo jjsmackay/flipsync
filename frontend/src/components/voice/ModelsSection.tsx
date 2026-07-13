@@ -1,6 +1,7 @@
 import type { ProjectDetail, Model } from '../../types/api'
 import { ModelsList } from './ModelsList'
 import { PreviewPanel } from './PreviewPanel'
+import { ComparePanel } from './ComparePanel'
 
 interface ModelsSectionProps {
   project: ProjectDetail
@@ -46,6 +47,10 @@ export function ModelsSection({
 
       <SubSection title="Preview">
         <PreviewPanel projectId={project.id} models={models} advanced={advanced} />
+      </SubSection>
+
+      <SubSection title="Compare">
+        <ComparePanel projectId={project.id} models={models} advanced={advanced} />
       </SubSection>
     </div>
   )
