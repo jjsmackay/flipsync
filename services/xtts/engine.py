@@ -136,13 +136,16 @@ def finetune(
 
     import torch
     from trainer import Trainer, TrainerArgs
+    from TTS.config.shared_configs import BaseDatasetConfig
     from TTS.tts.datasets import load_tts_samples
     from TTS.tts.layers.xtts.trainer.gpt_trainer import (
         GPTArgs,
         GPTTrainer,
         GPTTrainerConfig,
-        XttsAudioConfig,
     )
+    # XttsAudioConfig lives in TTS.tts.models.xtts in coqui-tts 0.27.5, not in
+    # gpt_trainer (which only re-exports GPTArgs/GPTTrainerConfig/GPTTrainer).
+    from TTS.tts.models.xtts import XttsAudioConfig
     from TTS.utils.manage import ModelManager
 
     os.makedirs(output_dir, exist_ok=True)
@@ -167,6 +170,21 @@ def finetune(
     dvae_checkpoint = os.path.join(base_dir, "dvae.pth")
     mel_norm = os.path.join(base_dir, "mel_stats.pth")
 
+    # download_model fetches the XTTS-v2 *inference* files (model/config/vocab/
+    # speakers), but GPTTrainer also needs dvae.pth + mel_stats.pth, which are
+    # in the same HF repo yet not in the model's file list. Fetch any missing
+    # ones into base_dir (idempotent — skipped once cached).
+    _xtts_hf = "https://huggingface.co/coqui/XTTS-v2/resolve/main"
+    aux_missing = [
+        f"{_xtts_hf}/{os.path.basename(p)}"
+        for p in (dvae_checkpoint, mel_norm)
+        if not os.path.exists(p)
+    ]
+    if aux_missing:
+        ModelManager._download_model_files(
+            aux_missing, base_dir, progress_bar=False
+        )
+
     # 3. Recipe config (mirrors recipes/ljspeech/xtts_v2/train_gpt_xtts.py).
     model_args = GPTArgs(
         max_conditioning_length=132300,
@@ -187,14 +205,29 @@ def finetune(
         sample_rate=22050, dvae_sample_rate=22050, output_sample_rate=_SAMPLE_RATE
     )
 
-    dataset_config = {
-        "formatter": "coqui",
-        "dataset_name": "flipsync",
-        "path": dataset_dir,
-        "meta_file_train": os.path.basename(train_csv),
-        "meta_file_val": os.path.basename(eval_csv),
-        "language": params["language"],
-    }
+    # root_path must be an ancestor of BOTH the metadata CSVs and the audio
+    # files they reference: Coqui's add_extra_keys does
+    # Path(audio_file).relative_to(root_path), which errors otherwise. The
+    # cleaned WAVs live in the project's cleaned/ dir, a sibling of
+    # models/<id>/dataset/, so the dataset dir is NOT their ancestor. Use the
+    # project dir (two levels up from output_dir = .../projects/<id>/models/<id>)
+    # as the root and reference the CSVs by their path relative to it.
+    dataset_root = os.path.dirname(os.path.dirname(output_dir))
+    # load_tts_samples requires a BaseDatasetConfig, not a plain dict: it reads
+    # some keys by subscript (dataset["formatter"]) but others by attribute
+    # (dataset.meta_file_attn_mask), and only a Coqpit supports both. It also
+    # supplies the defaults the loader needs (ignored_speakers=None,
+    # meta_file_attn_mask=""). root_path is the project dir (ancestor of both
+    # the cleaned/ WAVs and the dataset CSVs) so add_extra_keys' relative_to
+    # succeeds; the CSVs are referenced by their path relative to it.
+    dataset_config = BaseDatasetConfig(
+        formatter="coqui",
+        dataset_name="flipsync",
+        path=dataset_root,
+        meta_file_train=os.path.relpath(train_csv, dataset_root),
+        meta_file_val=os.path.relpath(eval_csv, dataset_root),
+        language=params["language"],
+    )
 
     config = GPTTrainerConfig(
         epochs=params.get("epochs", 10),
@@ -202,7 +235,6 @@ def finetune(
         model_args=model_args,
         audio=audio_config,
         batch_size=params.get("batch_size", 3),
-        grad_accum_steps=params.get("grad_accum", 1),
         lr=params.get("learning_rate", 5e-6),
         run_eval=True,
         optimizer="AdamW",
@@ -254,7 +286,13 @@ def finetune(
     callbacks = {"on_train_step_end": _on_train_step}
 
     trainer = Trainer(
-        TrainerArgs(restore_path=None, skip_train_epoch=False),
+        # grad_accum_steps is a TrainerArgs field (read as args.grad_accum_steps
+        # by the trainer loop), not a GPTTrainerConfig field.
+        TrainerArgs(
+            restore_path=None,
+            skip_train_epoch=False,
+            grad_accum_steps=params.get("grad_accum", 1),
+        ),
         config,
         output_path=output_dir,
         model=model,

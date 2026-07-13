@@ -1,0 +1,12 @@
+# Heavy, rarely-changing accelerator stack, installed in its own image layer
+# (before the lighter deps in requirements.txt) so a pin bump to transformers /
+# coqui-tts does NOT re-download ~4 GB of torch + CUDA wheels on every build.
+# PyPI's linux x86_64 torch wheel is the CUDA build (bundles its own CUDA
+# runtime), so no CUDA base image or system toolkit is needed here — the host
+# just needs a recent NVIDIA driver.
+torch==2.13.0
+torchaudio==2.11.0
+# torch >= 2.9 makes coqui-tts require torchcodec for audio IO (it raises an
+# ImportError at `import TTS` otherwise). Only declared under coqui-tts's
+# `codec` extra, so pin it directly. Links the FFmpeg shared libs in the image.
+torchcodec==0.14.0

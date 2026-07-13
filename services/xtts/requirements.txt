@@ -1,6 +1,16 @@
+# Lighter, more frequently-bumped deps. The heavy accelerator stack
+# (torch/torchaudio/torchcodec) lives in requirements-accel.txt so it installs
+# in an earlier, cache-friendly layer — bumping a pin here won't re-pull torch.
 fastapi
 uvicorn
-# coqui-tts is the Idiap-maintained fork of the discontinued Coqui TTS; it pulls
-# torch and the `trainer` package and ships the XTTS-v2 GPTTrainer recipe.
-coqui-tts
+# coqui-tts is the Idiap-maintained fork of the discontinued Coqui TTS; it ships
+# the XTTS-v2 GPTTrainer recipe. It does NOT declare torch as a hard dependency,
+# and its lower bounds are loose (e.g. transformers>=4.57 with no upper cap), so
+# an unpinned build drifts to bleeding-edge transitive deps that break its own
+# code. Pin the known-good set.
+coqui-tts==0.27.5
 soundfile
+# transformers 5.x removed `isin_mps_friendly` from transformers.pytorch_utils,
+# which coqui imports. Cap below 5 — 4.57.6 is the current 4.x that satisfies
+# coqui-tts 0.27.5's transformers>=4.57.
+transformers==4.57.6

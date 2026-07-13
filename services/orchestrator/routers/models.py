@@ -1,11 +1,13 @@
-"""Models API (v1.5) — XTTS-v2 fine-tune trigger, listing, deletion."""
+"""Models API (v1.5) — XTTS-v2 fine-tune trigger, listing, deletion, download."""
 
 import json
 import shutil
+import tarfile
 import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import service_client
@@ -16,6 +18,13 @@ from jobs import enqueue, _select_dataset_segments
 router = APIRouter(prefix="/projects/{project_id}/models", tags=["models"])
 
 REQUIRED_DATASET_SECS = 300.0
+
+# The trained XTTS-v2 checkpoint bundle. The three mandatory files are what a
+# Coqui `Xtts.load_checkpoint(checkpoint_dir=...)` needs; speaker_latents.pt is
+# an optional conditioning cache that consumers may reuse.
+BUNDLE_MANDATORY = ("model.pth", "config.json", "vocab.json")
+BUNDLE_OPTIONAL = ("speaker_latents.pt",)
+_TAR_CHUNK = 1024 * 1024
 
 
 class DatasetSpec(BaseModel):
@@ -112,6 +121,62 @@ async def list_models(project_id: str):
         (project_id,),
     ).fetchall()
     return {"models": [_serialize_model(r) for r in rows]}
+
+
+def _tar_stream(bundle, names):
+    """Yield an uncompressed tar of `names` from `bundle`, streamed in chunks so
+    a multi-GB model.pth is never held in memory or written to a temp file."""
+    for name in names:
+        path = bundle / name
+        st = path.stat()
+        info = tarfile.TarInfo(name=name)
+        info.size = st.st_size
+        info.mtime = int(st.st_mtime)
+        yield info.tobuf(format=tarfile.GNU_FORMAT)
+        remaining = info.size
+        with open(path, "rb") as fh:
+            while remaining > 0:
+                chunk = fh.read(min(_TAR_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+        pad = (-info.size) % 512
+        if pad:
+            yield b"\x00" * pad
+    # Two zero blocks terminate the archive.
+    yield b"\x00" * 1024
+
+
+@router.get("/{model_id}/download")
+async def download_model(project_id: str, model_id: str):
+    conn = require_project(project_id)
+    model = conn.execute(
+        "SELECT * FROM models WHERE id=? AND project_id=?", (model_id, project_id)
+    ).fetchone()
+    if model is None:
+        raise AppError(404, "model_not_found", "Model not found.")
+    if model["status"] != "ready":
+        raise AppError(
+            409, "model_not_ready",
+            f"Model is not ready to download (status '{model['status']}').",
+            {"status": model["status"]},
+        )
+
+    cp = model["checkpoint_dir"] or f"models/{model_id}"
+    bundle = project_dir(project_id) / cp
+    if not all((bundle / f).is_file() for f in BUNDLE_MANDATORY):
+        raise AppError(
+            404, "model_bundle_not_found",
+            "Trained model files are not on disk for this model.",
+        )
+
+    names = list(BUNDLE_MANDATORY) + [f for f in BUNDLE_OPTIONAL if (bundle / f).is_file()]
+    return StreamingResponse(
+        _tar_stream(bundle, names),
+        media_type="application/x-tar",
+        headers={"Content-Disposition": f'attachment; filename="{model_id}.tar"'},
+    )
 
 
 @router.delete("/{model_id}")
