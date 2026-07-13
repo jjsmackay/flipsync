@@ -55,6 +55,7 @@ export const JOB_LABELS: Record<string, string> = {
   dataset_build: 'Building dataset',
   finetune: 'Fine-tuning voice',
   preview: 'Synthesising preview',
+  tuning_preview: 'Testing cleanup settings',
 }
 
 export function jobLabel(type: string): string {

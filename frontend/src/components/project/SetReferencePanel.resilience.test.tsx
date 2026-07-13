@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { SetReferencePanel } from './SetReferencePanel'
 import type { ProjectDetail, ScoutStatus, SourceStatus } from '../../types/api'
+import { TUNING_DEFAULTS } from '../../utils/tuning'
 import { getScoutStatus } from '../../api/client'
 
 vi.mock('../../api/client', async () => {
@@ -55,10 +56,7 @@ function makeProject(overrides: Partial<ProjectDetail> = {}): ProjectDetail {
       auto_approve_enabled: true,
       auto_approve_match_threshold: 0.85,
       auto_approve_transcript_threshold: 0.9,
-      whisper_batch_size: 16,
-      whisper_compute_type: 'default',
-      demucs_model: 'htdemucs_ft',
-      align_words: false,
+      ...TUNING_DEFAULTS,
     },
     active_jobs: [],
     recent_failed_jobs: [],

@@ -59,8 +59,25 @@ export interface ProjectConfig {
   auto_approve_transcript_threshold: number
   whisper_batch_size: number
   whisper_compute_type: string
+  // Pipeline tuning knobs (migration 011; align_words is migration 012).
+  // Changing one applies on the next run of that stage — no retro-apply.
+  // Bounds live in utils/tuning.ts and mirror the server-side validators.
   demucs_model: string
+  demucs_shifts: number
+  diar_min_speakers: number
+  diar_max_speakers: number
+  diar_min_segment_duration: number
+  whisper_beam_size: number
+  whisper_vad_filter: boolean
   align_words: boolean
+  target_lufs: number
+  highpass_hz: number
+  silence_threshold_db: number
+  silence_min_duration_secs: number
+  xtts_epochs: number
+  xtts_batch_size: number
+  xtts_grad_accum: number
+  xtts_learning_rate: number
 }
 
 export const WHISPER_COMPUTE_TYPES = ['default', 'float16', 'int8_float16', 'int8'] as const
@@ -198,7 +215,30 @@ export interface Job {
 
 // ---- Request bodies ----
 
-export interface CreateProjectRequest {
+// The pipeline tuning knobs, as an optional subset — accepted on both project
+// creation and PATCH (same server-side bounds; out-of-range → 422).
+export interface TuningPatch {
+  demucs_model?: string
+  demucs_shifts?: number
+  diar_min_speakers?: number
+  diar_max_speakers?: number
+  diar_min_segment_duration?: number
+  whisper_beam_size?: number
+  whisper_vad_filter?: boolean
+  align_words?: boolean
+  whisper_batch_size?: number
+  whisper_compute_type?: string
+  target_lufs?: number
+  highpass_hz?: number
+  silence_threshold_db?: number
+  silence_min_duration_secs?: number
+  xtts_epochs?: number
+  xtts_batch_size?: number
+  xtts_grad_accum?: number
+  xtts_learning_rate?: number
+}
+
+export interface CreateProjectRequest extends TuningPatch {
   name: string
   whisper_model: string
   language: string | null
@@ -206,7 +246,7 @@ export interface CreateProjectRequest {
   target_duration_secs: number
 }
 
-export interface PatchProjectRequest {
+export interface PatchProjectRequest extends TuningPatch {
   name?: string
   match_threshold?: number
   target_duration_secs?: number
@@ -215,10 +255,6 @@ export interface PatchProjectRequest {
   auto_approve_enabled?: boolean
   auto_approve_match_threshold?: number
   auto_approve_transcript_threshold?: number
-  whisper_batch_size?: number
-  whisper_compute_type?: string
-  demucs_model?: string
-  align_words?: boolean
 }
 
 export interface PatchSegmentRequest {
@@ -297,6 +333,31 @@ export interface CreatePreviewRequest {
   text: string
   model_id: string | null
   conditioning?: PreviewConditioning
+  /** XTTS sampling temperature (>0–2, default 0.65). Per-run only — not project config. */
+  temperature?: number
+}
+
+// ---- Tuning previews (ephemeral stage A/B) ----
+
+export interface CleanupTuningParams {
+  target_lufs: number
+  highpass_hz: number
+  silence_threshold_db: number
+  silence_min_duration_secs: number
+}
+
+export interface CreateTuningPreviewRequest {
+  // Stage-generic: 'cleanup' is the only stage this wave; 'separation' is the
+  // planned follow-on.
+  stage: 'cleanup'
+  params: CleanupTuningParams
+  target: { segment_id: string }
+}
+
+export interface TuningPreviewStatus {
+  id: string
+  status: string
+  error: string | null
 }
 
 export interface GetSegmentsParams {

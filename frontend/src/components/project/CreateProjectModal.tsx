@@ -2,6 +2,28 @@ import { useState } from 'react'
 import { createProject } from '../../api/client'
 import type { CreateProjectRequest } from '../../types/api'
 import { errorMessage } from '../../utils/errors'
+import {
+  changedValues,
+  SEPARATION_KNOBS,
+  DIARISATION_KNOBS,
+  TRANSCRIPTION_KNOBS,
+  CLEANUP_KNOBS,
+  XTTS_KNOBS,
+  TUNING_DEFAULTS,
+  type Knob,
+  type TuningKey,
+  type TuningValue,
+  type TuningValues,
+} from '../../utils/tuning'
+import { KnobFields } from './KnobFields'
+
+const ALL_TUNING_KNOBS: Knob[] = [
+  ...SEPARATION_KNOBS,
+  ...DIARISATION_KNOBS,
+  ...TRANSCRIPTION_KNOBS,
+  ...CLEANUP_KNOBS,
+  ...XTTS_KNOBS,
+]
 
 interface CreateProjectModalProps {
   onCreated: (id: string) => void
@@ -27,6 +49,11 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
   const [targetMinutes, setTargetMinutes] = useState(30)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [tuningValues, setTuningValues] = useState<TuningValues>(TUNING_DEFAULTS)
+
+  function handleTuningChange(key: TuningKey, value: TuningValue) {
+    setTuningValues((prev) => ({ ...prev, [key]: value }))
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -35,14 +62,19 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
     setSubmitting(true)
     setError(null)
     try {
-      const req: CreateProjectRequest = {
+      const req = {
         name: name.trim(),
         whisper_model: whisperModel,
         // "auto" is a UI-only sentinel; the API expects null for auto-detect.
         language: language === 'auto' ? null : language,
         match_threshold: matchThreshold,
         target_duration_secs: Math.round(targetMinutes * 60),
-      }
+        // The knob values are typed loosely (TuningValue = number | string | boolean)
+        // since KnobFields is shared across select/number/checkbox knobs; each field's
+        // actual runtime type matches its knob kind, so the cast to the request's
+        // per-field types is safe.
+        ...changedValues(ALL_TUNING_KNOBS, tuningValues, TUNING_DEFAULTS),
+      } as CreateProjectRequest
       const result = await createProject(req)
       onCreated(result.id)
     } catch (err) {
@@ -66,7 +98,10 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-5">New project</h2>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        {/* noValidate: validation is handled in handleSubmit — native constraint
+            validation would otherwise also cover the collapsed Advanced knobs
+            (e.g. number step mismatches), which shouldn't block submission while hidden. */}
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
           {/* Name */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -170,6 +205,71 @@ export function CreateProjectModal({ onCreated, onClose }: CreateProjectModalPro
               Most voice-cloning datasets want 30+ minutes of clean speech.
             </p>
           </div>
+
+          {/* Advanced tuning knobs */}
+          <details className="group">
+            <summary className="cursor-pointer select-none text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors list-none flex items-center gap-1">
+              <span className="inline-block transition-transform group-open:rotate-90">▸</span>
+              Advanced
+            </summary>
+            <div className="mt-3 space-y-4">
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1.5">
+                  Separation
+                </p>
+                <KnobFields
+                  knobs={SEPARATION_KNOBS}
+                  values={tuningValues}
+                  onChange={handleTuningChange}
+                  idPrefix="create-separation"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1.5">
+                  Speaker matching
+                </p>
+                <KnobFields
+                  knobs={DIARISATION_KNOBS}
+                  values={tuningValues}
+                  onChange={handleTuningChange}
+                  idPrefix="create-diarisation"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1.5">
+                  Transcription
+                </p>
+                <KnobFields
+                  knobs={TRANSCRIPTION_KNOBS}
+                  values={tuningValues}
+                  onChange={handleTuningChange}
+                  idPrefix="create-transcription"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1.5">
+                  Cleanup
+                </p>
+                <KnobFields
+                  knobs={CLEANUP_KNOBS}
+                  values={tuningValues}
+                  onChange={handleTuningChange}
+                  idPrefix="create-cleanup"
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase text-gray-500 dark:text-gray-400 mb-1.5">
+                  Voice training
+                </p>
+                <KnobFields
+                  knobs={XTTS_KNOBS}
+                  values={tuningValues}
+                  onChange={handleTuningChange}
+                  idPrefix="create-xtts"
+                />
+              </div>
+            </div>
+          </details>
 
           {/* Error */}
           {error && (

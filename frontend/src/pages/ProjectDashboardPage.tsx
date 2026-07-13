@@ -19,7 +19,8 @@ import { ProjectSettingsPanel } from '../components/project/ProjectSettingsPanel
 import { StageStrip } from '../components/project/StageStrip'
 import { NextActionCard } from '../components/project/NextActionCard'
 import { SourcesTable } from '../components/project/SourcesTable'
-import { TranscribeSettingsPanel } from '../components/project/TranscribeSettingsPanel'
+import { PipelineSteps } from '../components/project/PipelineSteps'
+import { CompareSettingsModal } from '../components/project/CompareSettingsModal'
 import { UploadArea } from '../components/project/UploadArea'
 import { ThemeToggle } from '../components/ui/ThemeToggle'
 import { CollapsibleSection, type CollapsibleSectionHandle } from '../components/ui/CollapsibleSection'
@@ -54,9 +55,19 @@ function useXttsEnabled(): boolean {
 }
 
 interface ReprocessConfirm {
-  sourceId: string
+  // One id for the per-source kebab path; several when a step row re-runs all
+  // eligible sources and any of them would invalidate approvals.
+  sourceIds: string[]
   steps: string[]
   message: string
+}
+
+// Sources a step re-run may target: terminal for that step (mid-pipeline
+// sources are skipped rather than erroring one by one). Mirrors the enable
+// rule in PipelineSteps.
+const RERUN_ELIGIBLE: Record<'separation' | 'diarisation', string[]> = {
+  separation: ['complete', 'separation_failed', 'diarisation_failed'],
+  diarisation: ['complete', 'diarisation_failed'],
 }
 
 export function ProjectDashboardPage() {
@@ -66,7 +77,9 @@ export function ProjectDashboardPage() {
   const [reprocessError, setReprocessError] = useState<string | null>(null)
   const [reprocessConfirm, setReprocessConfirm] = useState<ReprocessConfirm | null>(null)
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
+  const [compareOpen, setCompareOpen] = useState(false)
   const xttsEnabled = useXttsEnabled()
+  const processRef = useRef<CollapsibleSectionHandle>(null)
   const reviewRef = useRef<CollapsibleSectionHandle>(null)
   const settingsAnchorRef = useRef<HTMLDivElement>(null)
   const voiceRef = useRef<CollapsibleSectionHandle>(null)
@@ -88,6 +101,11 @@ export function ProjectDashboardPage() {
     openAndScroll(voiceRef.current)
   }
 
+  // Target of the strip's pipeline chips (Separate/Match/Transcribe).
+  function goToProcess() {
+    openAndScroll(processRef.current)
+  }
+
   async function submitReprocess(sourceId: string, steps: string[], confirm: boolean) {
     if (!projectId) return
     await reprocessSource(projectId, sourceId, steps, undefined, confirm)
@@ -100,22 +118,62 @@ export function ProjectDashboardPage() {
       await submitReprocess(sourceId, steps, false)
     } catch (err) {
       if (err instanceof ApiError && err.error === 'would_invalidate_approvals') {
-        setReprocessConfirm({ sourceId, steps, message: err.message })
+        setReprocessConfirm({ sourceIds: [sourceId], steps, message: err.message })
       } else {
         setReprocessError(errorMessage(err, 'Reprocess failed'))
       }
     }
   }
 
+  // Step-row re-run: submit every eligible source; if any would invalidate
+  // approvals, surface ONE confirm covering the ones that 409ed.
+  async function handleReprocessAll(steps: string[]) {
+    if (!project) return
+    setReprocessError(null)
+    const eligible = RERUN_ELIGIBLE[steps.includes('separation') ? 'separation' : 'diarisation']
+    const targets = project.stats.source_coverage.filter((s) => eligible.includes(s.status))
+    const needConfirm: string[] = []
+    let message = ''
+    for (const src of targets) {
+      try {
+        await submitReprocess(src.source_id, steps, false)
+      } catch (err) {
+        if (err instanceof ApiError && err.error === 'would_invalidate_approvals') {
+          needConfirm.push(src.source_id)
+          message = err.message
+        } else {
+          setReprocessError(err instanceof Error ? err.message : 'Reprocess failed')
+          return
+        }
+      }
+    }
+    if (needConfirm.length > 0) {
+      setReprocessConfirm({ sourceIds: needConfirm, steps, message })
+    }
+  }
+
   async function handleConfirmReprocess() {
     if (!reprocessConfirm) return
-    const { sourceId, steps } = reprocessConfirm
+    const { sourceIds, steps } = reprocessConfirm
     setReprocessConfirm(null)
     setReprocessError(null)
     try {
-      await submitReprocess(sourceId, steps, true)
+      for (const sourceId of sourceIds) {
+        await submitReprocess(sourceId, steps, true)
+      }
     } catch (err) {
       setReprocessError(errorMessage(err, 'Reprocess failed'))
+    }
+  }
+
+  async function handleRunTranscription() {
+    if (!projectId) return
+    setReprocessError(null)
+    try {
+      await runTranscription(projectId)
+      void refetch()
+    } catch (err) {
+      setReprocessError(err instanceof Error ? err.message : 'Failed to start transcription')
     }
   }
 
@@ -139,7 +197,7 @@ export function ProjectDashboardPage() {
           await submitReprocess(plan.sourceId, plan.steps, false)
         } catch (err) {
           if (err instanceof ApiError && err.error === 'would_invalidate_approvals') {
-            setReprocessConfirm({ sourceId: plan.sourceId, steps: plan.steps, message: err.message })
+            setReprocessConfirm({ sourceIds: [plan.sourceId], steps: plan.steps, message: err.message })
             return
           }
           throw err
@@ -180,7 +238,12 @@ export function ProjectDashboardPage() {
   // collapse the rest. CollapsibleSection lets an explicit user toggle override
   // and persist this.
   const stage = deriveStage(project, xttsEnabled)
-  const processDefaultOpen = stage === 'upload' || stage === 'speaker' || stage === 'process'
+  const processDefaultOpen =
+    stage === 'upload' ||
+    stage === 'speaker' ||
+    stage === 'separate' ||
+    stage === 'match' ||
+    stage === 'transcribe'
   const reviewDefaultOpen = stage === 'review' || stage === 'export'
   const voiceDefaultOpen = stage === 'train'
 
@@ -215,7 +278,12 @@ export function ProjectDashboardPage() {
       </div>
 
       {/* Stage strip */}
-      <StageStrip project={project} xttsEnabled={xttsEnabled} onGoToVoice={goToVoice} />
+      <StageStrip
+        project={project}
+        xttsEnabled={xttsEnabled}
+        onGoToVoice={goToVoice}
+        onGoToProcess={goToProcess}
+      />
 
       {/* Next action */}
       <NextActionCard
@@ -235,9 +303,14 @@ export function ProjectDashboardPage() {
         />
       )}
 
-      {/* Process — sources and transcription settings */}
+      {/* Process — sources and the pipeline stepper */}
       {hasSources && (
-        <CollapsibleSection title="Process" sectionKey="process" defaultOpen={processDefaultOpen}>
+        <CollapsibleSection
+          ref={processRef}
+          title="Process"
+          sectionKey="process"
+          defaultOpen={processDefaultOpen}
+        >
           <div className="space-y-4">
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
@@ -256,12 +329,15 @@ export function ProjectDashboardPage() {
             </div>
             <div className="space-y-2">
               <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                Processing settings
+                Pipeline
               </h3>
-              <TranscribeSettingsPanel
-                projectId={project.id}
-                config={project.config}
+              <PipelineSteps
+                project={project}
+                xttsEnabled={xttsEnabled}
                 onSaved={() => void refetch()}
+                onReprocessAll={(steps) => void handleReprocessAll(steps)}
+                onRunTranscription={() => void handleRunTranscription()}
+                onOpenCompare={() => setCompareOpen(true)}
               />
             </div>
           </div>
@@ -316,6 +392,16 @@ export function ProjectDashboardPage() {
         >
           <VoiceSection project={project} refetch={() => void refetch()} />
         </CollapsibleSection>
+      )}
+
+      {/* Cleanup settings A/B compare */}
+      {compareOpen && (
+        <CompareSettingsModal
+          projectId={project.id}
+          config={project.config}
+          onSaved={() => void refetch()}
+          onClose={() => setCompareOpen(false)}
+        />
       )}
 
       {/* Reprocess confirmation */}

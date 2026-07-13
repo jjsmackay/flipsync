@@ -272,6 +272,12 @@ Remove a source file and all its segments from the project. Requires confirmatio
 }
 ```
 
+#### `GET /projects/{project_id}/sources/{source_id}/vocals`
+
+Stream the source's separated vocals stem as `audio/wav` — the full file, no Range support (a deliberate listen action; stems can be large). Available once vocal separation has completed for the source.
+
+**Errors:** 404 `not_found` (unknown source), 404 `audio_not_found` (separation hasn't produced a stem yet, or the WAV is missing on disk).
+
 ---
 
 ### Reference clip
@@ -822,6 +828,43 @@ List recent previews (derived from `preview` jobs).
 
 **Response 404** until the preview job completes.
 **Response 200:** `audio/wav`, full file (no Range support, consistent with segment audio).
+
+---
+
+### Tuning previews
+
+Ephemeral A/B renders of stage settings on a sample — never written to segment tables. Results live in `projects/{project_id}/tuning_previews/` (best-effort swept after 24 h on submit; excluded from export and dataset builds). Stage-generic by design: `cleanup` is the only stage in v1; `separation` (window-preview) is the planned follow-on.
+
+#### `POST /projects/{project_id}/tuning-preview`
+
+Render ONE segment through the cleanup service with draft params.
+
+**Request:**
+```json
+{
+  "stage": "cleanup",
+  "params": {
+    "target_lufs": -19.0,
+    "highpass_hz": 120,
+    "silence_threshold_db": -50.0,
+    "silence_min_duration_secs": 0.1
+  },
+  "target": { "segment_id": "..." }
+}
+```
+
+Param bounds match the project-config fields (out-of-range → 422; unknown `stage` → 422). The job merges the draft knobs over the project's saved cleanup params (fixed keys like `true_peak_dbtp` come from the standard cleanup payload). `tuning_preview` is a CPU job — not GPU-gated — and is excluded from project-status recomputation, so an A/B never flips the project to `processing`.
+
+**Response 202:** `{"enqueued_job": {"id": "...", "type": "tuning_preview"}}`
+**Errors:** 404 `not_found` (unknown segment), 503 `cleanup_unavailable`.
+
+#### `GET /projects/{project_id}/tuning-preview/{preview_id}`
+
+Poll the preview job. **Response 200:** `{"id": "...", "status": "queued|running|complete|failed", "error": null}`. 404 `not_found` for ids that aren't tuning previews.
+
+#### `GET /projects/{project_id}/tuning-preview/{preview_id}/audio`
+
+**Response 404** (`preview_not_ready`) until the job completes; **200** `audio/wav` after.
 
 ---
 

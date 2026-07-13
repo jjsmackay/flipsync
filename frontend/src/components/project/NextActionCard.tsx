@@ -37,7 +37,9 @@ export function NextActionCard({
       <div key={stage} className="fade-in">
         {stage === 'upload' && <UploadStage project={project} onAction={onAction} />}
         {stage === 'speaker' && <SpeakerStage project={project} onAction={onAction} />}
-        {stage === 'process' && <ProcessStage project={project} onAction={onAction} />}
+        {(stage === 'separate' || stage === 'match' || stage === 'transcribe') && (
+          <PipelineStage project={project} onAction={onAction} stage={stage} />
+        )}
         {stage === 'review' && (
           <ReviewStage project={project} onAction={onAction} onOpenSettings={onOpenSettings} />
         )}
@@ -78,7 +80,19 @@ function SpeakerStage({ project, onAction }: NextActionCardProps) {
   return <SetReferencePanel project={project} onAction={onAction} />
 }
 
-function ProcessStage({ project, onAction }: NextActionCardProps) {
+// One shared body for the three pipeline steps — the same start/continue
+// controls and job list apply; only the running heading names the step.
+const PIPELINE_RUNNING_TITLES = {
+  separate: 'Separating vocals',
+  match: 'Matching your speaker',
+  transcribe: 'Transcribing segments',
+} as const
+
+function PipelineStage({
+  project,
+  onAction,
+  stage,
+}: NextActionCardProps & { stage: 'separate' | 'match' | 'transcribe' }) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -107,7 +121,10 @@ function ProcessStage({ project, onAction }: NextActionCardProps) {
   if (activeJobs.length > 0) {
     return (
       <div>
-        <StageHeading title="Processing" blurb="This can take a while — you can leave this page." />
+        <StageHeading
+          title={PIPELINE_RUNNING_TITLES[stage]}
+          blurb="This can take a while — you can leave this page."
+        />
         <div className="space-y-3">
           {activeJobs.map((job) => (
             <div key={job.id}>

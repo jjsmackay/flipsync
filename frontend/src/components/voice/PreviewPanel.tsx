@@ -10,6 +10,7 @@ interface PreviewPanelProps {
 }
 
 const TEXT_MAX = 500
+const DEFAULT_TEMPERATURE = 0.65
 const POLL_MS = 3000
 // Bounded polling lifetime: a hung preview job (or an id that never appears in the
 // limit-20 previews list) must not spin the poll forever. Synthesis takes seconds;
@@ -38,13 +39,14 @@ interface PreviewColumnProps {
   text: string
   conditioning: PreviewConditioning | undefined
   modelId: string | null
+  temperature: number
   disabled: boolean
   disabledReason?: string
 }
 
 /** Generate button + poll-to-completion + audio player. Renders no card border of its
  *  own — the parent column supplies the card and any heading/model selector. */
-function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disabledReason }: PreviewColumnProps) {
+function PreviewColumn({ projectId, text, conditioning, modelId, temperature, disabled, disabledReason }: PreviewColumnProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
@@ -146,7 +148,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, disabled, disab
     setPreviewId(null)
     setPhase('generating')
 
-    const body: CreatePreviewRequest = { text, model_id: modelId, conditioning }
+    const body: CreatePreviewRequest = { text, model_id: modelId, conditioning, temperature }
     try {
       const res = await createPreview(projectId, body)
       if (!mountedRef.current) return
@@ -192,6 +194,8 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
   const [text, setText] = useState('')
   const [source, setSource] = useState<ConditioningOption>('auto')
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
+  // Shared across both columns so A/B compares models, not sampling noise.
+  const [temperature, setTemperature] = useState(DEFAULT_TEMPERATURE)
 
   // Default the fine-tuned column to the newest ready model once one exists.
   useEffect(() => {
@@ -236,6 +240,25 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             ))}
           </select>
         </label>
+        <div className="space-y-1">
+          <div className="flex items-baseline justify-between gap-3">
+            <label htmlFor="preview-temperature" className="text-sm text-gray-700 dark:text-gray-300">
+              Temperature
+            </label>
+            <span className="shrink-0 font-mono text-blue-600">{temperature.toFixed(2)}</span>
+          </div>
+          <input
+            id="preview-temperature"
+            type="range"
+            min={0.05}
+            max={2}
+            step={0.05}
+            value={temperature}
+            onChange={(e) => setTemperature(parseFloat(e.target.value))}
+            className="w-full accent-blue-600"
+          />
+          <p className="text-xs text-gray-500 dark:text-gray-400">Higher = more varied delivery.</p>
+        </div>
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Generate the same text against the base model and a fine-tuned model to compare by ear.
         </p>
@@ -249,6 +272,7 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             text={trimmed}
             conditioning={conditioning}
             modelId={null}
+            temperature={temperature}
             disabled={textInvalid}
             disabledReason={textInvalid ? 'Enter text to synthesise.' : undefined}
           />
@@ -280,6 +304,7 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             text={trimmed}
             conditioning={conditioning}
             modelId={selectedModelId}
+            temperature={temperature}
             disabled={textInvalid || noModel || selectedModelId === null}
             disabledReason={
               noModel

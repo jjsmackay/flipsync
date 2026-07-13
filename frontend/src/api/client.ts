@@ -16,6 +16,8 @@ import type {
   CreateModelRequest,
   Preview,
   CreatePreviewRequest,
+  CreateTuningPreviewRequest,
+  TuningPreviewStatus,
 } from '../types/api'
 
 // When VITE_API_URL is unset (the default in the shipped compose), API calls go
@@ -181,6 +183,11 @@ export function uploadSource(
   onProgress?: (fraction: number) => void,
 ): Promise<{ id: string; filename: string; status: string }> {
   return uploadWithProgress(`/projects/${projectId}/sources`, file, onProgress)
+}
+
+/** Full-file vocals stem for a source — available once separation has run. */
+export function getSourceVocalsUrl(projectId: string, sourceId: string): string {
+  return `${BASE_URL}/projects/${projectId}/sources/${sourceId}/vocals`
 }
 
 export function deleteSource(
@@ -404,4 +411,28 @@ export function getPreviews(projectId: string): Promise<{ previews: Preview[] }>
 
 export function getPreviewAudioUrl(projectId: string, previewId: string): string {
   return `${BASE_URL}/projects/${projectId}/previews/${previewId}/audio`
+}
+
+// ---- Tuning previews (ephemeral stage A/B) ----
+
+export function createTuningPreview(
+  projectId: string,
+  body: CreateTuningPreviewRequest,
+): Promise<{ enqueued_job: EnqueuedJob }> {
+  return request(`/projects/${projectId}/tuning-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export function getTuningPreview(
+  projectId: string,
+  previewId: string,
+): Promise<TuningPreviewStatus> {
+  return request(`/projects/${projectId}/tuning-preview/${previewId}`)
+}
+
+export function getTuningPreviewAudioUrl(projectId: string, previewId: string): string {
+  return `${BASE_URL}/projects/${projectId}/tuning-preview/${previewId}/audio`
 }
