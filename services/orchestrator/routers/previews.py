@@ -24,6 +24,9 @@ class CreatePreviewRequest(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     model_id: Optional[str] = None
     conditioning: ConditioningSpec = Field(default_factory=ConditioningSpec)
+    # XTTS sampling temperature. Per-run (not project config) — the point of a
+    # preview is to try a few takes and pick one. 0.65 is the service default.
+    temperature: float = Field(default=0.65, gt=0.0, le=2.0)
 
 
 @router.post("", status_code=202)
@@ -67,6 +70,7 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
                 "source": body.conditioning.source,
                 "segment_count": body.conditioning.segment_count,
             },
+            "temperature": body.temperature,
         },
     )
     return {"enqueued_job": {"id": job_id, "type": "preview"}}

@@ -2085,6 +2085,7 @@ async def _handle_preview(
     cond = params.get("conditioning") or {}
     source = cond.get("source")
     segment_count = cond.get("segment_count", 5)
+    temperature = params.get("temperature", 0.65)
 
     checkpoint_dir = None
     if model_id:
@@ -2117,7 +2118,7 @@ async def _handle_preview(
         "reference_wavs": reference_wavs,
         "checkpoint_dir": checkpoint_dir,
         "output_path": output_path,
-        "params": {"temperature": 0.65},
+        "params": {"temperature": temperature},
     }
 
     try:
