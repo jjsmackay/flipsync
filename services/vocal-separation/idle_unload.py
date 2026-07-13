@@ -1,5 +1,9 @@
 """Idle-timer VRAM unloader.
 
+Twin file: kept byte-identical to services/vocal-separation/idle_unload.py and
+services/diarisation/idle_unload.py — the two services are independent and
+deliberately don't share a module, so apply any fix to both files.
+
 Releases the service's model from VRAM after a configurable idle period so it
 does not squat on GPU memory that a later pipeline stage (in another container)
 needs. The orchestrator's global GPU lock serialises *execution* but does

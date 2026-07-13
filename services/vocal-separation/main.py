@@ -212,6 +212,16 @@ def _empty_cuda_cache() -> None:
         pass
 
 
+def _error_response(
+    error: str, message: str, status_code: int, detail: Optional[dict] = None
+) -> JSONResponse:
+    """Build a flat-format error response: ``{"error", "message", "detail"}``."""
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": error, "message": message, "detail": detail or {}},
+    )
+
+
 def _mark_oom_failed(job_id: str) -> None:
     """Mark a job failed after chunking has already been attempted.
 
@@ -232,81 +242,65 @@ def _mark_oom_failed(job_id: str) -> None:
 
 
 def _run_separation(job: dict) -> None:
-    """Blocking separation call — runs in a thread pool executor."""
+    """Blocking separation call — runs in a thread pool executor.
+
+    An orchestrator-requested ``chunk_secs`` gets exactly one (chunked)
+    attempt. A bare submission tries the whole file first, then falls back to
+    one internal 60s-chunk retry on CUDA OOM before giving up.
+    """
     job_id = job["job_id"]
     input_path = job["input_path"]
     output_path = job["dest_path"]
     model_name = job["model"]
     chunk_secs = job["chunk_secs"]
     shifts = job["shifts"]
-    already_chunked = chunk_secs is not None
 
     def progress_cb(p: int) -> None:
         _set_progress(job_id, p)
 
+    attempts = [chunk_secs] if chunk_secs is not None else [None, 60]
+
     try:
-        if not already_chunked:
-            # Attempt whole-file processing first.
-            try:
+        for attempt_num, attempt_chunk_secs in enumerate(attempts):
+            is_last_attempt = attempt_num == len(attempts) - 1
+            if attempt_chunk_secs is None:
                 logger.info("Job %s: whole-file separation started", job_id)
+            else:
+                logger.info(
+                    "Job %s: chunked separation started (chunk_secs=%d)",
+                    job_id,
+                    attempt_chunk_secs,
+                )
+            try:
                 sep.separate(
                     input_path=input_path,
                     output_path=output_path,
                     model_name=model_name,
-                    chunk_secs=None,
+                    chunk_secs=attempt_chunk_secs,
                     shifts=shifts,
                     progress_callback=progress_cb,
                 )
+                break
             except Exception as exc:
                 if not _is_cuda_oom(exc):
                     raise
-                logger.warning(
-                    "Job %s: CUDA OOM on whole-file; retrying with chunk_secs=60",
-                    job_id,
-                )
                 _empty_cuda_cache()
-                # Internal chunked retry.
-                try:
-                    sep.separate(
-                        input_path=input_path,
-                        output_path=output_path,
-                        model_name=model_name,
-                        chunk_secs=60,
-                        shifts=shifts,
-                        progress_callback=progress_cb,
+                if is_last_attempt:
+                    reason = (
+                        "on chunked attempt"
+                        if chunk_secs is not None
+                        else "even with chunking"
                     )
-                except Exception as exc2:
-                    if not _is_cuda_oom(exc2):
-                        raise
                     logger.error(
-                        "Job %s: CUDA OOM even with chunking; marking failed", job_id
+                        "Job %s: CUDA OOM %s; marking failed", job_id, reason
                     )
-                    _empty_cuda_cache()
                     _mark_oom_failed(job_id)
                     return
-        else:
-            # chunk_secs was provided — the orchestrator asked for a chunked run.
-            logger.info(
-                "Job %s: chunked separation started (chunk_secs=%d)", job_id, chunk_secs
-            )
-            try:
-                sep.separate(
-                    input_path=input_path,
-                    output_path=output_path,
-                    model_name=model_name,
-                    chunk_secs=chunk_secs,
-                    shifts=shifts,
-                    progress_callback=progress_cb,
+                logger.warning(
+                    "Job %s: CUDA OOM on whole-file; retrying with chunk_secs=%d",
+                    job_id,
+                    attempts[attempt_num + 1],
                 )
-            except Exception as exc:
-                if not _is_cuda_oom(exc):
-                    raise
-                logger.error(
-                    "Job %s: CUDA OOM on chunked attempt; marking failed", job_id
-                )
-                _empty_cuda_cache()
-                _mark_oom_failed(job_id)
-                return
 
         _jobs[job_id].update(
             {
@@ -356,26 +350,21 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     FastAPI's default wraps them in ``{"detail": [...]}``; the contract mandates
     ``{"error", "message", "detail"}`` across all services.
     """
-    return JSONResponse(
+    return _error_response(
+        "validation_error",
+        "Request validation failed.",
         status_code=422,
-        content={
-            "error": "validation_error",
-            "message": "Request validation failed.",
-            "detail": {"errors": jsonable_encoder(exc.errors())},
-        },
+        detail={"errors": jsonable_encoder(exc.errors())},
     )
 
 
 @app.get("/health")
 async def health():
     if _preload_error is not None:
-        return JSONResponse(
+        return _error_response(
+            "model_preload_failed",
+            f"Model preload failed: {_preload_error}",
             status_code=503,
-            content={
-                "error": "model_preload_failed",
-                "message": f"Model preload failed: {_preload_error}",
-                "detail": {},
-            },
         )
     return {"status": "ok"}
 
@@ -397,13 +386,10 @@ async def submit_job(req: JobRequest):
     if req.job_id in _jobs:
         # Duplicate submit (e.g. an orchestrator retry after a timed-out but
         # delivered POST) must not restart or overwrite the original job.
-        return JSONResponse(
+        return _error_response(
+            "job_exists",
+            f"Job {req.job_id} already exists.",
             status_code=409,
-            content={
-                "error": "job_exists",
-                "message": f"Job {req.job_id} already exists.",
-                "detail": {},
-            },
         )
 
     job: dict = {
@@ -435,13 +421,10 @@ async def submit_job(req: JobRequest):
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str):
     if job_id not in _jobs:
-        return JSONResponse(
+        return _error_response(
+            "not_found",
+            f"Job {job_id} not found.",
             status_code=404,
-            content={
-                "error": "not_found",
-                "message": f"Job {job_id} not found.",
-                "detail": {},
-            },
         )
     job = _jobs[job_id]
     # Return only the public fields

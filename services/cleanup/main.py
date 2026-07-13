@@ -10,6 +10,7 @@ Port: 8004
 
 import asyncio
 import logging
+import os
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -96,10 +97,17 @@ async def _run_job(
     segments: list[SegmentInputModel],
     params: CleanupParamsModel,
 ) -> None:
-    """Process all segments and update the in-memory job record."""
+    """Process all segments concurrently (bounded) and update the job record.
+
+    Each segment is 3-4 sequential ffmpeg/ffprobe subprocesses; this CPU-only
+    service is the long pole of every export, so segments run concurrently
+    under a semaphore capped at the CPU count rather than one at a time.
+    Per-segment error isolation is unchanged — only a job-level
+    BinaryNotFoundError aborts the batch. Progress is reported as segments
+    finish (not submission order), via a counter incremented per completion.
+    """
     job = _jobs[job_id]
     total = len(segments)
-    results = []
 
     loop = asyncio.get_running_loop()
     cleaner_params = _CleanupParams(
@@ -115,56 +123,76 @@ async def _run_job(
         output_channels=params.output_channels,
     )
 
-    for i, seg in enumerate(segments):
+    sem = asyncio.Semaphore(os.cpu_count() or 4)
+    completed = 0
+
+    async def _run_one(seg: SegmentInputModel) -> tuple[str, dict]:
+        nonlocal completed
         cleaner_seg = _SegmentInput(
             id=seg.id,
             input_path=seg.input_path,
             output_path=seg.output_path,
         )
-        try:
-            result = await loop.run_in_executor(
-                None, _cleaner_module.process_segment, cleaner_seg, cleaner_params
+        async with sem:
+            try:
+                result = await loop.run_in_executor(
+                    None, _cleaner_module.process_segment, cleaner_seg, cleaner_params
+                )
+            except BinaryNotFoundError:
+                raise
+            except Exception as e:
+                # Unexpected error for this segment — record and continue
+                logger.exception("Unexpected error processing segment %s", seg.id)
+                result = SegmentResult(
+                    id=seg.id,
+                    output_path=None,
+                    clipping_warning=False,
+                    auto_rejected=False,
+                    error=f"ffmpeg_error: unexpected error: {e}",
+                )
+
+        # A sibling segment may already have triggered a job-level failure
+        # (e.g. the ffmpeg binary is missing) — don't mutate progress after
+        # that; the run below is otherwise cooperatively scheduled, so this
+        # check can never race with the failure handler setting it.
+        if job["status"] != "failed":
+            completed += 1
+            job["progress"] = int((completed / total) * 100) if total > 0 else 100
+            logger.info(
+                "Job %s: processed segment %s (%d/%d)", job_id, seg.id, completed, total
             )
-        except BinaryNotFoundError as e:
-            # The ffmpeg/ffprobe binary is missing: this is not one segment's
-            # fault, it will fail for every segment. Fail the whole job so the
-            # orchestrator does NOT auto-reject the user's entire approved set.
-            logger.error("Job %s failed: %s", job_id, e)
-            job["status"] = "failed"
-            job["progress"] = 0
-            job["results"] = None
-            job["error"] = f"binary_not_found: {e}"
-            return
-        except Exception as e:
-            # Unexpected error for this segment — record and continue
-            logger.exception("Unexpected error processing segment %s", seg.id)
-            result = SegmentResult(
-                id=seg.id,
-                output_path=None,
-                clipping_warning=False,
-                auto_rejected=False,
-                error=f"ffmpeg_error: unexpected error: {e}",
-            )
 
-        results.append(
-            {
-                "id": result.id,
-                "output_path": result.output_path,
-                "clipping_warning": result.clipping_warning,
-                "auto_rejected": result.auto_rejected,
-                "error": result.error,
-            }
-        )
+        return seg.id, {
+            "id": result.id,
+            "output_path": result.output_path,
+            "clipping_warning": result.clipping_warning,
+            "auto_rejected": result.auto_rejected,
+            "error": result.error,
+        }
 
-        processed = i + 1
-        job["progress"] = int((processed / total) * 100) if total > 0 else 100
-        logger.info(
-            "Job %s: processed segment %s (%d/%d)", job_id, seg.id, processed, total
-        )
+    tasks = [asyncio.create_task(_run_one(seg)) for seg in segments]
+    results_by_id: dict[str, dict] = {}
+    try:
+        for coro in asyncio.as_completed(tasks):
+            seg_id, result_dict = await coro
+            results_by_id[seg_id] = result_dict
+    except BinaryNotFoundError as e:
+        # The ffmpeg/ffprobe binary is missing: this is not one segment's
+        # fault, it will fail for every segment. Fail the whole job so the
+        # orchestrator does NOT auto-reject the user's entire approved set.
+        logger.error("Job %s failed: %s", job_id, e)
+        for t in tasks:
+            t.cancel()
+        job["status"] = "failed"
+        job["progress"] = 0
+        job["results"] = None
+        job["error"] = f"binary_not_found: {e}"
+        return
 
+    # Keep submission order in the result list; the orchestrator matches by id.
     job["status"] = "complete"
     job["progress"] = 100
-    job["results"] = results
+    job["results"] = [results_by_id[seg.id] for seg in segments]
     logger.info("Job %s complete: %d segments processed", job_id, total)
 
 
