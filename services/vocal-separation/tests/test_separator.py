@@ -22,6 +22,29 @@ SAMPLE_RATE = 44100
 
 
 # ---------------------------------------------------------------------------
+# shifts forwarding (Increment C)
+# ---------------------------------------------------------------------------
+
+class TestShiftsForwarding:
+    def test_separate_forwards_shifts_to_apply_demucs(self):
+        from unittest.mock import MagicMock, patch
+        import separator
+
+        fake_model = MagicMock()
+        fake_model.samplerate = SAMPLE_RATE
+        fake_model.sources = ["drums", "bass", "other", "vocals"]
+        audio = torch.zeros(1, SAMPLE_RATE)
+        with patch("separator._load_model", return_value=fake_model), \
+             patch("separator._apply_demucs", return_value=torch.zeros(1, SAMPLE_RATE)) as m_apply, \
+             patch("separator.os.path.exists", return_value=True), \
+             patch("separator.os.makedirs"), \
+             patch("torchaudio.load", return_value=(audio, SAMPLE_RATE)), \
+             patch("torchaudio.save"):
+            separator.separate("/in.wav", "/out.wav", model_name="htdemucs", shifts=3)
+        assert m_apply.call_args.kwargs.get("shifts") == 3
+
+
+# ---------------------------------------------------------------------------
 # compute_chunks
 # ---------------------------------------------------------------------------
 

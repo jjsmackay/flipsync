@@ -60,6 +60,17 @@ class JobRequest(BaseModel):
     # 'default' keeps the device-derived precision (float16 GPU / int8 CPU); the
     # others let the orchestrator trade precision for VRAM on a constrained GPU.
     compute_type: str = "default"
+    # Whisper decoding knobs. beam_size 5 and vad_filter off are faster-whisper's
+    # own defaults, so an unset job behaves exactly as before.
+    beam_size: int = 5
+    vad_filter: bool = False
+
+    @field_validator("beam_size")
+    @classmethod
+    def _validate_beam_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("beam_size must be a positive integer.")
+        return v
 
     @field_validator("model")
     @classmethod
@@ -134,6 +145,8 @@ async def _run_transcription(
     language: Optional[str],
     batch_size: int,
     compute_type: str = "default",
+    beam_size: int = 5,
+    vad_filter: bool = False,
 ) -> None:
     """Background task: load model, process segments in batches, update job state."""
     loop = asyncio.get_running_loop()
@@ -160,6 +173,8 @@ async def _run_transcription(
                 batch,
                 language,
                 batch_size,
+                beam_size,
+                vad_filter,
             )
 
             # Append results to cumulative list (thread-safe via asyncio lock)
@@ -246,6 +261,8 @@ async def submit_job(req: JobRequest):
             req.language,
             req.batch_size,
             req.compute_type,
+            req.beam_size,
+            req.vad_filter,
         )
     )
     _background_tasks.add(task)
