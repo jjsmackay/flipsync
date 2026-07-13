@@ -389,8 +389,8 @@ export function PipelineSteps({
               models={models ?? []}
               onStarted={() => onTrainStarted?.()}
             />
-            {/* Persisted fine-tune defaults (xtts_* config). The train dialog's
-                Advanced fields prefill from these; edits there are per-run. */}
+            {/* Persisted fine-tune settings (xtts_* config) — the single source
+                of truth applied to every training run. */}
             {settingsFor(XTTS_KNOBS)}
           </StepRow>
         </div>

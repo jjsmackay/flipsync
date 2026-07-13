@@ -1,22 +1,10 @@
 import { useState } from 'react'
-import type { ProjectDetail, Model, CreateModelRequest, ModelParams, JobSummary } from '../../types/api'
+import type { ProjectDetail, Model, CreateModelRequest, JobSummary } from '../../types/api'
 import { createModel, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
 import { errorMessage } from '../../utils/errors'
 import { jobLabel } from '../../utils/labels'
 import { ProgressBar } from '../ui/ProgressBar'
-import { changedValues, configValues, XTTS_KNOBS, type TuningKey, type TuningValue, type TuningValues } from '../../utils/tuning'
-import { KnobFields } from '../project/KnobFields'
-
-// Maps the XTTS tuning keys (shared with the project config + create-project
-// form) to the CreateModelRequest.params field names — the two naming schemes
-// diverge only by the `xtts_` prefix.
-const XTTS_PARAM_KEYS: Partial<Record<TuningKey, keyof ModelParams>> = {
-  xtts_epochs: 'epochs',
-  xtts_batch_size: 'batch_size',
-  xtts_grad_accum: 'grad_accum',
-  xtts_learning_rate: 'learning_rate',
-}
 
 interface TrainPanelProps {
   project: ProjectDetail
@@ -88,12 +76,6 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
   const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const advancedBaseline = configValues(project.config, XTTS_KNOBS)
-  const [advancedValues, setAdvancedValues] = useState<TuningValues>(advancedBaseline)
-
-  function handleAdvancedChange(key: TuningKey, value: TuningValue) {
-    setAdvancedValues((prev) => ({ ...prev, [key]: value }))
-  }
 
   const approvedDuration = project.stats.approved_duration_secs
 
@@ -115,15 +97,6 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
       mode === 'auto'
         ? { dataset: { mode: 'auto', min_confidence: minConfidence } }
         : { dataset: { mode: 'approved' } }
-    const changedAdvanced = changedValues(XTTS_KNOBS, advancedValues, advancedBaseline)
-    if (Object.keys(changedAdvanced).length > 0) {
-      const params: Partial<ModelParams> = {}
-      for (const [key, value] of Object.entries(changedAdvanced)) {
-        const paramKey = XTTS_PARAM_KEYS[key as TuningKey]
-        if (paramKey) params[paramKey] = value as number
-      }
-      body.params = params
-    }
     try {
       await createModel(project.id, body)
       setConfirming(false)
@@ -160,13 +133,7 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
         <>
           <button
             type="button"
-            onClick={() => {
-              // Reseed from config on every open: defaults saved via the Train
-              // settings disclosure since mount must not read as stale per-run
-              // overrides (changedValues compares against the CURRENT config).
-              setAdvancedValues(configValues(project.config, XTTS_KNOBS))
-              setConfirming(true)
-            }}
+            onClick={() => setConfirming(true)}
             disabled={reviewedBlocked}
             className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -212,21 +179,6 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
               </span>
             </label>
           </fieldset>
-
-          <details className="group">
-            <summary className="cursor-pointer select-none text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors list-none flex items-center gap-1">
-              <span className="inline-block transition-transform group-open:rotate-90">▸</span>
-              Advanced
-            </summary>
-            <div className="mt-3">
-              <KnobFields
-                knobs={XTTS_KNOBS}
-                values={advancedValues}
-                onChange={handleAdvancedChange}
-                idPrefix="train-adv"
-              />
-            </div>
-          </details>
 
           {mode === 'auto' && (
             <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">

@@ -51,11 +51,12 @@ function openConfirm() {
   fireEvent.click(screen.getByRole('button', { name: 'Train voice model' }))
 }
 
-function openAdvanced() {
-  fireEvent.click(screen.getByText('Advanced'))
-}
-
-describe('TrainPanel advanced params', () => {
+// The Train panel no longer carries per-run hyperparameter overrides: epochs,
+// batch size, etc. are set once in the Train step's persisted Settings
+// (xtts_* project config) and the orchestrator reads them for every run. The
+// train request must therefore never send `params`, which would otherwise
+// clobber the saved settings.
+describe('TrainPanel train request', () => {
   beforeEach(() => {
     vi.mocked(createModel).mockReset()
     vi.mocked(createModel).mockResolvedValue({
@@ -64,7 +65,7 @@ describe('TrainPanel advanced params', () => {
     } as never)
   })
 
-  it('omits params when advanced fields are untouched', async () => {
+  it('never sends per-run params (training settings drive the run)', async () => {
     render(<TrainPanel project={makeProject()} models={[]} onStarted={vi.fn()} />)
     openConfirm()
     fireEvent.click(screen.getByRole('button', { name: 'Start training' }))
@@ -73,39 +74,19 @@ describe('TrainPanel advanced params', () => {
     expect(body).not.toHaveProperty('params')
   })
 
-  it('sends only the changed field when Epochs is edited', async () => {
-    render(<TrainPanel project={makeProject()} models={[]} onStarted={vi.fn()} />)
-    openConfirm()
-    openAdvanced()
-    fireEvent.change(screen.getByLabelText('Epochs'), { target: { value: '20' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Start training' }))
-    await waitFor(() => expect(createModel).toHaveBeenCalled())
-    const [, body] = vi.mocked(createModel).mock.calls[0]
-    expect(body).toMatchObject({ params: { epochs: 20 } })
-    expect(Object.keys(body.params ?? {})).toEqual(['epochs'])
-  })
-
-  it('prefills advanced fields from project.config', () => {
+  it('sends no params even when the project has a non-default epochs setting', async () => {
     render(<TrainPanel project={makeProject({ xttsEpochs: 42 })} models={[]} onStarted={vi.fn()} />)
     openConfirm()
-    openAdvanced()
-    expect(screen.getByLabelText('Epochs')).toHaveValue(42)
-  })
-
-  it('reseeds from config on confirm open, so saved defaults are not sent as stale overrides', async () => {
-    // Mount with the default config, then update it (the Train settings
-    // disclosure PATCHed it and the poll refetched) BEFORE opening confirm.
-    const { rerender } = render(
-      <TrainPanel project={makeProject()} models={[]} onStarted={vi.fn()} />,
-    )
-    rerender(<TrainPanel project={makeProject({ xttsEpochs: 25 })} models={[]} onStarted={vi.fn()} />)
-    openConfirm()
-    openAdvanced()
-    expect(screen.getByLabelText('Epochs')).toHaveValue(25)
-    // Untouched → matches the current config → no per-run override sent.
     fireEvent.click(screen.getByRole('button', { name: 'Start training' }))
     await waitFor(() => expect(createModel).toHaveBeenCalled())
     const [, body] = vi.mocked(createModel).mock.calls[0]
     expect(body).not.toHaveProperty('params')
+  })
+
+  it('exposes no Advanced hyperparameter disclosure', () => {
+    render(<TrainPanel project={makeProject()} models={[]} onStarted={vi.fn()} />)
+    openConfirm()
+    expect(screen.queryByText('Advanced')).toBeNull()
+    expect(screen.queryByLabelText('Epochs')).toBeNull()
   })
 })
