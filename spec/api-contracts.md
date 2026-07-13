@@ -778,7 +778,11 @@ Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
   "text": "This is what the cloned voice sounds like.",
   "model_id": null,
   "conditioning": { "source": "segments_cleaned", "segment_count": 5 },
-  "temperature": 0.65
+  "temperature": 0.65,
+  "speed": 1.0,
+  "repetition_penalty": 10.0,
+  "top_k": 50,
+  "top_p": 0.85
 }
 ```
 
@@ -788,7 +792,13 @@ Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
 | `model_id` | string or null | null | Fine-tuned model to synthesise with; null = base model zero-shot |
 | `conditioning.source` | string | best available | `reference_clip`, `segments_raw`, or `segments_cleaned`. Default resolves to the best available stage (cleaned > raw > reference) |
 | `conditioning.segment_count` | int | 5 | Segment sources only: top-N segments by match confidence, duration 2–12 s |
-| `temperature` | float | 0.65 | XTTS sampling temperature (>0, ≤2). Per-run only — not stored on the project. Higher = more varied delivery. |
+| `temperature` | float | 0.65 | XTTS sampling temperature (>0, ≤2). Higher = more varied delivery. |
+| `speed` | float | 1.0 | Speaking-rate multiplier (0.25–2). Real rate control, not resampling. |
+| `repetition_penalty` | float | 10.0 | 1–20. Raise to kill stutters, repeated syllables, and trailing silences. |
+| `top_k` | int | 50 | 1–100. Sample from only the k most likely tokens. |
+| `top_p` | float | 0.85 | Nucleus sampling cutoff (>0, ≤1). |
+
+All five sampling knobs are per-run only — never stored on the project. `length_penalty` is deliberately not exposed: it only applies under beam search and the service keeps `num_beams=1`, so it would be a knob that does nothing.
 
 The orchestrator resolves the conditioning source to absolute WAV paths. The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
 
@@ -1343,7 +1353,7 @@ The service converts the manifest to a Coqui formatter CSV, splits train/eval, a
   "reference_wavs": ["/data/projects/{project_id}/segments/raw/7f3c2a1b-1234-5678-9abc-def012345678.wav"],
   "checkpoint_dir": null,
   "output_path": "/data/projects/{project_id}/previews/{job_id}.wav",
-  "params": { "temperature": 0.65 }
+  "params": { "temperature": 0.65, "speed": 1.0, "repetition_penalty": 10.0, "top_k": 50, "top_p": 0.85 }
 }
 ```
 
@@ -1353,6 +1363,12 @@ The service converts the manifest to a Coqui formatter CSV, splits train/eval, a
 | `checkpoint_dir` | string or null | no | Fine-tuned checkpoint bundle; null = base model (zero-shot) |
 | `output_path` | string | yes | Absolute path for the output WAV; parent dir created if missing |
 | `params.temperature` | float | no | Sampling temperature (default 0.65) |
+| `params.speed` | float | no | Speaking-rate multiplier (default 1.0) |
+| `params.repetition_penalty` | float | no | Default 10.0 |
+| `params.top_k` | int | no | Default 50 |
+| `params.top_p` | float | no | Default 0.85 |
+
+The service always synthesises with `enable_text_splitting=True`: preview text can run to 500 characters, past XTTS's per-language sentence limit, and each split sentence gets its own prosody contour.
 
 **Response 202:** `{ "job_id": "..." }`
 

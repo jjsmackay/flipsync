@@ -398,6 +398,14 @@ def synthesise(
         gpt_cond_latent,
         speaker_embedding,
         temperature=params.get("temperature", 0.65),
+        speed=params.get("speed", 1.0),
+        repetition_penalty=float(params.get("repetition_penalty", 10.0)),
+        top_k=params.get("top_k", 50),
+        top_p=params.get("top_p", 0.85),
+        # Preview text can run to 500 chars; XTTS degrades past its per-language
+        # sentence limit (~250 chars for English) when fed unsplit text. Always
+        # split — each sentence gets its own prosody contour.
+        enable_text_splitting=True,
     )
     wav = torch.tensor(out["wav"]).unsqueeze(0)
     # inference() returns audio at the decoder's output rate (24 kHz for

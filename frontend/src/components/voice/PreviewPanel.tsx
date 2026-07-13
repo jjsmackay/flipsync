@@ -10,8 +10,25 @@ interface PreviewPanelProps {
 }
 
 const TEXT_MAX = 500
-const DEFAULT_TEMPERATURE = 0.65
 const POLL_MS = 3000
+
+// Per-run XTTS sampling knobs, shared across both columns so A/B compares
+// models, not sampling noise. Defaults mirror the orchestrator's.
+interface SamplingParams {
+  temperature: number
+  speed: number
+  repetition_penalty: number
+  top_k: number
+  top_p: number
+}
+
+const DEFAULT_SAMPLING: SamplingParams = {
+  temperature: 0.65,
+  speed: 1,
+  repetition_penalty: 10,
+  top_k: 50,
+  top_p: 0.85,
+}
 // Bounded polling lifetime: a hung preview job (or an id that never appears in the
 // limit-20 previews list) must not spin the poll forever. Synthesis takes seconds;
 // ten minutes is generous even behind a queued GPU job.
@@ -39,14 +56,14 @@ interface PreviewColumnProps {
   text: string
   conditioning: PreviewConditioning | undefined
   modelId: string | null
-  temperature: number
+  sampling: SamplingParams
   disabled: boolean
   disabledReason?: string
 }
 
 /** Generate button + poll-to-completion + audio player. Renders no card border of its
  *  own — the parent column supplies the card and any heading/model selector. */
-function PreviewColumn({ projectId, text, conditioning, modelId, temperature, disabled, disabledReason }: PreviewColumnProps) {
+function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disabled, disabledReason }: PreviewColumnProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
@@ -148,7 +165,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, temperature, di
     setPreviewId(null)
     setPhase('generating')
 
-    const body: CreatePreviewRequest = { text, model_id: modelId, conditioning, temperature }
+    const body: CreatePreviewRequest = { text, model_id: modelId, conditioning, ...sampling }
     try {
       const res = await createPreview(projectId, body)
       if (!mountedRef.current) return
@@ -188,6 +205,50 @@ function PreviewColumn({ projectId, text, conditioning, modelId, temperature, di
   )
 }
 
+function SliderRow({
+  id,
+  label,
+  min,
+  max,
+  step,
+  value,
+  decimals,
+  hint,
+  onChange,
+}: {
+  id: string
+  label: string
+  min: number
+  max: number
+  step: number
+  value: number
+  decimals: number
+  hint: string
+  onChange: (value: number) => void
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-3">
+        <label htmlFor={id} className="text-sm text-gray-700 dark:text-gray-300">
+          {label}
+        </label>
+        <span className="shrink-0 font-mono text-blue-600">{value.toFixed(decimals)}</span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full accent-blue-600"
+      />
+      <p className="text-xs text-gray-500 dark:text-gray-400">{hint}</p>
+    </div>
+  )
+}
+
 export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
   const readyModels = models.filter((m) => m.status === 'ready')
 
@@ -195,7 +256,11 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
   const [source, setSource] = useState<ConditioningOption>('auto')
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
   // Shared across both columns so A/B compares models, not sampling noise.
-  const [temperature, setTemperature] = useState(DEFAULT_TEMPERATURE)
+  const [sampling, setSampling] = useState<SamplingParams>(DEFAULT_SAMPLING)
+
+  function setKnob(key: keyof SamplingParams) {
+    return (value: number) => setSampling((prev) => ({ ...prev, [key]: value }))
+  }
 
   // Default the fine-tuned column to the newest ready model once one exists.
   useEffect(() => {
@@ -240,25 +305,69 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             ))}
           </select>
         </label>
-        <div className="space-y-1">
-          <div className="flex items-baseline justify-between gap-3">
-            <label htmlFor="preview-temperature" className="text-sm text-gray-700 dark:text-gray-300">
-              Temperature
-            </label>
-            <span className="shrink-0 font-mono text-blue-600">{temperature.toFixed(2)}</span>
+        <SliderRow
+          id="preview-temperature"
+          label="Temperature"
+          min={0.05}
+          max={2}
+          step={0.05}
+          decimals={2}
+          value={sampling.temperature}
+          onChange={setKnob('temperature')}
+          hint="Higher = more varied delivery."
+        />
+        <SliderRow
+          id="preview-speed"
+          label="Speed"
+          min={0.5}
+          max={2}
+          step={0.05}
+          decimals={2}
+          value={sampling.speed}
+          onChange={setKnob('speed')}
+          hint="Speaking-rate multiplier. 1 is the model's natural pace."
+        />
+        <SliderRow
+          id="preview-repetition-penalty"
+          label="Repetition penalty"
+          min={1}
+          max={20}
+          step={0.5}
+          decimals={1}
+          value={sampling.repetition_penalty}
+          onChange={setKnob('repetition_penalty')}
+          hint="Raise it to kill stutters, repeated syllables, and long trailing silences."
+        />
+        <details className="group">
+          <summary className="cursor-pointer select-none text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors list-none flex items-center gap-1">
+            <span className="inline-block transition-transform group-open:rotate-90">▸</span>
+            Advanced sampling
+          </summary>
+          <div className="mt-3 space-y-3">
+            <SliderRow
+              id="preview-top-k"
+              label="Top-k"
+              min={1}
+              max={100}
+              step={1}
+              decimals={0}
+              value={sampling.top_k}
+              onChange={setKnob('top_k')}
+              hint="Samples from only the k most likely tokens. Tighten to reduce weird prosody excursions."
+            />
+            <SliderRow
+              id="preview-top-p"
+              label="Top-p"
+              min={0.05}
+              max={1}
+              step={0.05}
+              decimals={2}
+              value={sampling.top_p}
+              onChange={setKnob('top_p')}
+              hint="Nucleus sampling cutoff. Lower keeps only the most probable continuations."
+            />
           </div>
-          <input
-            id="preview-temperature"
-            type="range"
-            min={0.05}
-            max={2}
-            step={0.05}
-            value={temperature}
-            onChange={(e) => setTemperature(parseFloat(e.target.value))}
-            className="w-full accent-blue-600"
-          />
-          <p className="text-xs text-gray-500 dark:text-gray-400">Higher = more varied delivery.</p>
-        </div>
+        </details>
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Generate the same text against the base model and a fine-tuned model to compare by ear.
         </p>
@@ -272,7 +381,7 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             text={trimmed}
             conditioning={conditioning}
             modelId={null}
-            temperature={temperature}
+            sampling={sampling}
             disabled={textInvalid}
             disabledReason={textInvalid ? 'Enter text to synthesise.' : undefined}
           />
@@ -304,7 +413,7 @@ export function PreviewPanel({ projectId, models }: PreviewPanelProps) {
             text={trimmed}
             conditioning={conditioning}
             modelId={selectedModelId}
-            temperature={temperature}
+            sampling={sampling}
             disabled={textInvalid || noModel || selectedModelId === null}
             disabledReason={
               noModel

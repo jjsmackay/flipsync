@@ -333,8 +333,18 @@ export interface CreatePreviewRequest {
   text: string
   model_id: string | null
   conditioning?: PreviewConditioning
-  /** XTTS sampling temperature (>0–2, default 0.65). Per-run only — not project config. */
+  // XTTS sampling knobs. Per-run only — not project config. Bounds mirror the
+  // orchestrator's validators; defaults are coqui's except temperature.
+  /** >0–2, default 0.65 */
   temperature?: number
+  /** 0.25–2, default 1 — playback-rate multiplier */
+  speed?: number
+  /** 1–20, default 10 — raise to kill stutters/looping artefacts */
+  repetition_penalty?: number
+  /** 1–100, default 50 */
+  top_k?: number
+  /** >0–1, default 0.85 */
+  top_p?: number
 }
 
 // ---- Tuning previews (ephemeral stage A/B) ----

@@ -24,9 +24,14 @@ class CreatePreviewRequest(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     model_id: Optional[str] = None
     conditioning: ConditioningSpec = Field(default_factory=ConditioningSpec)
-    # XTTS sampling temperature. Per-run (not project config) — the point of a
-    # preview is to try a few takes and pick one. 0.65 is the service default.
+    # XTTS sampling knobs. Per-run (not project config) — the point of a
+    # preview is to try a few takes and pick one. Defaults match the service's
+    # (coqui's inference defaults, except our 0.65 house temperature).
     temperature: float = Field(default=0.65, gt=0.0, le=2.0)
+    speed: float = Field(default=1.0, ge=0.25, le=2.0)
+    repetition_penalty: float = Field(default=10.0, ge=1.0, le=20.0)
+    top_k: int = Field(default=50, ge=1, le=100)
+    top_p: float = Field(default=0.85, gt=0.0, le=1.0)
 
 
 @router.post("", status_code=202)
@@ -71,6 +76,10 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
                 "segment_count": body.conditioning.segment_count,
             },
             "temperature": body.temperature,
+            "speed": body.speed,
+            "repetition_penalty": body.repetition_penalty,
+            "top_k": body.top_k,
+            "top_p": body.top_p,
         },
     )
     return {"enqueued_job": {"id": job_id, "type": "preview"}}

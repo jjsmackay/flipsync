@@ -2003,7 +2003,14 @@ async def _handle_preview(
     cond = params.get("conditioning") or {}
     source = cond.get("source")
     segment_count = cond.get("segment_count", 5)
-    temperature = params.get("temperature", 0.65)
+    # Per-run sampling knobs; defaults mirror the XTTS service's SynthParams.
+    sampling = {
+        "temperature": params.get("temperature", 0.65),
+        "speed": params.get("speed", 1.0),
+        "repetition_penalty": params.get("repetition_penalty", 10.0),
+        "top_k": params.get("top_k", 50),
+        "top_p": params.get("top_p", 0.85),
+    }
 
     checkpoint_dir = None
     if model_id:
@@ -2034,7 +2041,7 @@ async def _handle_preview(
         "reference_wavs": reference_wavs,
         "checkpoint_dir": checkpoint_dir,
         "output_path": output_path,
-        "params": {"temperature": temperature},
+        "params": sampling,
     }
 
     try:

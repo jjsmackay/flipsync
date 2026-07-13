@@ -56,3 +56,43 @@ describe('PreviewPanel temperature', () => {
     expect(body.temperature).toBe(1.2)
   })
 })
+
+describe('PreviewPanel sampling knobs', () => {
+  it('sends default sampling params with every request', async () => {
+    render(<PreviewPanel projectId="p1" models={models} />)
+    enterText()
+    clickZeroShotGenerate()
+    await waitFor(() => expect(createPreview).toHaveBeenCalled())
+    const [, body] = vi.mocked(createPreview).mock.calls[0]
+    expect(body).toMatchObject({
+      speed: 1,
+      repetition_penalty: 10,
+      top_k: 50,
+      top_p: 0.85,
+    })
+  })
+
+  it('sends adjusted speed and repetition penalty', async () => {
+    render(<PreviewPanel projectId="p1" models={models} />)
+    enterText()
+    fireEvent.change(screen.getByLabelText('Speed'), { target: { value: '1.25' } })
+    fireEvent.change(screen.getByLabelText('Repetition penalty'), { target: { value: '5' } })
+    clickZeroShotGenerate()
+    await waitFor(() => expect(createPreview).toHaveBeenCalled())
+    const [, body] = vi.mocked(createPreview).mock.calls[0]
+    expect(body.speed).toBe(1.25)
+    expect(body.repetition_penalty).toBe(5)
+  })
+
+  it('sends advanced top-k / top-p adjustments', async () => {
+    render(<PreviewPanel projectId="p1" models={models} />)
+    enterText()
+    fireEvent.change(screen.getByLabelText('Top-k'), { target: { value: '25' } })
+    fireEvent.change(screen.getByLabelText('Top-p'), { target: { value: '0.6' } })
+    clickZeroShotGenerate()
+    await waitFor(() => expect(createPreview).toHaveBeenCalled())
+    const [, body] = vi.mocked(createPreview).mock.calls[0]
+    expect(body.top_k).toBe(25)
+    expect(body.top_p).toBe(0.6)
+  })
+})

@@ -651,6 +651,33 @@ class TestPreviewHandler:
 
         assert captured["payload"]["params"]["temperature"] == 0.65
 
+    def test_sampling_params_forwarded_with_defaults(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        _set_reference(conn, project, db.project_dir(project))
+
+        captured = {}
+
+        async def mock_submit(service, payload):
+            captured["payload"] = payload
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete",
+                    "result": {"output_path": "x", "duration_secs": 1.0}}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "preview",
+                             params={"text": "hi", "model_id": None,
+                                     "speed": 1.3, "top_k": 25,
+                                     "conditioning": {"source": None, "segment_count": 5}})
+
+        p = captured["payload"]["params"]
+        # Explicit values pass through; the rest fill from the shared defaults.
+        assert p == {"temperature": 0.65, "speed": 1.3, "repetition_penalty": 10.0,
+                     "top_k": 25, "top_p": 0.85}
+
     def test_finetuned_uses_checkpoint_dir(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
@@ -946,6 +973,36 @@ class TestPreviewsRouter:
     def test_post_temperature_out_of_range_422(self, client, project):
         resp = client.post(f"/projects/{project}/previews",
                            json={"text": "Hi", "temperature": 5.0})
+        assert resp.status_code == 422
+
+    def test_post_accepts_sampling_params_and_enqueues_them(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        _set_reference(conn, project, db.project_dir(project))
+        with patch("service_client.is_healthy", new=AsyncMock(return_value=True)):
+            resp = client.post(
+                f"/projects/{project}/previews",
+                json={"text": "Hello there.", "speed": 1.25,
+                      "repetition_penalty": 6.0, "top_k": 40, "top_p": 0.7},
+            )
+        assert resp.status_code == 202
+        job_id = resp.json()["enqueued_job"]["id"]
+        p = json.loads(conn.execute(
+            "SELECT params FROM jobs WHERE id=?", (job_id,)).fetchone()["params"])
+        assert p["speed"] == 1.25
+        assert p["repetition_penalty"] == 6.0
+        assert p["top_k"] == 40
+        assert p["top_p"] == 0.7
+
+    @pytest.mark.parametrize("field,value", [
+        ("speed", 3.0),
+        ("repetition_penalty", 0.5),
+        ("top_k", 0),
+        ("top_p", 1.5),
+    ])
+    def test_post_sampling_param_out_of_range_422(self, client, project, field, value):
+        resp = client.post(f"/projects/{project}/previews",
+                           json={"text": "Hi", field: value})
         assert resp.status_code == 422
 
     def test_get_list_maps_params(self, client, project):

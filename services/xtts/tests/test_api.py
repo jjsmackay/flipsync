@@ -253,6 +253,44 @@ class TestSynthesise:
         assert data["result"] == {"output_path": out, "duration_secs": 4.2}
         mock_syn.assert_called_once()
 
+    def test_sampling_params_forwarded_to_engine(self, client, tmp_path):
+        ref = tmp_path / "ref.wav"
+        ref.write_bytes(b"RIFFstub")
+        out = str(tmp_path / "out" / "preview.wav")
+        result = {"output_path": out, "duration_secs": 4.2}
+
+        with patch("engine.synthesise", return_value=result) as mock_syn:
+            body = _synth_body(
+                [str(ref)], out,
+                params={
+                    "temperature": 0.9, "speed": 1.2, "repetition_penalty": 5.0,
+                    "top_k": 30, "top_p": 0.7,
+                },
+            )
+            client.post("/jobs", json=body)
+            _poll_to_terminal(client, body["job_id"])
+
+        assert mock_syn.call_args.kwargs["params"] == {
+            "temperature": 0.9, "speed": 1.2, "repetition_penalty": 5.0,
+            "top_k": 30, "top_p": 0.7,
+        }
+
+    def test_sampling_params_default_when_omitted(self, client, tmp_path):
+        ref = tmp_path / "ref.wav"
+        ref.write_bytes(b"RIFFstub")
+        out = str(tmp_path / "out" / "preview.wav")
+        result = {"output_path": out, "duration_secs": 4.2}
+
+        with patch("engine.synthesise", return_value=result) as mock_syn:
+            body = _synth_body([str(ref)], out, params={"temperature": 0.65})
+            client.post("/jobs", json=body)
+            _poll_to_terminal(client, body["job_id"])
+
+        assert mock_syn.call_args.kwargs["params"] == {
+            "temperature": 0.65, "speed": 1.0, "repetition_penalty": 10.0,
+            "top_k": 50, "top_p": 0.85,
+        }
+
     def test_synthesise_missing_reference_fails(self, client, tmp_path):
         out = str(tmp_path / "out.wav")
         missing = str(tmp_path / "does_not_exist.wav")

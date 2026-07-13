@@ -111,7 +111,15 @@ class FinetuneParams(BaseModel):
 
 
 class SynthParams(BaseModel):
+    # XTTS-v2 sampling knobs; defaults match coqui's inference() defaults
+    # except temperature (0.65 is our house default). length_penalty is
+    # deliberately absent — it only applies under beam search and num_beams
+    # stays 1, so exposing it would ship a knob that does nothing.
     temperature: float = 0.65
+    speed: float = 1.0
+    repetition_penalty: float = 10.0
+    top_k: int = 50
+    top_p: float = 0.85
 
 
 class FinetuneJob(BaseModel):
@@ -289,7 +297,7 @@ def _run_synthesise(job: dict, req: SynthesiseJob) -> None:
             reference_wavs=req.reference_wavs,
             checkpoint_dir=req.checkpoint_dir,
             output_path=req.output_path,
-            params={"temperature": req.params.temperature},
+            params=req.params.model_dump(),
         )
         job["result"] = result
         job["status"] = "complete"
