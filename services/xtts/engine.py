@@ -196,6 +196,9 @@ def finetune(
         "meta_file_train": os.path.basename(train_csv),
         "meta_file_val": os.path.basename(eval_csv),
         "language": params["language"],
+        # load_tts_samples reads dataset["ignored_speakers"] unconditionally
+        # (subscript, not .get) — omitting it raises KeyError 'ignored_speakers'.
+        "ignored_speakers": [],
     }
 
     config = GPTTrainerConfig(
