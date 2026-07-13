@@ -189,12 +189,20 @@ def finetune(
         sample_rate=22050, dvae_sample_rate=22050, output_sample_rate=_SAMPLE_RATE
     )
 
+    # root_path must be an ancestor of BOTH the metadata CSVs and the audio
+    # files they reference: Coqui's add_extra_keys does
+    # Path(audio_file).relative_to(root_path), which errors otherwise. The
+    # cleaned WAVs live in the project's cleaned/ dir, a sibling of
+    # models/<id>/dataset/, so the dataset dir is NOT their ancestor. Use the
+    # project dir (two levels up from output_dir = .../projects/<id>/models/<id>)
+    # as the root and reference the CSVs by their path relative to it.
+    dataset_root = os.path.dirname(os.path.dirname(output_dir))
     dataset_config = {
         "formatter": "coqui",
         "dataset_name": "flipsync",
-        "path": dataset_dir,
-        "meta_file_train": os.path.basename(train_csv),
-        "meta_file_val": os.path.basename(eval_csv),
+        "path": dataset_root,
+        "meta_file_train": os.path.relpath(train_csv, dataset_root),
+        "meta_file_val": os.path.relpath(eval_csv, dataset_root),
         "language": params["language"],
         # load_tts_samples reads dataset["ignored_speakers"] unconditionally
         # (subscript, not .get) — omitting it raises KeyError 'ignored_speakers'.
