@@ -1092,6 +1092,69 @@ async def _handle_transcription_segment(
     _recompute_project_status(project_id)
 
 
+async def _handle_reference_transcribe(
+    project_id: str, job_id: str, source_id: str | None, params: dict
+) -> None:
+    """Transcribe the project's reference clip whole and store the text on the
+    project row (projects.reference_transcript).
+
+    The reference is not a segment, so this submits a single synthetic segment
+    to the transcription service rather than reusing the segment write path. The
+    result is a read-only surface for the user and feeds engines that require a
+    reference transcript (e.g. GPT-SoVITS). Status-exempt: never drives project
+    status."""
+    conn = get_conn(project_id)
+    project = conn.execute(
+        "SELECT reference_path, whisper_model, language, whisper_compute_type, "
+        "whisper_beam_size, whisper_vad_filter, align_words FROM projects WHERE id=?",
+        (project_id,),
+    ).fetchone()
+    if project is None or not project["reference_path"]:
+        _fail_job(project_id, job_id, "no_reference: the reference clip was removed before transcription ran")
+        return
+
+    data_prefix = _data_prefix()
+    payload = {
+        "job_id": job_id,
+        "segments": [{
+            "id": "reference",
+            "wav_path": f"{data_prefix}/projects/{project_id}/{project['reference_path']}",
+        }],
+        "model": project["whisper_model"],
+        "language": project["language"],
+        "batch_size": 1,
+        "compute_type": project["whisper_compute_type"],
+        "beam_size": project["whisper_beam_size"],
+        "vad_filter": bool(project["whisper_vad_filter"]),
+        "align": bool(project["align_words"]),
+    }
+
+    try:
+        await _submit_with_retry("transcription", payload)
+    except Exception as exc:
+        _fail_job(project_id, job_id, f"submit_failed: {exc}")
+        return
+
+    result = await service_client.poll_until_complete("transcription", job_id)
+    if result["status"] == "failed":
+        _fail_job(project_id, job_id, result.get("error", "unknown_error"))
+        return
+
+    completed = [cs for cs in result.get("completed_segments", []) if cs["id"] == "reference"]
+    entry = completed[0] if completed else None
+    if entry is None or entry.get("error"):
+        detail = entry.get("error") if entry else "no result returned"
+        _fail_job(project_id, job_id, f"transcription_error: {detail}")
+        return
+
+    conn.execute(
+        "UPDATE projects SET reference_transcript=?, updated_at=? WHERE id=?",
+        (entry.get("transcript"), _now(), project_id),
+    )
+    conn.commit()
+    _complete_job(project_id, job_id)
+
+
 def _apply_transcription_results(
     project_id: str,
     conn,
@@ -2195,6 +2258,7 @@ HANDLERS: dict[str, Callable] = {
     "scout_speakers": _handle_scout_speakers,
     "transcription_bulk": _handle_transcription_bulk,
     "transcription_segment": _handle_transcription_segment,
+    "reference_transcribe": _handle_reference_transcribe,
     "export": _handle_export,
     "dataset_build": _handle_dataset_build,
     "finetune": _handle_finetune,

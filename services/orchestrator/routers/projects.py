@@ -110,6 +110,7 @@ def _project_detail(project_id: str) -> dict:
         "target_duration_secs": p["target_duration_secs"],
         "reference_path": p["reference_path"],
         "reference_origin": json.loads(p["reference_origin"]) if p["reference_origin"] else None,
+        "reference_transcript": p["reference_transcript"],
         "config": {
             "whisper_model": p["whisper_model"],
             "language": p["language"],

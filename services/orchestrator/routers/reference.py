@@ -14,6 +14,7 @@ from fastapi import APIRouter, UploadFile, File, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+import service_client
 from audio import get_duration
 from db import get_conn, project_dir, require_project, utc_now
 from errors import AppError
@@ -50,12 +51,19 @@ async def _finalise_reference(conn, project_id: str, origin: dict, staged_wav) -
     dest = project_dir(project_id) / "reference.wav"
     os.replace(staged_wav, dest)
 
+    # The reference changed, so any existing transcript is stale — clear it,
+    # then re-transcribe. Gate the auto-enqueue on transcription health so a
+    # down service leaves reference_transcript NULL (user re-runs from the UI)
+    # rather than queuing a guaranteed-to-fail job.
     conn.execute(
-        "UPDATE projects SET reference_path='reference.wav', reference_origin=?, updated_at=? WHERE id=?",
+        "UPDATE projects SET reference_path='reference.wav', reference_origin=?, "
+        "reference_transcript=NULL, updated_at=? WHERE id=?",
         (json.dumps(origin), utc_now(), project_id),
     )
     conn.commit()
     recompute_project_status(project_id)
+    if await service_client.is_healthy("transcription"):
+        enqueue(project_id, "reference_transcribe")
     return duration
 
 
@@ -99,6 +107,27 @@ async def get_reference_audio(project_id: str):
         raise AppError(404, "audio_not_found", "Reference WAV not found on disk.")
 
     return FileResponse(str(wav), media_type="audio/wav")
+
+
+@router.post("/transcribe", status_code=202)
+async def transcribe_reference(project_id: str):
+    """Manually (re-)transcribe the reference clip. Auto-runs when a reference is
+    set; this endpoint backs the UI's re-transcribe button and recovers
+    references that predate the feature or whose auto-run was skipped because the
+    transcription service was down."""
+    conn = require_project(project_id)
+
+    row = conn.execute(
+        "SELECT reference_path FROM projects WHERE id=?", (project_id,)
+    ).fetchone()
+    if row["reference_path"] is None:
+        raise AppError(409, "no_reference", "No reference clip has been set for this project.")
+
+    if not await service_client.is_healthy("transcription"):
+        raise AppError(503, "transcription_unavailable", "The transcription service is not deployed or not healthy.")
+
+    job_id = enqueue(project_id, "reference_transcribe")
+    return {"enqueued_job": {"id": job_id, "type": "reference_transcribe"}}
 
 
 # ---------------------------------------------------------------------------

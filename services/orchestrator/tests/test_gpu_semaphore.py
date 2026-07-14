@@ -49,9 +49,12 @@ class TestGpuJobTypes:
             "scout_speakers",
             "transcription_bulk",
             "transcription_segment",
+            "reference_transcribe",
             "finetune",
             "preview",
         }
+        # Reference transcription gates on the transcription service.
+        assert jobs.GPU_JOB_SERVICES["reference_transcribe"] == "transcription"
         # CPU jobs must never be gated (dataset_build uses the CPU-only
         # cleanup service).
         assert "extract_audio" not in jobs.GPU_JOB_TYPES
