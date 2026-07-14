@@ -173,6 +173,24 @@ def _is_cuda_oom(exc: BaseException) -> bool:
     return False
 
 
+def _is_cuda_oom_chain(exc: BaseException) -> bool:
+    """True if ``exc`` or anything in its cause/context chain is a CUDA OOM.
+
+    coqui's ``Trainer.fit()`` catches the underlying ``OutOfMemoryError`` and
+    then raises ``SystemExit(1)``; the original OOM survives only as the
+    ``__context__`` of that SystemExit. Detecting it therefore means walking the
+    chain, not just inspecting the top-level exception.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _is_cuda_oom(cur):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _empty_cuda_cache() -> None:
     """Best-effort CUDA cache clear; a no-op when torch/CUDA is unavailable."""
     try:
@@ -241,39 +259,34 @@ def _run_finetune(job: dict, req: FinetuneJob) -> None:
         job["status"] = "complete"
         logger.info("Job %s: fine-tune complete", job_id)
 
-    except Exception as exc:  # noqa: BLE001
-        if _is_cuda_oom(exc):
-            _empty_cuda_cache()
-            if req.params.batch_size > 1:
-                # Report a smaller configuration for the orchestrator to
-                # resubmit — mirrors vocal separation's retry_with_chunk_secs.
-                logger.warning(
-                    "Job %s: CUDA OOM at batch_size=%d; reporting retry_with",
-                    job_id,
-                    req.params.batch_size,
-                )
-                # "status" is written LAST: the orchestrator acts the moment it
-                # polls a terminal status, so error/retry_with must already be
-                # in place when it does.
-                job.update(
-                    {
-                        "error": "cuda_oom",
-                        "retry_with": {
-                            "batch_size": 1,
-                            "grad_accum": req.params.batch_size * req.params.grad_accum,
-                        },
-                        "status": "failed",
-                    }
-                )
-            else:
-                # Already at the minimum batch size — retrying is futile.
-                logger.error("Job %s: CUDA OOM at batch_size=1; terminal", job_id)
-                job.update(
-                    {"error": "cuda_oom", "retry_with": None, "status": "failed"}
-                )
+    # SystemExit is caught deliberately: coqui's Trainer.fit() calls sys.exit(1)
+    # on a training failure (including CUDA OOM), and letting that escape the
+    # executor kills the whole service (uvicorn PID 1) — the job then vanishes
+    # and the orchestrator's next poll 404s. Converting it to a job failure here
+    # keeps the service alive. (KeyboardInterrupt/GeneratorExit are NOT caught.)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
+        _empty_cuda_cache()
+        if _is_cuda_oom_chain(exc):
+            # Fail loud, no auto-downscale: silently retraining at a different
+            # batch size would change the operator's config behind their back.
+            logger.error(
+                "Job %s: CUDA OOM at batch_size=%d; failing (reduce batch size and retry)",
+                job_id,
+                req.params.batch_size,
+            )
+            job.update(
+                {
+                    "error": (
+                        f"cuda_oom: out of GPU memory at batch_size="
+                        f"{req.params.batch_size}. Reduce the training batch size "
+                        "(raise grad accumulation to keep the effective batch) and retry."
+                    ),
+                    "status": "failed",
+                }
+            )
         else:
             logger.exception("Job %s: fine-tune failed", job_id)
-            job.update({"error": str(exc), "status": "failed"})
+            job.update({"error": str(exc) or type(exc).__name__, "status": "failed"})
 
 
 def _run_synthesise(job: dict, req: SynthesiseJob) -> None:

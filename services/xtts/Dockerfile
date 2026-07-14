@@ -19,5 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Reduce CUDA allocator fragmentation — lets a fine-tune reclaim reserved-but-
+# unallocated blocks instead of OOM-ing on a small allocation near the VRAM
+# ceiling (the OutOfMemoryError message recommends exactly this).
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 EXPOSE 8005
 CMD ["python3", "main.py"]

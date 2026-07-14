@@ -403,7 +403,10 @@ class TestFinetuneHandler:
         detail = json.loads(job["progress_detail"])
         assert detail["epoch"] == 3 and detail["train_loss"] == 2.8
 
-    def test_oom_retry_then_success(self, client, project, isolated_data_dir):
+    def test_oom_fails_loud_without_resubmit(self, client, project, isolated_data_dir):
+        """Fail loud: an OOM failure fails model+job with the service's message
+        and does NOT auto-resubmit at a smaller batch size, even if the service
+        still sends a retry_with (which the orchestrator now ignores)."""
         import db
         conn = db.get_conn(project)
         model_id = _insert_model(conn, project, status="pending")
@@ -414,48 +417,24 @@ class TestFinetuneHandler:
             submitted.append(payload)
             return {"job_id": payload["job_id"]}
 
-        attempt = {"n": 0}
-
         async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
-            attempt["n"] += 1
-            if attempt["n"] == 1:
-                return {"status": "failed", "error": "cuda_oom",
-                        "retry_with": {"batch_size": 1, "grad_accum": 3}}
-            return {"status": "complete", "result": {"final_eval_loss": 2.5}}
-
-        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
-             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
-            _enqueue_and_run(project, "finetune",
-                             params={"model_id": model_id, "params": {"batch_size": 3, "grad_accum": 1}})
-
-        assert len(submitted) == 2
-        assert submitted[1]["params"]["batch_size"] == 1
-        assert submitted[1]["params"]["grad_accum"] == 3
-        assert submitted[0]["job_id"] != submitted[1]["job_id"]
-        m = conn.execute("SELECT status FROM models WHERE id=?", (model_id,)).fetchone()
-        assert m["status"] == "ready"
-
-    def test_second_oom_is_terminal(self, client, project, isolated_data_dir):
-        import db
-        conn = db.get_conn(project)
-        model_id = _insert_model(conn, project, status="pending")
-
-        async def mock_submit(service, payload):
-            return {"job_id": payload["job_id"]}
-
-        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
-            return {"status": "failed", "error": "cuda_oom",
+            return {"status": "failed",
+                    "error": "cuda_oom: out of GPU memory at batch_size=3. Reduce...",
                     "retry_with": {"batch_size": 1, "grad_accum": 3}}
 
         with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
              patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
             job_id = _enqueue_and_run(project, "finetune",
-                                      params={"model_id": model_id, "params": {"batch_size": 3}})
+                                      params={"model_id": model_id, "params": {"batch_size": 3, "grad_accum": 1}})
 
-        m = conn.execute("SELECT status FROM models WHERE id=?", (model_id,)).fetchone()
+        # Submitted exactly once — no retry.
+        assert len(submitted) == 1
+        m = conn.execute("SELECT status, error FROM models WHERE id=?", (model_id,)).fetchone()
         assert m["status"] == "failed"
-        job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert m["error"].startswith("cuda_oom")
+        job = conn.execute("SELECT status, error FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert job["status"] == "failed"
+        assert job["error"].startswith("cuda_oom")
 
     def test_poll_404_fails_cleanly_without_leaking_url(self, client, project, isolated_data_dir):
         """Regression: an xtts restart mid-train made GET /jobs/{id} return 404,

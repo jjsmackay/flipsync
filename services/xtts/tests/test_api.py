@@ -198,7 +198,9 @@ class TestFinetune:
         assert data["error"].startswith("insufficient_vram")
         mock_ft.assert_not_called()
 
-    def test_oom_batch_size_3_reports_retry_with(self, client):
+    def test_oom_fails_loud_no_retry_with(self, client):
+        """Fail loud: an OOM fails the job with a cuda_oom message and does NOT
+        advertise a retry_with (no silent auto-downscale)."""
         with patch("engine.vram_available_gb", return_value=24.0), patch(
             "engine.finetune", side_effect=_OOM()
         ):
@@ -207,10 +209,11 @@ class TestFinetune:
             data = _poll_to_terminal(client, body["job_id"])
 
         assert data["status"] == "failed"
-        assert data["error"] == "cuda_oom"
-        assert data["retry_with"] == {"batch_size": 1, "grad_accum": 3}
+        assert data["error"].startswith("cuda_oom")
+        assert "batch_size=3" in data["error"]
+        assert data["retry_with"] is None
 
-    def test_oom_batch_size_1_is_terminal(self, client):
+    def test_oom_batch_size_1_fails_loud(self, client):
         with patch("engine.vram_available_gb", return_value=24.0), patch(
             "engine.finetune", side_effect=_OOM()
         ):
@@ -227,8 +230,40 @@ class TestFinetune:
             data = _poll_to_terminal(client, body["job_id"])
 
         assert data["status"] == "failed"
-        assert data["error"] == "cuda_oom"
+        assert data["error"].startswith("cuda_oom")
         assert data["retry_with"] is None
+
+    def test_oom_via_systemexit_survives_and_fails_loud(self):
+        """Regression: coqui's Trainer.fit() catches the OOM and calls
+        sys.exit(1). That SystemExit must be caught (so the service survives),
+        the OOM detected through its context chain, and the job failed loudly —
+        NOT propagated (which would kill the process → lost job → orchestrator
+        404)."""
+        import main as svc
+
+        def _coqui_style_exit():
+            # Mirror coqui: OOM is caught, then sys.exit(1) is raised while
+            # handling it, so the OOM is the SystemExit's __context__.
+            try:
+                raise _OOM()
+            except _OOM:
+                raise SystemExit(1)
+
+        job = {"job_id": "sysexit-1", "status": "running", "retry_with": None}
+        req = svc.FinetuneJob(
+            job_id="sysexit-1", type="finetune",
+            manifest_path="/x/dataset.json", output_dir="/x/out",
+            params=svc.FinetuneParams(language="en", batch_size=2, grad_accum=1),
+        )
+        with patch("engine.release_cached_model"), \
+             patch("engine.vram_available_gb", return_value=24.0), \
+             patch("engine.finetune", side_effect=lambda *a, **k: _coqui_style_exit()):
+            # Must return normally (not raise SystemExit).
+            svc._run_finetune(job, req)
+
+        assert job["status"] == "failed"
+        assert job["error"].startswith("cuda_oom")
+        assert job.get("retry_with") is None
 
 
 # ---------------------------------------------------------------------------

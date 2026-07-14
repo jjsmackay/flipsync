@@ -1988,22 +1988,13 @@ async def _handle_finetune(
         "xtts", payload["job_id"], interval_secs=10.0, on_progress=on_progress
     )
 
+    # Fail loud: a fine-tune failure (including CUDA OOM) fails the model and job
+    # with the service's message. We do NOT auto-resubmit at a smaller batch
+    # size — silently changing the operator's training config is worse than a
+    # clear failure that says to reduce the batch size and retry.
     if result["status"] == "failed":
-        retry_with = result.get("retry_with")
-        if retry_with:
-            logger.info("Fine-tune OOM for model %s, retrying with %s", model_id, retry_with)
-            retry_payload = make_payload({**hyperparams, **retry_with})
-            try:
-                await _submit_with_retry("xtts", retry_payload)
-                result = await service_client.poll_until_complete(
-                    "xtts", retry_payload["job_id"], interval_secs=10.0, on_progress=on_progress
-                )
-            except Exception as exc:
-                result = {"status": "failed", "error": str(exc)}
-
-        if result["status"] == "failed":
-            _fail(result.get("error", "unknown_error"))
-            return
+        _fail(result.get("error", "unknown_error"))
+        return
 
     res = result.get("result") or {}
     conn.execute(
