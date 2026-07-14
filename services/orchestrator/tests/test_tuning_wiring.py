@@ -276,3 +276,48 @@ class TestFinetuneWiring:
                              params={"model_id": model_id, "params": {"epochs": 5}})
 
         assert captured["payload"]["params"]["epochs"] == 5
+
+    def test_create_model_no_params_uses_project_config(self, client, project, isolated_data_dir):
+        """Regression: a POST /models body with no `params` must let the persisted
+        project config (xtts_*) drive training. The endpoint previously filled the
+        body's TrainParams defaults (epochs=10 …), masking the config so every run
+        trained 10 epochs regardless of the Train settings."""
+        import db
+        conn = db.get_conn(project)
+        _set_config(conn, project, xtts_epochs=25, xtts_batch_size=4,
+                    xtts_grad_accum=2, xtts_learning_rate=1e-5)
+        # Enough approved, in-range, pre-cleaned segments to clear the 300 s gate.
+        source_id = _insert_source(conn, project)
+        for _ in range(35):
+            _insert_seg(conn, project, source_id, status="approved",
+                        start=0.0, end=10.0, transcript="hello there",
+                        cleaned_path=f"cleaned/{uuid.uuid4()}.wav")
+        captured, mock_submit = _capture()
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"status": "complete", "checkpoint_dir": "models/m", "eval_loss": 0.1}
+
+        # Stub the background runner so the endpoint only enqueues; we run the
+        # jobs deterministically ourselves (avoids the runner racing _run_job).
+        with patch("jobs._ensure_runner", lambda pid: None), \
+             patch("service_client.is_healthy", new=AsyncMock(return_value=True)), \
+             patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            resp = client.post(f"/projects/{project}/models",
+                               json={"dataset": {"mode": "approved"}})
+            assert resp.status_code == 202, resp.text
+            # create_model enqueues dataset_build then finetune (FIFO); run both
+            # in insertion order (rowid) — dataset_build must set the manifest
+            # before finetune runs, and both share a second-precision created_at.
+            rows = conn.execute(
+                "SELECT id FROM jobs WHERE project_id=? ORDER BY rowid",
+                (project,),
+            ).fetchall()
+            for row in rows:
+                _run_job(project, row["id"])
+
+        params = captured["payload"]["params"]
+        assert params["epochs"] == 25
+        assert params["batch_size"] == 4
+        assert params["grad_accum"] == 2
+        assert params["learning_rate"] == 1e-5

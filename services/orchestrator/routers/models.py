@@ -33,11 +33,16 @@ class DatasetSpec(BaseModel):
     min_confidence: float = 0.85
 
 
+# Per-run hyperparameter overrides. Every field defaults to None: only the
+# keys a client explicitly sends are forwarded, so an omitted key falls through
+# to the persisted project config (xtts_*) in _handle_finetune rather than being
+# masked by a hardcoded default. (Concrete defaults here silently overrode the
+# operator's Train settings — every run trained 10 epochs regardless.)
 class TrainParams(BaseModel):
-    epochs: int = 10
-    batch_size: int = 3
-    grad_accum: int = 1
-    learning_rate: float = 5e-6
+    epochs: int | None = None
+    batch_size: int | None = None
+    grad_accum: int | None = None
+    learning_rate: float | None = None
 
 
 class CreateModelRequest(BaseModel):
@@ -82,6 +87,10 @@ async def create_model(project_id: str, body: CreateModelRequest = CreateModelRe
             {"selected_duration_secs": duration, "required_secs": REQUIRED_DATASET_SECS},
         )
 
+    # Only the overrides the client actually sent — omitted keys resolve against
+    # the project config at run time in _handle_finetune (per-key fallback).
+    overrides = body.params.model_dump(exclude_none=True)
+
     model_id = str(uuid.uuid4())
     now = utc_now()
     conn.execute(
@@ -90,7 +99,7 @@ async def create_model(project_id: str, body: CreateModelRequest = CreateModelRe
             (id, project_id, status, dataset_mode, min_confidence, params, created_at, updated_at)
         VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
         """,
-        (model_id, project_id, mode, min_conf, json.dumps(body.params.model_dump()), now, now),
+        (model_id, project_id, mode, min_conf, json.dumps(overrides), now, now),
     )
     conn.commit()
 
@@ -102,7 +111,7 @@ async def create_model(project_id: str, body: CreateModelRequest = CreateModelRe
     )
     ft_job = enqueue(
         project_id, "finetune",
-        params={"model_id": model_id, "params": body.params.model_dump()},
+        params={"model_id": model_id, "params": overrides},
     )
 
     return {
