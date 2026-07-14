@@ -1010,6 +1010,14 @@ def synthesise(
         "text_split_method": "cut5",
         "return_fragment": False,
         "streaming_mode": False,
+        # v2Pro's batched vocoder path (using_vocoder_synthesis_batched_infer)
+        # reconstructs audio via SOLA overlap-add + a last-chunk padding trim
+        # (TTS.py: audio[... : -padding_len * upsample_rate]) that deterministically
+        # clips the tail of the final fragment — with cut5 that's the end of every
+        # sentence, so previews lose the last half-word. The serial vocoder path
+        # (parallel_infer=False -> using_vocoder_synthesis) has no such trim.
+        # Preview text is short, so the serial throughput cost is negligible.
+        "parallel_infer": False,
     }
 
     # TTS.run is a generator of (sample_rate, int16-ndarray) fragments; with
