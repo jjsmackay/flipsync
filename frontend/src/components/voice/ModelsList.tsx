@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Model } from '../../types/api'
-import { deleteModel, ApiError } from '../../api/client'
+import { deleteModel, getModelDownloadUrl, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
 import { errorMessage } from '../../utils/errors'
 import { StatusBadge } from '../ui/StatusBadge'
@@ -87,7 +87,16 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
                 )}
               </div>
 
-              <div className="flex-shrink-0">
+              <div className="flex flex-shrink-0 items-center gap-2">
+                {model.status === 'ready' && confirmId !== model.id && (
+                  <a
+                    href={getModelDownloadUrl(projectId, model.id)}
+                    download
+                    className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  >
+                    Download
+                  </a>
+                )}
                 {confirmId === model.id ? (
                   <div className="flex items-center gap-2">
                     <button

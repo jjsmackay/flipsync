@@ -403,6 +403,10 @@ export function deleteModel(projectId: string, modelId: string): Promise<void> {
   })
 }
 
+export function getModelDownloadUrl(projectId: string, modelId: string): string {
+  return `${BASE_URL}/projects/${projectId}/models/${modelId}/download`
+}
+
 // ---- Previews (v1.5) ----
 
 export function createPreview(
