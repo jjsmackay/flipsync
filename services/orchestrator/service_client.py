@@ -6,7 +6,8 @@ Handles:
 - GET /health startup polling with configurable timeout (default 5 minutes)
 
 Service URLs are read from environment variables:
-  VOCAL_SEPARATION_URL, DIARISATION_URL, TRANSCRIPTION_URL, CLEANUP_URL
+  VOCAL_SEPARATION_URL, DIARISATION_URL, TRANSCRIPTION_URL, CLEANUP_URL,
+  XTTS_URL, GPT_SOVITS_URL
 """
 
 import asyncio
@@ -23,6 +24,7 @@ SERVICE_URLS: dict[str, str] = {
     "transcription": os.environ.get("TRANSCRIPTION_URL", "http://transcription:8003"),
     "cleanup": os.environ.get("CLEANUP_URL", "http://cleanup:8004"),
     "xtts": os.environ.get("XTTS_URL", "http://xtts:8005"),
+    "gpt_sovits": os.environ.get("GPT_SOVITS_URL", "http://gpt-sovits:8006"),
 }
 
 # Shared async client — created lazily, reused across requests.

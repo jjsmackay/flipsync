@@ -286,6 +286,18 @@ export interface BulkSegmentRequest {
 
 export type ModelStatus = 'pending' | 'training' | 'ready' | 'failed' | 'cancelled'
 
+// The two voice engines a model (or a create-model request) can belong to.
+export type EngineId = 'xtts' | 'gpt_sovits'
+
+// One entry per engine in `capabilities.engines` — lets the frontend build the
+// Train-stage engine picker without probing each service itself.
+export interface EngineInfo {
+  id: EngineId
+  name: string
+  healthy: boolean
+  languages: string[]
+}
+
 export interface ModelParams {
   epochs: number
   batch_size: number
@@ -293,10 +305,19 @@ export interface ModelParams {
   learning_rate: number
 }
 
+// GPT-SoVITS's own per-run hyperparameter overrides (spec §7). Plain numbers,
+// all optional — an omitted key falls through to the service's own default.
+export interface GptSovitsTrainParams {
+  sovits_epochs?: number
+  gpt_epochs?: number
+  batch_size?: number
+}
+
 export interface Model {
   id: string
   project_id: string
   status: ModelStatus
+  engine: EngineId
   dataset_mode: 'approved' | 'auto'
   min_confidence: number | null
   segment_count: number | null
@@ -311,11 +332,12 @@ export interface Model {
 }
 
 export interface CreateModelRequest {
+  engine?: EngineId
   dataset?: {
     mode: 'approved' | 'auto'
     min_confidence?: number | null
   }
-  params?: Partial<ModelParams>
+  params?: Partial<ModelParams> | GptSovitsTrainParams
 }
 
 // ---- Previews (v1.5) ----
@@ -340,8 +362,10 @@ export interface CreatePreviewRequest {
   segment_id?: string
   model_id: string | null
   conditioning?: PreviewConditioning
-  // XTTS sampling knobs. Per-run only — not project config. Bounds mirror the
-  // orchestrator's validators; defaults are coqui's except temperature.
+  // Sampling knobs. Per-run only — not project config. Bounds mirror the
+  // orchestrator's validators. Send them only for XTTS previews: an omitted
+  // knob falls through to the resolved engine's own default, and XTTS values
+  // (top_k 50, repetition_penalty 10) garble GPT-SoVITS output.
   /** >0–2, default 0.65 */
   temperature?: number
   /** 0.25–2, default 1 — playback-rate multiplier */

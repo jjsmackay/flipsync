@@ -28,14 +28,17 @@ class CreatePreviewRequest(BaseModel):
     segment_id: Optional[str] = Field(default=None, min_length=1)
     model_id: Optional[str] = None
     conditioning: ConditioningSpec = Field(default_factory=ConditioningSpec)
-    # XTTS sampling knobs. Per-run (not project config) — the point of a
-    # preview is to try a few takes and pick one. Defaults match the service's
-    # (coqui's inference defaults, except our 0.65 house temperature).
-    temperature: float = Field(default=0.65, gt=0.0, le=2.0)
-    speed: float = Field(default=1.0, ge=0.25, le=2.0)
-    repetition_penalty: float = Field(default=10.0, ge=1.0, le=20.0)
-    top_k: int = Field(default=50, ge=1, le=100)
-    top_p: float = Field(default=0.85, gt=0.0, le=1.0)
+    # Sampling knobs. Per-run (not project config) — the point of a preview is
+    # to try a few takes and pick one. All optional: only explicitly-sent
+    # knobs are persisted into job params, because the sane defaults differ
+    # per engine (XTTS wants repetition_penalty 10.0 where GPT-SoVITS caps it
+    # at 2.0 upstream). The preview handler fills XTTS defaults itself; other
+    # engines' services fill their own.
+    temperature: Optional[float] = Field(default=None, gt=0.0, le=2.0)
+    speed: Optional[float] = Field(default=None, ge=0.25, le=2.0)
+    repetition_penalty: Optional[float] = Field(default=None, ge=1.0, le=20.0)
+    top_k: Optional[int] = Field(default=None, ge=1, le=100)
+    top_p: Optional[float] = Field(default=None, gt=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _require_text_or_segment(self):
@@ -48,21 +51,31 @@ class CreatePreviewRequest(BaseModel):
 async def create_preview(project_id: str, body: CreatePreviewRequest):
     conn = require_project(project_id)
 
-    if not await service_client.is_healthy("xtts"):
-        raise AppError(
-            503, "xtts_unavailable",
-            "The XTTS service is not deployed or not healthy.",
-        )
-
+    # Base (no model_id) previews are XTTS-only; a named model's own engine
+    # (checked below) is what actually needs to be healthy.
+    engine = "xtts"
     if body.model_id:
         model = conn.execute(
-            "SELECT status FROM models WHERE id=? AND project_id=?", (body.model_id, project_id)
+            "SELECT status, engine FROM models WHERE id=? AND project_id=?",
+            (body.model_id, project_id),
         ).fetchone()
         if model is None or model["status"] != "ready":
             raise AppError(
                 409, "model_not_ready",
                 "The requested model is not ready for previews.",
             )
+        engine = model["engine"]
+
+    if not await service_client.is_healthy(engine):
+        if engine == "xtts":
+            raise AppError(
+                503, "xtts_unavailable",
+                "The XTTS service is not deployed or not healthy.",
+            )
+        raise AppError(
+            503, "engine_unavailable",
+            f"The {engine} service is not deployed or not healthy.",
+        )
 
     # Resolve the effective text: use segment transcript if segment_id is set.
     text = body.text
@@ -79,19 +92,35 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
             )
         text = seg["t"]
 
-    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    try:
-        _resolve_conditioning(
-            conn, project, project_id, body.conditioning.source, body.conditioning.segment_count,
-            exclude_segment_id=body.segment_id,
-        )
-    except LookupError as exc:
-        raise AppError(
-            409, "conditioning_unavailable",
-            "No audio is available for the requested conditioning source.",
-            {"reason": str(exc)},
-        )
+    # GPT-SoVITS previews always target a trained model (no base preview): the
+    # service loads its own stored reference.wav/.txt from the bundle, so
+    # FlipSync-side conditioning audio is never required for that engine.
+    # Mirrors the identical gate in jobs.py::_handle_preview.
+    if engine == "xtts":
+        project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        try:
+            _resolve_conditioning(
+                conn, project, project_id, body.conditioning.source, body.conditioning.segment_count,
+                exclude_segment_id=body.segment_id,
+            )
+        except LookupError as exc:
+            raise AppError(
+                409, "conditioning_unavailable",
+                "No audio is available for the requested conditioning source.",
+                {"reason": str(exc)},
+            )
 
+    sampling = {
+        key: value
+        for key, value in (
+            ("temperature", body.temperature),
+            ("speed", body.speed),
+            ("repetition_penalty", body.repetition_penalty),
+            ("top_k", body.top_k),
+            ("top_p", body.top_p),
+        )
+        if value is not None
+    }
     job_id = enqueue(
         project_id, "preview",
         params={
@@ -102,11 +131,7 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
                 "source": body.conditioning.source,
                 "segment_count": body.conditioning.segment_count,
             },
-            "temperature": body.temperature,
-            "speed": body.speed,
-            "repetition_penalty": body.repetition_penalty,
-            "top_k": body.top_k,
-            "top_p": body.top_p,
+            **sampling,
         },
     )
     return {"enqueued_job": {"id": job_id, "type": "preview"}}

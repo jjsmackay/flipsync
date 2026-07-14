@@ -37,6 +37,9 @@ JOB_TYPES: dict[str, JobSpec] = {
     "reference_transcribe": JobSpec(service="transcription", gpu=True),
     "export": JobSpec(service="cleanup"),
     "dataset_build": JobSpec(service="cleanup", voice=True),
+    # finetune/preview are multi-engine: the static "xtts" here is only the
+    # model-less default (base preview); jobs._resolve_gpu_service overrides
+    # it per-engine from the model row.
     "finetune": JobSpec(service="xtts", gpu=True, voice=True),
     "preview": JobSpec(service="xtts", gpu=True, voice=True),
     "tuning_preview": JobSpec(service="cleanup"),

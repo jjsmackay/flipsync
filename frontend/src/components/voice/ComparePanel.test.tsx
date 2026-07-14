@@ -10,7 +10,7 @@ vi.mock('../../api/client', async () => {
 })
 
 const model: Model = {
-  id: 'model-1234567890', project_id: 'p1', status: 'ready', dataset_mode: 'approved',
+  id: 'model-1234567890', project_id: 'p1', status: 'ready', engine: 'xtts', dataset_mode: 'approved',
   min_confidence: null, segment_count: 10, dataset_duration_secs: 120,
   dataset_manifest_path: 'models/m/dataset.json', checkpoint_dir: 'models/m',
   params: null, eval_loss: null, error: null,
@@ -108,5 +108,33 @@ describe('ComparePanel', () => {
     render(<ComparePanel projectId="p1" models={[]} />)
     fireEvent.click(await screen.findByText(/quick brown fox/))
     expect((screen.getByRole('button', { name: /generate/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('sends XTTS sampling values for an xtts model', async () => {
+    vi.mocked(createPreview).mockResolvedValue({ enqueued_job: { id: 'job-1', type: 'preview' } })
+    render(<ComparePanel projectId="p1" models={[model]} />)
+    fireEvent.click(await screen.findByText(/quick brown fox/))
+    fireEvent.click(screen.getByRole('button', { name: /generate/i }))
+    await waitFor(() => expect(createPreview).toHaveBeenCalled())
+    const [, body] = vi.mocked(createPreview).mock.calls[0]
+    expect(body).toMatchObject({ temperature: 0.65, speed: 1, top_k: 50, top_p: 0.85 })
+  })
+
+  it('omits every sampling knob and hides the sliders for a gpt_sovits model', async () => {
+    vi.mocked(createPreview).mockResolvedValue({ enqueued_job: { id: 'job-1', type: 'preview' } })
+    const gptModel: Model = { ...model, id: 'model-gpt', engine: 'gpt_sovits' }
+    render(<ComparePanel projectId="p1" models={[gptModel]} />)
+
+    expect(screen.queryByLabelText('Temperature')).toBeNull()
+    expect(screen.queryByLabelText('Speed')).toBeNull()
+
+    fireEvent.click(await screen.findByText(/quick brown fox/))
+    fireEvent.click(screen.getByRole('button', { name: /generate/i }))
+    await waitFor(() => expect(createPreview).toHaveBeenCalled())
+    const [, body] = vi.mocked(createPreview).mock.calls[0]
+    expect(body).toMatchObject({ segment_id: 'seg-1', model_id: 'model-gpt' })
+    for (const key of ['temperature', 'speed', 'repetition_penalty', 'top_k', 'top_p']) {
+      expect(body).not.toHaveProperty(key)
+    }
   })
 })

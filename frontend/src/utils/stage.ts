@@ -4,8 +4,9 @@ import type { ProjectDetail } from '../types/api'
 // polled project state to the single stage the user should care about now.
 // The pipeline proper is three distinct steps (separate → match → transcribe),
 // each with its own strip chip and step row. The terminal stage depends on the
-// deployment: Export by default, or Train when the XTTS voice service is
-// present (export stays reachable as a button).
+// deployment: Export by default, or Train when a voice engine (XTTS and/or
+// GPT-SoVITS — capabilities.voice_training) is healthy (export stays reachable
+// as a button).
 
 export type Stage =
   | 'upload'
@@ -21,11 +22,11 @@ export type Stage =
 export type PipelineStep = 'separate' | 'match' | 'transcribe'
 
 const BASE_STAGES: Stage[] = ['upload', 'speaker', 'separate', 'match', 'transcribe', 'review', 'export']
-const XTTS_STAGES: Stage[] = ['upload', 'speaker', 'separate', 'match', 'transcribe', 'review', 'train']
+const VOICE_STAGES: Stage[] = ['upload', 'speaker', 'separate', 'match', 'transcribe', 'review', 'train']
 
 /** The ordered stage strip for this deployment. */
-export function stagesFor(xttsEnabled: boolean): Stage[] {
-  return xttsEnabled ? XTTS_STAGES : BASE_STAGES
+export function stagesFor(voiceTrainingEnabled: boolean): Stage[] {
+  return voiceTrainingEnabled ? VOICE_STAGES : BASE_STAGES
 }
 
 export const STAGE_LABELS: Record<Stage, string> = {
@@ -86,7 +87,7 @@ export function hasActivePipelineJob(project: ProjectDetail): boolean {
   return pipelineJobs(project.active_jobs).length > 0
 }
 
-export function deriveStage(project: ProjectDetail, xttsEnabled = false): Stage {
+export function deriveStage(project: ProjectDetail, voiceTrainingEnabled = false): Stage {
   const sources = project.stats.source_coverage
   if (sources.length === 0) return 'upload'
 
@@ -132,8 +133,8 @@ export function deriveStage(project: ProjectDetail, xttsEnabled = false): Stage 
   // sending them to Export with a misleading "ready to export".
   if (approved_count + auto_approved_count === 0 && below_threshold_count > 0) return 'review'
 
-  // Terminal stage: Train when the voice service is deployed, else Export.
-  return xttsEnabled ? 'train' : 'export'
+  // Terminal stage: Train when a voice engine is healthy, else Export.
+  return voiceTrainingEnabled ? 'train' : 'export'
 }
 
 export type StageState = 'done' | 'active' | 'needs_you' | 'upcoming'
@@ -141,10 +142,10 @@ export type StageState = 'done' | 'active' | 'needs_you' | 'upcoming'
 /** Chip state for each stage given the current one. */
 export function stageStates(
   project: ProjectDetail,
-  xttsEnabled = false,
+  voiceTrainingEnabled = false,
 ): Record<Stage, StageState> {
-  const stages = stagesFor(xttsEnabled)
-  const current = deriveStage(project, xttsEnabled)
+  const stages = stagesFor(voiceTrainingEnabled)
+  const current = deriveStage(project, voiceTrainingEnabled)
   const currentIdx = stages.indexOf(current)
   const busy = pipelineJobs(project.active_jobs).length > 0
   const states = {} as Record<Stage, StageState>
@@ -175,13 +176,13 @@ const STEP_FAILED_STATUSES: Record<PipelineStep, Set<string>> = {
 export function stepChip(
   project: ProjectDetail,
   step: PipelineStep,
-  xttsEnabled = false,
+  voiceTrainingEnabled = false,
 ): StepChip {
   const failed = STEP_FAILED_STATUSES[step]
   if (project.stats.source_coverage.some((s) => failed.has(s.status))) {
     return { label: 'Failed', tone: 'red' }
   }
-  switch (stageStates(project, xttsEnabled)[step]) {
+  switch (stageStates(project, voiceTrainingEnabled)[step]) {
     case 'done':
       return { label: 'Done', tone: 'green' }
     case 'active':

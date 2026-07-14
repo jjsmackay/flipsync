@@ -25,10 +25,10 @@ export function NextActionCard({
   project,
   onAction,
   onOpenSettings,
-  xttsEnabled = false,
+  voiceTrainingEnabled = false,
   onGoToTrain,
-}: NextActionCardProps & { xttsEnabled?: boolean; onGoToTrain?: () => void }) {
-  const stage = deriveStage(project, xttsEnabled)
+}: NextActionCardProps & { voiceTrainingEnabled?: boolean; onGoToTrain?: () => void }) {
+  const stage = deriveStage(project, voiceTrainingEnabled)
 
   return (
     <div

@@ -12,6 +12,7 @@ services:
       - TRANSCRIPTION_URL=http://transcription:8003
       - CLEANUP_URL=http://cleanup:8004
       - XTTS_URL=http://xtts:8005
+      - GPT_SOVITS_URL=http://gpt-sovits:8006
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       - vocal-separation
@@ -101,6 +102,34 @@ services:
       # XTTS-v2 is under the Coqui Public Model License; the service refuses to
       # start until the operator accepts by setting this to 1.
       - XTTS_ACCEPT_CPML=${XTTS_ACCEPT_CPML:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - flipsync
+
+  # GPT-SoVITS fine-tune + synthesis — the second voice engine. Profile-gated
+  # like xtts (large image, optional feature); its weights are MIT and public,
+  # so unlike xtts there is no licence-acceptance env and no HF token. The
+  # weight cache is bind-mounted from day one so first-use pretrained
+  # downloads (~1.2 GB) survive container recreates.
+  gpt-sovits:
+    image: ghcr.io/jjsmackay/flipsync/gpt-sovits:latest
+    profiles: ["gpt-sovits"]
+    volumes:
+      - ${DATA_ROOT:-data}:/data
+      - ${MODELS_ROOT:-/mnt/models/flipsync}/gpt-sovits:/models/gpt-sovits
+    environment:
+      - GPT_SOVITS_PRETRAINED_DIR=/models/gpt-sovits
+      # Release the cached synthesis model from VRAM after this many idle
+      # seconds so it doesn't squat on GPU memory another stage needs.
+      # 0 disables (stay warm).
+      - IDLE_UNLOAD_SECS=${IDLE_UNLOAD_SECS:-60}
     deploy:
       resources:
         reservations:

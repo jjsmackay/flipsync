@@ -1,6 +1,6 @@
 import { useState, type RefObject } from 'react'
 import { Link } from 'react-router-dom'
-import type { Model, ProjectDetail } from '../../types/api'
+import type { EngineInfo, Model, ProjectDetail } from '../../types/api'
 import {
   deriveStage,
   hasActivePipelineJob,
@@ -26,7 +26,11 @@ import { TrainPanel } from '../voice/TrainPanel'
 
 interface PipelineStepsProps {
   project: ProjectDetail
-  xttsEnabled: boolean
+  voiceTrainingEnabled: boolean
+  /** Healthy-or-not engine list from capabilities — forwarded to the Train
+   *  row's TrainPanel to build its engine picker. Omitted (or a single-entry
+   *  list) means no picker, an implicit engine. */
+  engines?: EngineInfo[]
   /** Settings saved → parent refetches the project. */
   onSaved: () => void
   /** Re-run a step across all eligible sources (steps in reprocess-API terms). */
@@ -145,7 +149,8 @@ function CountChip({ value, label, tone }: { value: number; label: string; tone:
 
 export function PipelineSteps({
   project,
-  xttsEnabled,
+  voiceTrainingEnabled,
+  engines,
   onSaved,
   onReprocessAll,
   onRunTranscription,
@@ -161,8 +166,14 @@ export function PipelineSteps({
   const sources = project.stats.source_coverage
   const [transcribing, setTranscribing] = useState(false)
 
+  // Deployment-level XTTS availability (not "is xtts the selected engine") —
+  // gates the legacy persisted xtts_* settings disclosure below, which has no
+  // effect on a GPT-SoVITS run. `engines` omitted (older callers/tests) means
+  // an XTTS-only deployment, matching TrainPanel's own implicit-engine default.
+  const xttsAvailable = engines ? engines.some((e) => e.id === 'xtts' && e.healthy) : true
+
   function chip(step: PipelineStep): StepChip {
-    return stepChip(project, step, xttsEnabled)
+    return stepChip(project, step, voiceTrainingEnabled)
   }
 
   function rerunnable(step: 'separate' | 'match'): boolean {
@@ -196,7 +207,8 @@ export function PipelineSteps({
         ? { label: 'Done', tone: 'green' }
         : { label: 'Not run yet', tone: 'grey' }
 
-  // Train row (XTTS deployments only): job-aware first, then model state.
+  // Train row (deployments with a healthy voice engine only): job-aware
+  // first, then model state.
   const trainActive = project.active_jobs.some(
     (j) => j.type === 'finetune' || j.type === 'dataset_build',
   )
@@ -204,7 +216,7 @@ export function PipelineSteps({
     ? { label: 'Running', tone: 'blue' }
     : (models ?? []).some((m) => m.status === 'ready')
       ? { label: 'Done', tone: 'green' }
-      : deriveStage(project, xttsEnabled) === 'train'
+      : deriveStage(project, voiceTrainingEnabled) === 'train'
         ? { label: 'Ready', tone: 'amber' }
         : { label: 'Not run yet', tone: 'grey' }
 
@@ -370,7 +382,7 @@ export function PipelineSteps({
         {settingsFor(CLEANUP_KNOBS)}
       </StepRow>
 
-      {xttsEnabled && (
+      {voiceTrainingEnabled && (
         <div ref={trainRowRef} className="scroll-mt-4">
           <StepRow
             index={6}
@@ -387,11 +399,18 @@ export function PipelineSteps({
             <TrainPanel
               project={project}
               models={models ?? []}
+              engines={engines}
               onStarted={() => onTrainStarted?.()}
             />
             {/* Persisted fine-tune settings (xtts_* config) — the single source
-                of truth applied to every training run. */}
-            {settingsFor(XTTS_KNOBS)}
+                of truth applied to every XTTS training run. Hidden when XTTS
+                isn't part of this deployment: it has no effect on a
+                GPT-SoVITS run and would sit confusingly next to that
+                engine's own Advanced fieldset (a second, differently-scoped
+                "Batch size" field). Gated on XTTS *availability*, not the
+                picker's current selection — the persisted settings still
+                drive xtts runs even when both engines are healthy. */}
+            {xttsAvailable && settingsFor(XTTS_KNOBS)}
           </StepRow>
         </div>
       )}

@@ -1,4 +1,4 @@
-import type { ModelStatus, ProjectStatus, SourceStatus } from '../types/api'
+import type { EngineId, ModelStatus, ProjectStatus, SourceStatus } from '../types/api'
 
 // Single source of user-facing names for internal identifiers. Internal
 // statuses and job types stay technical (they match the API and DB); anything
@@ -40,6 +40,16 @@ export const MODEL_STATUS_LABELS: Record<ModelStatus, string> = {
 
 export function modelStatusLabel(status: ModelStatus): string {
   return MODEL_STATUS_LABELS[status]
+}
+
+// Model-card engine badge — the display name for each voice engine.
+export const ENGINE_LABELS: Record<EngineId, string> = {
+  xtts: 'XTTS-v2',
+  gpt_sovits: 'GPT-SoVITS',
+}
+
+export function engineLabel(engine: EngineId): string {
+  return ENGINE_LABELS[engine]
 }
 
 export const JOB_LABELS: Record<string, string> = {

@@ -4,7 +4,7 @@ import { stagesFor, STAGE_LABELS, stageStates, type Stage, type StageState } fro
 
 interface StageStripProps {
   project: ProjectDetail
-  xttsEnabled: boolean
+  voiceTrainingEnabled: boolean
   /** Open + scroll to the pipeline Train row (the Train chip target). */
   onGoToTrain: () => void
   /** Open + scroll to the Pipeline section (the pipeline chips' target). */
@@ -49,9 +49,9 @@ const CHIP_TEXT: Record<StageState, string> = {
   upcoming: 'text-gray-400 dark:text-gray-500',
 }
 
-export function StageStrip({ project, xttsEnabled, onGoToTrain, onGoToPipeline }: StageStripProps) {
-  const states = stageStates(project, xttsEnabled)
-  const stages = stagesFor(xttsEnabled)
+export function StageStrip({ project, voiceTrainingEnabled, onGoToTrain, onGoToPipeline }: StageStripProps) {
+  const states = stageStates(project, voiceTrainingEnabled)
+  const stages = stagesFor(voiceTrainingEnabled)
   const reviewClickable = project.stats.total_segments > 0
   const hasSources = project.stats.source_coverage.length > 0
 

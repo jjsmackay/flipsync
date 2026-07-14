@@ -18,6 +18,7 @@ import type {
   CreatePreviewRequest,
   CreateTuningPreviewRequest,
   TuningPreviewStatus,
+  EngineInfo,
 } from '../types/api'
 
 // When VITE_API_URL is unset (the default in the shipped compose), API calls go
@@ -77,7 +78,14 @@ function toQueryString(params: Record<string, unknown>): string {
 // ---- Capabilities ----
 
 export interface Capabilities {
+  /** Back-compat only — kept for older frontends. Prefer `voice_training`. */
   xtts: boolean
+  /** True when at least one voice engine (XTTS or GPT-SoVITS) is healthy —
+   *  drives the terminal-stage Train-vs-Export decision. */
+  voice_training: boolean
+  /** One entry per engine, healthy or not — lets the Train stage build its
+   *  engine picker without probing each service itself. */
+  engines: EngineInfo[]
   /** Server-owned bulk transition table (action -> allowed source statuses).
    *  Absent on older orchestrators; the baked-in copy applies as fallback. */
   bulk_action_sources?: Record<string, SegmentStatus[]>

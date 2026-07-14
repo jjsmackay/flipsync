@@ -125,6 +125,25 @@ async def wait_for_service_ready(service_name: str) -> bool:
         await asyncio.sleep(min(_SERVICE_READY_POLL_SECS, max(deadline - loop.time(), 0.01)))
 
 
+def _resolve_gpu_service(job_type: str, params: dict, conn) -> str:
+    """Resolve the GPU service to wait on before taking the host-wide lock.
+
+    finetune/preview are multi-engine: the static job_types.GPU_JOB_SERVICES
+    mapping (both 'xtts') is only the default for a model-less base preview.
+    A model row's engine (== its service name) takes precedence when present,
+    so a GPT-SoVITS job never waits on the XTTS service's health. Other GPU
+    job types are single-service and use the static mapping unchanged.
+    """
+    if job_type in ("finetune", "preview"):
+        model_id = params.get("model_id")
+        if model_id:
+            row = conn.execute("SELECT engine FROM models WHERE id=?", (model_id,)).fetchone()
+            if row is not None:
+                return row["engine"]
+        return "xtts"  # base preview (no model) is xtts-only
+    return GPU_JOB_SERVICES[job_type]
+
+
 async def _submit_with_retry(service_name: str, payload: dict) -> dict:
     """Submit a job, retrying with bounded exponential backoff while the service
     is unreachable (connection/timeout errors). A reachable service returning an
@@ -299,7 +318,7 @@ async def _execute_job(project_id: str, job_id: str) -> None:
             # host-wide GPU lock, so a service that is still booting (first-run
             # model downloads can take tens of minutes) never stalls other
             # projects' GPU work behind the lock.
-            service_name = GPU_JOB_SERVICES[job_type]
+            service_name = _resolve_gpu_service(job_type, params, conn)
             if not await wait_for_service_ready(service_name):
                 _fail_job(
                     project_id, job_id,
@@ -1888,8 +1907,38 @@ async def _handle_dataset_build(
 
 
 # ---------------------------------------------------------------------------
-# Fine-tune handler (v1.5) — XTTS service
+# Fine-tune handler (v1.5+) — routes to the model's engine service
 # ---------------------------------------------------------------------------
+
+# Each phase owns a band of the overall 0-99% job percent; multi-stage engines
+# (GPT-SoVITS) report a phase per sub-stage and are scaled within their own
+# band. The single-stage "training" phase (XTTS) spans the full 0-100% band,
+# clamped to 99 by _phase_percent — bit-identical to the pre-multi-engine
+# formula (int(frac * 100), clamped).
+_PHASE_BANDS: dict[str, tuple[float, float]] = {
+    "preparing": (0.0, 5.0),
+    "training": (0.0, 100.0),
+    "training_sovits": (5.0, 50.0),
+    "training_gpt": (50.0, 95.0),
+    "packaging": (95.0, 99.0),
+}
+
+
+def _phase_percent(detail: dict) -> int:
+    """Map a finetune progress_detail dict to an overall 0-99% job percent.
+
+    Unknown/missing phase falls back to the "training" band, matching the
+    single-phase behaviour engines reported before phase-awareness existed.
+    """
+    phase = detail.get("phase") or "training"
+    low, high = _PHASE_BANDS.get(phase, _PHASE_BANDS["training"])
+    epoch = detail.get("epoch") or 0
+    total_epochs = detail.get("total_epochs") or 1
+    step = detail.get("step") or 0
+    total_steps = detail.get("total_steps") or 1
+    frac = ((epoch - 1) + step / max(total_steps, 1)) / max(total_epochs, 1)
+    frac = max(0.0, min(1.0, frac))
+    return max(0, min(99, int(low + frac * (high - low))))
 
 
 async def _handle_finetune(
@@ -1932,6 +1981,8 @@ async def _handle_finetune(
     )
     conn.commit()
 
+    engine = model["engine"]  # 'xtts' | 'gpt_sovits' — also the service name.
+
     project = conn.execute(
         "SELECT language, xtts_epochs, xtts_batch_size, xtts_grad_accum, xtts_learning_rate "
         "FROM projects WHERE id=?",
@@ -1943,34 +1994,36 @@ async def _handle_finetune(
     manifest_path = f"{data_prefix}/projects/{project_id}/{model['dataset_manifest_path']}"
     output_dir = f"{data_prefix}/projects/{project_id}/models/{model_id}"
 
-    # Per-run params (from the Train request) override project config, which
-    # overrides the historical defaults.
-    hyperparams = {
-        "epochs": hyper.get("epochs", project["xtts_epochs"]),
-        "batch_size": hyper.get("batch_size", project["xtts_batch_size"]),
-        "grad_accum": hyper.get("grad_accum", project["xtts_grad_accum"]),
-        "learning_rate": hyper.get("learning_rate", project["xtts_learning_rate"]),
-    }
+    if engine == "gpt_sovits":
+        # No project-column fallback in v1: only the overrides the Train
+        # request actually sent are forwarded; the service fills the rest
+        # from its own defaults.
+        hyperparams = dict(hyper)
+    else:
+        # Per-run params (from the Train request) override project config,
+        # which overrides the historical defaults.
+        hyperparams = {
+            "epochs": hyper.get("epochs", project["xtts_epochs"]),
+            "batch_size": hyper.get("batch_size", project["xtts_batch_size"]),
+            "grad_accum": hyper.get("grad_accum", project["xtts_grad_accum"]),
+            "learning_rate": hyper.get("learning_rate", project["xtts_learning_rate"]),
+        }
 
     def make_payload(hp: dict) -> dict:
+        params = {**hp, "language": language, "eval_split": 0.1} if engine == "xtts" else dict(hp)
         return {
             "job_id": str(uuid.uuid4()),
             "type": "finetune",
             "manifest_path": manifest_path,
             "output_dir": output_dir,
-            "params": {**hp, "language": language, "eval_split": 0.1},
+            "params": params,
         }
 
     def on_progress(result):
         detail = result.get("progress")
         if not isinstance(detail, dict):
             return
-        epoch = detail.get("epoch") or 0
-        total_epochs = detail.get("total_epochs") or 1
-        step = detail.get("step") or 0
-        total_steps = detail.get("total_steps") or 1
-        pct = int(((epoch - 1) + step / max(total_steps, 1)) / max(total_epochs, 1) * 100)
-        _update_progress(project_id, job_id, max(0, min(99, pct)))
+        _update_progress(project_id, job_id, _phase_percent(detail))
         _update_progress_detail(project_id, job_id, detail)
 
     def _fail(msg: str) -> None:
@@ -1979,13 +2032,13 @@ async def _handle_finetune(
 
     payload = make_payload(hyperparams)
     try:
-        await _submit_with_retry("xtts", payload)
+        await _submit_with_retry(engine, payload)
     except Exception as exc:
         _fail(f"submit_failed: {exc}")
         return
 
     result = await service_client.poll_until_complete(
-        "xtts", payload["job_id"], interval_secs=10.0, on_progress=on_progress
+        engine, payload["job_id"], interval_secs=10.0, on_progress=on_progress
     )
 
     # Fail loud: a fine-tune failure (including CUDA OOM) fails the model and job
@@ -2099,10 +2152,26 @@ def _resolve_conditioning(
     raise LookupError("no conditioning audio available")
 
 
+# The sampling knobs a preview request may carry, and XTTS's effective
+# defaults for them (coqui's inference defaults, except the 0.65 house
+# temperature). These are XTTS-only: other engines' services own their own
+# defaults, applied when a knob is absent from the synthesise payload.
+_SAMPLING_KEYS = ("temperature", "speed", "repetition_penalty", "top_k", "top_p")
+_XTTS_SAMPLING_DEFAULTS = {
+    "temperature": 0.65,
+    "speed": 1.0,
+    "repetition_penalty": 10.0,
+    "top_k": 50,
+    "top_p": 0.85,
+}
+
+
 async def _handle_preview(
     project_id: str, job_id: str, source_id: str | None, params: dict
 ) -> None:
-    """Synthesise a preview WAV via the XTTS service (zero-shot or fine-tuned)."""
+    """Synthesise a preview WAV via the model's engine service (zero-shot or
+    fine-tuned). Base (no model_id) previews are XTTS-only — GPT-SoVITS has no
+    zero-shot-without-reference path and is only reachable via a ready model."""
     conn = get_conn(project_id)
     project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
     text = params.get("text", "")
@@ -2110,32 +2179,43 @@ async def _handle_preview(
     cond = params.get("conditioning") or {}
     source = cond.get("source")
     segment_count = cond.get("segment_count", 5)
-    # Per-run sampling knobs; defaults mirror the XTTS service's SynthParams.
-    sampling = {
-        "temperature": params.get("temperature", 0.65),
-        "speed": params.get("speed", 1.0),
-        "repetition_penalty": params.get("repetition_penalty", 10.0),
-        "top_k": params.get("top_k", 50),
-        "top_p": params.get("top_p", 0.85),
-    }
 
+    engine = "xtts"
     checkpoint_dir = None
     if model_id:
         model = conn.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
         if model is None or model["status"] != "ready":
             _fail_job(project_id, job_id, "model_not_ready")
             return
+        engine = model["engine"]
         cp = model["checkpoint_dir"] or f"models/{model_id}"
         checkpoint_dir = f"{_data_prefix()}/projects/{project_id}/{cp}"
 
-    try:
-        _resolved, reference_wavs = _resolve_conditioning(
-            conn, project, project_id, source, segment_count,
-            exclude_segment_id=params.get("segment_id"),
-        )
-    except LookupError as exc:
-        _fail_job(project_id, job_id, f"conditioning_unavailable: {exc}")
-        return
+    # Per-run sampling knobs: job params carry only the ones the caller sent
+    # explicitly (previews router). Sane defaults differ per engine, so XTTS
+    # fills its effective defaults here; any other engine gets only the
+    # explicit knobs and its service's own SynthParams defaults fill the rest
+    # (GPT-SoVITS caps repetition_penalty at 2.0 upstream — xtts's 10.0 would
+    # garble its audio).
+    sampling = {
+        key: params[key] for key in _SAMPLING_KEYS if params.get(key) is not None
+    }
+    if engine == "xtts":
+        sampling = {**_XTTS_SAMPLING_DEFAULTS, **sampling}
+
+    reference_wavs: list[str] = []
+    if engine == "xtts":
+        try:
+            _resolved, reference_wavs = _resolve_conditioning(
+                conn, project, project_id, source, segment_count,
+                exclude_segment_id=params.get("segment_id"),
+            )
+        except LookupError as exc:
+            _fail_job(project_id, job_id, f"conditioning_unavailable: {exc}")
+            return
+    # GPT-SoVITS previews always target a trained model (no base preview): the
+    # service loads its own stored reference.wav/.txt from the bundle, so no
+    # conditioning resolution is needed on the orchestrator side.
 
     previews_dir = project_dir(project_id) / "previews"
     previews_dir.mkdir(parents=True, exist_ok=True)
@@ -2153,12 +2233,12 @@ async def _handle_preview(
     }
 
     try:
-        await _submit_with_retry("xtts", payload)
+        await _submit_with_retry(engine, payload)
     except Exception as exc:
         _fail_job(project_id, job_id, f"submit_failed: {exc}")
         return
 
-    result = await service_client.poll_until_complete("xtts", job_id)
+    result = await service_client.poll_until_complete(engine, job_id)
 
     if result["status"] == "failed":
         _fail_job(project_id, job_id, result.get("error", "unknown_error"))

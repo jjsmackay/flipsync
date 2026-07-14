@@ -65,6 +65,13 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
     return (value: number) => setSampling((prev) => ({ ...prev, [key]: value }))
   }
 
+  // The sliders are XTTS dials: a GPT-SoVITS model's compare sends no sampling
+  // knobs at all — the service's own defaults apply (XTTS numbers, especially
+  // repetition_penalty 10 vs the engine's 2.0 cap, garble its audio) — so the
+  // sliders are hidden rather than shown doing nothing.
+  const selectedEngine = readyModels.find((m) => m.id === selectedModelId)?.engine ?? 'xtts'
+  const showSliders = selectedEngine !== 'gpt_sovits'
+
   // --- generate / poll (same shape as PreviewPanel's PreviewColumn) ---
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -195,7 +202,7 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
       const res = await createPreview(projectId, {
         segment_id: selected.id,
         model_id: selectedModelId,
-        ...sampling,
+        ...(selectedEngine === 'gpt_sovits' ? {} : sampling),
       })
       if (!mountedRef.current) return
       setPreviewId(res.enqueued_job.id)
@@ -282,6 +289,7 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
               )}
             </select>
           </div>
+          {showSliders && (
           <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
             <SliderRow
               id="compare-temperature"
@@ -332,6 +340,12 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
               </>
             )}
           </div>
+          )}
+          {!showSliders && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              GPT-SoVITS models use their own tuned sampling defaults.
+            </p>
+          )}
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400">
           Synthesise the segment's exact transcript through the model and compare it against the original recording.

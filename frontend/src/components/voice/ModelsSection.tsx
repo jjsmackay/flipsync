@@ -14,6 +14,10 @@ interface ModelsSectionProps {
   modelsLoading: boolean
   modelsError: string | null
   reloadModels: () => void
+  /** Whether the deployment's XTTS engine is healthy — forwarded to the
+   *  Preview panel to gate its zero-shot base-model column (GPT-SoVITS has
+   *  no untrained preview). */
+  xttsAvailable?: boolean
 }
 
 // Deliberately one size down from the page's Section headings (text-sm) —
@@ -34,6 +38,7 @@ export function ModelsSection({
   modelsLoading,
   modelsError,
   reloadModels,
+  xttsAvailable = true,
 }: ModelsSectionProps) {
   return (
     <div className="space-y-6">
@@ -46,7 +51,12 @@ export function ModelsSection({
       />
 
       <SubSection title="Preview">
-        <PreviewPanel projectId={project.id} models={models} advanced={advanced} />
+        <PreviewPanel
+          projectId={project.id}
+          models={models}
+          advanced={advanced}
+          xttsAvailable={xttsAvailable}
+        />
       </SubSection>
 
       <SubSection title="Compare">

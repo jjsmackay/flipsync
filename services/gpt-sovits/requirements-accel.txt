@@ -1,0 +1,13 @@
+# Heavy, rarely-changing accelerator stack, installed in its own image layer
+# (before the lighter deps in requirements.txt) so a pin bump below does NOT
+# re-download ~4 GB of torch + CUDA wheels on every build. PyPI's linux x86_64
+# torch wheel is the CUDA build (bundles its own CUDA 12.4 runtime), so no CUDA
+# base image or system toolkit is needed — the host just needs a recent NVIDIA
+# driver (same pattern as the xtts image).
+#
+# Pin rationale: upstream GPT-SoVITS pins no torch at all (install.sh grabs
+# whatever is latest — not reproducible). Its README compatibility table lists
+# Python 3.11 + torch 2.5.1 + CUDA 12.4 as a supported combination, and 2.5.1
+# is already known-good on the deploy host, so that is the pin.
+torch==2.5.1
+torchaudio==2.5.1

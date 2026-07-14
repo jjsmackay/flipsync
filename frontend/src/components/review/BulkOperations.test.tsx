@@ -24,7 +24,7 @@ beforeEach(() => {
   mockGetSegmentsCount.mockResolvedValue({ total: 7 })
   mockBulkSegmentAction.mockResolvedValue({ affected_count: 7 })
   // No served table by default — the baked-in fallback applies.
-  mockGetCapabilities.mockResolvedValue({ xtts: false })
+  mockGetCapabilities.mockResolvedValue({ xtts: false, voice_training: false, engines: [] })
 })
 
 describe('effectiveBulkStatuses', () => {
@@ -66,6 +66,8 @@ describe('BulkOperations preview intersection', () => {
   it('adopts the transition table served by /capabilities over the baked-in copy', async () => {
     mockGetCapabilities.mockResolvedValue({
       xtts: false,
+      voice_training: false,
+      engines: [],
       bulk_action_sources: {
         approve: ['pending'],
         reject: ['pending'],

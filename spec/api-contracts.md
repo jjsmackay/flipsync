@@ -44,6 +44,11 @@ Deployment-level feature flags and server-owned tables for the frontend. Fetched
 ```json
 {
   "xtts": true,
+  "voice_training": true,
+  "engines": [
+    { "id": "xtts",       "name": "XTTS-v2",    "healthy": true, "languages": ["en", "..."] },
+    { "id": "gpt_sovits", "name": "GPT-SoVITS", "healthy": true, "languages": ["en", "zh", "ja", "ko", "yue"] }
+  ],
   "bulk_action_sources": {
     "approve": ["auto_approved", "clipping_warning", "maybe", "pending"],
     "reject": ["approved", "auto_approved", "clipping_warning", "maybe", "pending"],
@@ -53,7 +58,11 @@ Deployment-level feature flags and server-owned tables for the frontend. Fetched
 }
 ```
 
-`xtts` is a point-in-time health probe of the profile-gated XTTS voice service (`true` iff it responds `200` to `/health`). The dashboard uses it to decide whether the terminal stage is **Train** (present) or **Export** (absent). Always `200`.
+`engines` lists every voice fine-tune engine the deployment knows about, with a point-in-time health probe per engine (`healthy` is `true` iff that profile-gated service responds `200` to `/health`, probed concurrently). The frontend builds the Train-stage engine picker from this array (picker shown only when more than one engine is healthy).
+
+`voice_training` is derived: `true` iff **any** engine is healthy. The dashboard uses it to decide whether the terminal stage is **Train** (present) or **Export** (absent) — this replaces `xtts` for that decision, so a GPT-SoVITS-only deployment still offers the Train stage.
+
+`xtts` is the original single-engine health flag, retained for backward compatibility; it always equals the `healthy` value of the `xtts` entry in `engines`. Always `200`.
 
 `bulk_action_sources` serves the orchestrator's bulk transition table (the statuses each bulk action may move FROM — the same table `POST /segments/bulk` enforces). The frontend uses it for live bulk-preview counts so they cannot drift from what Apply affects; it keeps a baked-in copy only as a fallback for older orchestrators.
 
@@ -709,11 +718,12 @@ Download the export archive as a `.tar.gz` file.
 
 #### `POST /projects/{project_id}/models`
 
-Trigger an XTTS-v2 fine-tune. Runs a dataset build, then submits a `finetune` job to the XTTS service.
+Trigger a voice fine-tune. Runs a dataset build, then submits a `finetune` job to the selected engine's service.
 
 **Request (all fields optional; defaults shown):**
 ```json
 {
+  "engine": "xtts",
   "dataset": { "mode": "approved", "min_confidence": null },
   "params": { "epochs": 10, "batch_size": 3, "grad_accum": 1, "learning_rate": 5e-6 }
 }
@@ -721,18 +731,24 @@ Trigger an XTTS-v2 fine-tune. Runs a dataset build, then submits a `finetune` jo
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `engine` | string | `xtts` | Fine-tune engine: `xtts` \| `gpt_sovits`. Persisted on the model row and echoed in listings |
 | `dataset.mode` | string | `approved` | `approved`: segments with status `approved`. `auto`: segments with `match_confidence >= min_confidence` and status not `rejected`/`auto_rejected` (review not required) |
 | `dataset.min_confidence` | float | 0.85 | `auto` mode only: match-confidence floor. Ignored in `approved` mode |
-| `params.epochs` | int | 10 | Training epochs |
-| `params.batch_size` | int | 3 | Per-step batch size |
-| `params.grad_accum` | int | 1 | Gradient accumulation steps |
-| `params.learning_rate` | float | 5e-6 | Learning rate |
+| `params.epochs` | int | 10 | XTTS: training epochs |
+| `params.batch_size` | int | 3 | Per-step batch size (both engines) |
+| `params.grad_accum` | int | 1 | XTTS: gradient accumulation steps |
+| `params.learning_rate` | float | 5e-6 | XTTS: learning rate |
+| `params.sovits_epochs` | int | service default | GPT-SoVITS: SoVITS (s2) training epochs |
+| `params.gpt_epochs` | int | service default | GPT-SoVITS: GPT (s1) training epochs |
+
+`params` is a permissive bag: keys not used by the chosen engine are ignored by that engine. XTTS resolves omitted params against the project's `xtts_*` config columns; GPT-SoVITS forwards only explicitly-sent params and the service fills the rest from its own defaults (no project columns in v1).
 
 Dataset filters apply in both modes: segments outside 1–11 seconds and segments flagged `cleanup_error` are excluded. Drop counts are recorded in the dataset manifest so a thin dataset is visible, not silent.
 
 **Response 409** `insufficient_dataset` if the selected segments total under 300 seconds. `detail`: `{ "selected_duration_secs": 214.7, "required_secs": 300 }`.
 **Response 409** `finetune_in_progress` if a model for this project is `pending` or `training`.
-**Response 503** `xtts_unavailable` if the XTTS service is not deployed or unhealthy.
+**Response 503** `xtts_unavailable` if `engine` is `xtts` and the XTTS service is not deployed or unhealthy.
+**Response 503** `engine_unavailable` if `engine` is `gpt_sovits` and that service is not deployed or unhealthy.
 
 **Response 202:**
 ```json
@@ -766,10 +782,16 @@ Delete a model row and its checkpoint directory.
 
 #### `GET /projects/{project_id}/models/{model_id}/download`
 
-Download the trained XTTS-v2 checkpoint bundle as an uncompressed tar archive, for use with an external XTTS runtime (e.g. a Wyoming/Home Assistant TTS server). The archive contains the checkpoint files from `models/{model_id}/`:
+Download the trained checkpoint bundle as an uncompressed tar archive, for use with an external runtime. The archive contains the checkpoint files from `models/{model_id}/`; the file list is **per-engine**:
 
+**XTTS-v2** (e.g. for a Wyoming/Home Assistant TTS server):
 - `model.pth`, `config.json`, `vocab.json` — mandatory; sufficient for `Xtts.load_checkpoint(checkpoint_dir=…)`
 - `speaker_latents.pt` — included when present (cached `{gpt_cond_latent, speaker_embedding}` conditioning)
+
+**GPT-SoVITS** (all five mandatory — the engine needs a conditioning reference *and its transcript* at inference):
+- `gpt.ckpt` (fine-tuned GPT/s1 weights), `sovits.pth` (fine-tuned SoVITS/s2 weights)
+- `config.json` (engine, version, sample rate, relative file paths, vendored commit, resolved hyperparams)
+- `reference.wav` + `reference.txt` (conditioning reference clip, 3–10 s, selected from the training set at packaging time)
 
 The tar is streamed in chunks (no temp file, no full-file buffering), so a multi-GB `model.pth` transfers without a memory or disk spike. It is uncompressed because model weights do not gzip meaningfully.
 
@@ -783,7 +805,7 @@ The tar is streamed in chunks (no temp file, no full-file buffering), so a multi
 
 #### `POST /projects/{project_id}/previews`
 
-Synthesise a speech preview. `model_id: null` uses the base model (zero-shot).
+Synthesise a speech preview. `model_id: null` uses the XTTS base model (zero-shot); base previews are XTTS-only. A non-null `model_id` routes to the model's engine service: XTTS models get orchestrator-resolved conditioning as below, GPT-SoVITS models synthesise with the reference stored in their bundle (`conditioning` is ignored, and there is no base/untrained GPT-SoVITS preview).
 
 Either `text` or `segment_id` is required. `segment_id` drives the A/B compare flow: when set, `text` is ignored and the orchestrator synthesises the segment's effective transcript (`transcript_edited` if set, else `transcript`) instead, so the clone says exactly what the original recording says. The target segment is also excluded from the `segments_raw`/`segments_cleaned` conditioning pools (it would be a trivial one-shot copy of the very line being compared).
 
@@ -823,15 +845,15 @@ Either `text` or `segment_id` is required. `segment_id` drives the A/B compare f
 | `top_k` | int | 50 | 1–100. Sample from only the k most likely tokens. |
 | `top_p` | float | 0.85 | Nucleus sampling cutoff (>0, ≤1). |
 
-All five sampling knobs are per-run only — never stored on the project. `length_penalty` is deliberately not exposed: it only applies under beam search and the service keeps `num_beams=1`, so it would be a knob that does nothing.
+All five sampling knobs are per-run only — never stored on the project, and the tabled defaults are **XTTS values applied per-engine**: the orchestrator persists only the knobs the request explicitly sent, then fills the rest per the model's engine (XTTS previews get the values above; GPT-SoVITS previews leave omitted knobs to the service's own defaults — XTTS-scale values like `repetition_penalty: 10.0` are never forced onto it). `length_penalty` is deliberately not exposed: it only applies under beam search and the service keeps `num_beams=1`, so it would be a knob that does nothing.
 
-The orchestrator resolves the conditioning source to absolute WAV paths. The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
+The orchestrator resolves the conditioning source to absolute WAV paths (XTTS previews only). The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
 
-**Response 409** `conditioning_unavailable` if the requested source has no audio yet (e.g. `segments_raw` before diarisation has run).
+**Response 409** `conditioning_unavailable` if the requested source has no audio yet (e.g. `segments_raw` before diarisation has run). XTTS previews only — GPT-SoVITS models carry their own bundled reference, so this check is skipped for them.
 **Response 409** `model_not_ready` if `model_id` refers to a model that is not `ready`.
 **Response 409** `segment_not_comparable` if `segment_id` doesn't exist or has no transcript.
 **Response 422** if neither `text` nor `segment_id` is given.
-**Response 503** `xtts_unavailable` if the XTTS service is not deployed or unhealthy.
+**Response 503** `xtts_unavailable` if the resolved engine is XTTS (base preview, or an xtts model) and the XTTS service is not deployed or unhealthy; `engine_unavailable` for an unhealthy GPT-SoVITS model preview.
 
 **Response 202:** `{ "enqueued_job": { "id": "...", "type": "preview" } }` — the preview id is the job id.
 
@@ -1450,7 +1472,61 @@ The service always synthesises with `enable_text_splitting=True`: preview text c
 **Failure modes (`finetune`):**
 
 - **VRAM preflight failure** (before training starts): `status: "failed"`, `error: "insufficient_vram: 12 GB required, 8 GB available"`. Not retryable.
-- **CUDA OOM during training:** `status: "failed"`, `error: "cuda_oom"`, plus `"retry_with": { "batch_size": 1, "grad_accum": 3 }`. The orchestrator resubmits once with the suggested values — the same pattern as vocal separation's `retry_with_chunk_secs`. A second OOM is terminal.
+- **CUDA OOM during training:** `status: "failed"`, `error: "cuda_oom"`, plus an advisory `"retry_with": { "batch_size": 1, "grad_accum": 3 }`. The orchestrator fails the model and job loudly and does **not** auto-resubmit — silently shrinking the operator's training config is worse than a clear failure that says to reduce the batch size and retry. `retry_with` is surfaced as guidance only.
+
+---
+
+### GPT-SoVITS Service (port 8006) — GPT-SoVITS engine
+
+Same job dialect as the XTTS service, with per-engine differences noted here. No licence gate: the models are MIT-licensed and public, so `/health` is a plain probe (no `cpml_not_accepted` analogue) and no HF token is needed. Pretrained base weights download from the public `lj1995/GPT-SoVITS` HF repo on first use into `GPT_SOVITS_PRETRAINED_DIR`; the service is healthy before weights arrive, and a mid-job download failure fails that job with a clear error.
+
+#### `GET /health`
+
+**Response 200:** `{ "status": "ok" }`
+
+#### `POST /jobs`
+
+Two job types, discriminated by `type`.
+
+**Request (`finetune`):** same shape as XTTS — `{ job_id, type, manifest_path, output_dir, params }`. Differences:
+
+| Field | Difference vs XTTS |
+|-------|--------------------|
+| `params` | GPT-SoVITS knobs: `sovits_epochs`, `gpt_epochs`, `batch_size`. All optional — the orchestrator forwards only explicitly-sent keys and the service fills its own defaults. No `language`/`eval_split` injection (v1 trains `en` only; there is no eval pass) |
+
+The service converts the manifest to the upstream `.list` format, runs the vendored prep stages (text/BERT, HuBERT, speaker-verification, semantic tokens) and the two training stages (SoVITS s2, then GPT s1) as subprocesses, then packages the bundle — including selecting a 3–10 s training segment (measured from the decoded audio, trimmed if over-band) as the inference conditioning reference. A dataset with no usable reference fails the job with `reference_unavailable: ...` rather than packaging a bundle that cannot synthesise.
+
+**Request (`synthesise`):** same shape as XTTS. Differences:
+
+| Field | Difference vs XTTS |
+|-------|--------------------|
+| `reference_wavs` | May be empty (the orchestrator sends `[]`): a fine-tuned bundle carries its own `reference.wav`/`reference.txt` |
+| `checkpoint_dir` | Required in practice — there is no base-model (zero-shot) path; `null` is rejected |
+| `params` | `temperature`, `speed`, `repetition_penalty`, `top_k`, `top_p` accepted with GPT-SoVITS-scale defaults (e.g. `repetition_penalty` 1.35 — upstream caps at 2.0, so XTTS-scale values must not be forced here) |
+
+**Response 202:** `{ "job_id": "..." }`
+
+#### `GET /jobs/{job_id}`
+
+Same envelope as XTTS. `progress.phase` is one of `preparing` (dataset conversion + prep stages), `training_sovits`, `training_gpt`, `packaging` — two independently counted training sub-stages (`epoch`/`total_epochs` are per-sub-stage; the orchestrator's percent mapping weights the phases 0–5 / 5–50 / 50–95 / 95–99).
+
+**Complete (`finetune`):** `result` is
+```json
+{
+  "checkpoint_dir": "/data/projects/{project_id}/models/{model_id}",
+  "gpt_path": ".../gpt.ckpt",
+  "sovits_path": ".../sovits.pth",
+  "config_path": ".../config.json",
+  "reference_wav_path": ".../reference.wav",
+  "reference_text_path": ".../reference.txt",
+  "final_eval_loss": null
+}
+```
+(`final_eval_loss` is always `null` — GPT-SoVITS training runs no eval pass; the orchestrator stores NULL.)
+
+**Complete (`synthesise`):** `result` is `{ "output_path": "...", "duration_secs": 4.2 }` — as XTTS.
+
+**Failure modes (`finetune`):** same contract as XTTS — `insufficient_vram: ...` preflight (via `FINETUNE_MIN_VRAM_GB`, default 8.0), and `cuda_oom` with an advisory `retry_with` suggestion (fail-loud: the orchestrator surfaces it but never auto-resubmits). Subprocess stage failures surface the stage name and a stderr tail in the error string.
 
 ---
 

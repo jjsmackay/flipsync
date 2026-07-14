@@ -155,9 +155,9 @@ Create a `.env` file at the repo root before first run: `cp .env.example .env`. 
 |----------|----------|---------|---------|
 | `HF_TOKEN` | yes | — | HuggingFace token for pyannote model download (diarisation only) |
 | `DATA_ROOT` | no | `data` (named volume) | Override project-data storage with a host bind path (absolute, or `./data`). Unset = named volume (see note above) |
-| `MODELS_ROOT` | no | `/mnt/models/flipsync` | Host dir for the demucs/pyannote/whisper caches |
+| `MODELS_ROOT` | no | `/mnt/models/flipsync` | Host dir for the demucs/pyannote/whisper/xtts/gpt-sovits caches |
 | `ROFORMER_MODEL_DIR` | no | `${MODELS_ROOT}/audio-separator` | Cache dir for BS-RoFormer weights (only used when a project selects the `bs_roformer` separation model) |
-| `IDLE_UNLOAD_SECS` | no | `60` | Idle seconds before vocal-separation/diarisation release their model from VRAM (0 disables). See §Idle VRAM unloading |
+| `IDLE_UNLOAD_SECS` | no | `60` | Idle seconds before vocal-separation/diarisation (and the gpt-sovits synthesis cache) release their model from VRAM (0 disables). See §Idle VRAM unloading |
 | `SERVICE_READY_TIMEOUT_SECS` | no | `1800` | Orchestrator's pre-GPU-lock wait for a processing service to become ready |
 | `ORCHESTRATOR_PORT` | no | `8000` | Host port for the orchestrator API |
 | `FRONTEND_PORT` | no | `3000` | Host port for the UI |
@@ -267,6 +267,8 @@ The unload runs on each service's single-worker job executor, so it can never ov
 
 Transcription is deliberately excluded: it's the last GPU stage, so nothing waits behind its model, and holding it avoids reload churn across a batch of segments.
 
+The gpt-sovits service applies the same pattern to its cached synthesis model (previews); its training subprocesses hold VRAM only while they run.
+
 ---
 
 ## XTTS service (v1.5, opt-in)
@@ -291,6 +293,31 @@ If `XTTS_ACCEPT_CPML` is unset the service still starts but reports unhealthy: `
 | Model cache | `${MODELS_ROOT}/xtts:/root/.local/share/tts` |
 
 The service runs a VRAM preflight before fine-tuning and fails fast with `insufficient_vram` rather than hitting a CUDA OOM mid-training. A fine-tune occupies the GPU for hours; the GPU-sharing caveats above apply with more force while one is running.
+
+## GPT-SoVITS service (opt-in)
+
+The second voice engine, also profile-gated but with **no licence-acceptance
+variable** — the GPT-SoVITS code and its pretrained weights are MIT-licensed
+and public (no `HF_TOKEN` either):
+
+```bash
+docker compose --profile gpt-sovits up -d
+```
+
+| Concern | Value |
+|---------|-------|
+| Internal port | 8006 (not exposed to host) |
+| GPU | Same reservation pattern as vocal separation / diarisation |
+| VRAM — fine-tune | 8 GB preflight minimum (provisional; `FINETUNE_MIN_VRAM_GB` overrides) |
+| Model cache | `${MODELS_ROOT}/gpt-sovits:/models/gpt-sovits` (`GPT_SOVITS_PRETRAINED_DIR`) |
+| Pretrained weights | ~1.2 GB, downloaded on first job from the public `lj1995/GPT-SoVITS` HF repo |
+| Vendored code | GPT-SoVITS pinned at a fixed commit inside the image (see the service Dockerfile) |
+
+Same VRAM preflight behaviour as XTTS (`insufficient_vram`, fail-fast). Unlike
+XTTS, previews require a **trained** model — there is no base-model preview
+for this engine. Both engines can be enabled side by side
+(`--profile xtts --profile gpt-sovits`); the Train stage offers a picker when
+more than one is healthy.
 
 ---
 

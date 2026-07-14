@@ -9,7 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import service_client
 from db import project_dir, require_project, utc_now
@@ -20,11 +20,20 @@ router = APIRouter(prefix="/projects/{project_id}/models", tags=["models"])
 
 REQUIRED_DATASET_SECS = 300.0
 
-# The trained XTTS-v2 checkpoint bundle. The three mandatory files are what a
-# Coqui `Xtts.load_checkpoint(checkpoint_dir=...)` needs; speaker_latents.pt is
-# an optional conditioning cache that consumers may reuse.
-BUNDLE_MANDATORY = ("model.pth", "config.json", "vocab.json")
-BUNDLE_OPTIONAL = ("speaker_latents.pt",)
+# Per-engine model bundle file lists (download streams the right files).
+# XTTS: the three mandatory files are what a Coqui
+# `Xtts.load_checkpoint(checkpoint_dir=...)` needs; speaker_latents.pt is an
+# optional conditioning cache that consumers may reuse.
+# GPT-SoVITS: all five files are mandatory — reference.wav/.txt are the
+# packaged conditioning reference GPT-SoVITS requires at inference time.
+BUNDLE_MANDATORY: dict[str, tuple[str, ...]] = {
+    "xtts": ("model.pth", "config.json", "vocab.json"),
+    "gpt_sovits": ("gpt.ckpt", "sovits.pth", "config.json", "reference.wav", "reference.txt"),
+}
+BUNDLE_OPTIONAL: dict[str, tuple[str, ...]] = {
+    "xtts": ("speaker_latents.pt",),
+    "gpt_sovits": (),
+}
 _TAR_CHUNK = 1024 * 1024
 
 
@@ -38,7 +47,14 @@ class DatasetSpec(BaseModel):
 # to the persisted project config (xtts_*) in _handle_finetune rather than being
 # masked by a hardcoded default. (Concrete defaults here silently overrode the
 # operator's Train settings — every run trained 10 epochs regardless.)
+#
+# `extra="allow"`: this is a shared, permissive bag across engines. The named
+# fields are XTTS's; a GPT-SoVITS request sends its own engine-shaped keys
+# (e.g. sovits_epochs) which must survive to the persisted overrides — the
+# engine service ignores keys it doesn't recognise, not this request model.
 class TrainParams(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     epochs: int | None = None
     batch_size: int | None = None
     grad_accum: int | None = None
@@ -46,6 +62,7 @@ class TrainParams(BaseModel):
 
 
 class CreateModelRequest(BaseModel):
+    engine: Literal["xtts", "gpt_sovits"] = "xtts"
     dataset: DatasetSpec = Field(default_factory=DatasetSpec)
     params: TrainParams = Field(default_factory=TrainParams)
 
@@ -60,10 +77,15 @@ def _serialize_model(row) -> dict:
 async def create_model(project_id: str, body: CreateModelRequest = CreateModelRequest()):
     conn = require_project(project_id)
 
-    if not await service_client.is_healthy("xtts"):
+    if not await service_client.is_healthy(body.engine):
+        if body.engine == "xtts":
+            raise AppError(
+                503, "xtts_unavailable",
+                "The XTTS service is not deployed or not healthy.",
+            )
         raise AppError(
-            503, "xtts_unavailable",
-            "The XTTS service is not deployed or not healthy.",
+            503, "engine_unavailable",
+            f"The {body.engine} service is not deployed or not healthy.",
         )
 
     in_progress = conn.execute(
@@ -96,10 +118,10 @@ async def create_model(project_id: str, body: CreateModelRequest = CreateModelRe
     conn.execute(
         """
         INSERT INTO models
-            (id, project_id, status, dataset_mode, min_confidence, params, created_at, updated_at)
-        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)
+            (id, project_id, status, dataset_mode, min_confidence, params, engine, created_at, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?)
         """,
-        (model_id, project_id, mode, min_conf, json.dumps(overrides), now, now),
+        (model_id, project_id, mode, min_conf, json.dumps(overrides), body.engine, now, now),
     )
     conn.commit()
 
@@ -115,7 +137,7 @@ async def create_model(project_id: str, body: CreateModelRequest = CreateModelRe
     )
 
     return {
-        "model": {"id": model_id, "status": "pending", "dataset_mode": mode},
+        "model": {"id": model_id, "status": "pending", "dataset_mode": mode, "engine": body.engine},
         "enqueued_jobs": [
             {"id": ds_job, "type": "dataset_build"},
             {"id": ft_job, "type": "finetune"},
@@ -173,15 +195,17 @@ async def download_model(project_id: str, model_id: str):
             {"status": model["status"]},
         )
 
+    mandatory = BUNDLE_MANDATORY[model["engine"]]
+    optional = BUNDLE_OPTIONAL[model["engine"]]
     cp = model["checkpoint_dir"] or f"models/{model_id}"
     bundle = project_dir(project_id) / cp
-    if not all((bundle / f).is_file() for f in BUNDLE_MANDATORY):
+    if not all((bundle / f).is_file() for f in mandatory):
         raise AppError(
             404, "model_bundle_not_found",
             "Trained model files are not on disk for this model.",
         )
 
-    names = list(BUNDLE_MANDATORY) + [f for f in BUNDLE_OPTIONAL if (bundle / f).is_file()]
+    names = list(mandatory) + [f for f in optional if (bundle / f).is_file()]
     return StreamingResponse(
         _tar_stream(bundle, names),
         media_type="application/x-tar",

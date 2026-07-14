@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { PipelineSteps } from './PipelineSteps'
 import { TUNING_DEFAULTS } from '../../utils/tuning'
-import type { ProjectDetail, SourceStatus, JobSummary } from '../../types/api'
+import type { EngineInfo, ProjectDetail, SourceStatus, JobSummary } from '../../types/api'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -74,7 +74,7 @@ function renderSteps(
     <MemoryRouter>
     <PipelineSteps
       project={project}
-      xttsEnabled={false}
+      voiceTrainingEnabled={false}
       onSaved={() => {}}
       onReprocessAll={handlers.onReprocessAll ?? (() => {})}
       onRunTranscription={handlers.onRunTranscription ?? (() => {})}
@@ -199,17 +199,17 @@ describe('PipelineSteps', () => {
     expect(screen.getByRole('button', { name: 'Compare…' })).toBeDisabled()
   })
 
-  it('hides the Train row when XTTS is disabled', () => {
+  it('hides the Train row when voice training is disabled', () => {
     renderSteps(makeProject({}))
     expect(screen.queryByText('Train')).not.toBeInTheDocument()
   })
 
-  it('shows the Train row with a model-aware chip when XTTS is enabled', () => {
+  it('shows the Train row with a model-aware chip when voice training is enabled', () => {
     render(
       <MemoryRouter>
         <PipelineSteps
           project={makeProject({})}
-          xttsEnabled={true}
+          voiceTrainingEnabled={true}
           onSaved={() => {}}
           onReprocessAll={() => {}}
           onRunTranscription={() => {}}
@@ -233,7 +233,7 @@ describe('PipelineSteps', () => {
       <MemoryRouter>
         <PipelineSteps
           project={makeProject({ activeJobs: [{ type: 'finetune' }] })}
-          xttsEnabled={true}
+          voiceTrainingEnabled={true}
           onSaved={() => {}}
           onReprocessAll={() => {}}
           onRunTranscription={() => {}}
@@ -244,6 +244,50 @@ describe('PipelineSteps', () => {
       </MemoryRouter>,
     )
     expect(screen.getByText('Running')).toBeInTheDocument()
+  })
+
+  const XTTS: EngineInfo = { id: 'xtts', name: 'XTTS-v2', healthy: true, languages: ['en'] }
+  const XTTS_UNHEALTHY: EngineInfo = { ...XTTS, healthy: false }
+  const GPT_SOVITS: EngineInfo = { id: 'gpt_sovits', name: 'GPT-SoVITS', healthy: true, languages: ['en'] }
+
+  function renderTrainRow(engines?: EngineInfo[]) {
+    render(
+      <MemoryRouter>
+        <PipelineSteps
+          project={makeProject({})}
+          voiceTrainingEnabled={true}
+          engines={engines}
+          onSaved={() => {}}
+          onReprocessAll={() => {}}
+          onRunTranscription={() => {}}
+          onOpenCompare={() => {}}
+          models={[]}
+          onGoToModels={() => {}}
+        />
+      </MemoryRouter>,
+    )
+  }
+
+  describe('Train row — legacy XTTS settings gating', () => {
+    it('hides the persisted XTTS settings disclosure for a gpt-sovits-only deployment', () => {
+      renderTrainRow([XTTS_UNHEALTHY, GPT_SOVITS])
+      expect(screen.queryByLabelText('Epochs')).toBeNull()
+    })
+
+    it('keeps the persisted XTTS settings disclosure for an xtts-only deployment', () => {
+      renderTrainRow([XTTS])
+      expect(screen.getByLabelText('Epochs')).toBeInTheDocument()
+    })
+
+    it('keeps the persisted XTTS settings disclosure when both engines are healthy', () => {
+      renderTrainRow([XTTS, GPT_SOVITS])
+      expect(screen.getByLabelText('Epochs')).toBeInTheDocument()
+    })
+
+    it('defaults to showing it when `engines` is omitted (back-compat)', () => {
+      renderTrainRow(undefined)
+      expect(screen.getByLabelText('Epochs')).toBeInTheDocument()
+    })
   })
 
   it('shows vocals players only for sources past separation', () => {

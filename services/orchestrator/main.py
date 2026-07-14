@@ -116,22 +116,42 @@ async def health():
     return {"status": "ok"}
 
 
+# XTTS-v2's published language set (17). Kept as a plain constant — the
+# capabilities endpoint doesn't probe services for metadata like this.
+XTTS_LANGUAGES = [
+    "en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar",
+    "zh-cn", "ja", "hu", "ko", "hi",
+]
+GPT_SOVITS_LANGUAGES = ["en", "zh", "ja", "ko", "yue"]
+
+
 @app.get("/capabilities")
 async def capabilities():
     """Deployment-level feature flags and server-owned tables for the frontend.
 
-    `xtts` reflects whether the profile-gated voice service is deployed and
-    healthy — the frontend uses it to decide whether the terminal stage is Train
-    (XTTS present) or Export. Fetched once per dashboard load, deliberately not
-    folded into the polled project response so an absent XTTS adds no probe
-    latency to the 3 s poll.
+    `engines` lets the frontend build the Train-stage engine picker without
+    probing each service itself. `voice_training` (any engine healthy) is what
+    now drives the terminal-stage Train-vs-Export decision — `xtts` is kept
+    only for backward-compat.
+
+    Fetched once per dashboard load, deliberately not folded into the polled
+    project response so an absent engine adds no probe latency to the 3 s poll.
 
     `bulk_action_sources` is the transition table bulk Apply enforces, served
     so the frontend's live preview counts can't drift from it (the frontend
     keeps a baked-in copy only as a fallback).
     """
+    xtts_healthy, gpt_sovits_healthy = await asyncio.gather(
+        is_healthy("xtts"), is_healthy("gpt_sovits")
+    )
     return {
-        "xtts": await is_healthy("xtts"),
+        "xtts": xtts_healthy,
+        "voice_training": xtts_healthy or gpt_sovits_healthy,
+        "engines": [
+            {"id": "xtts", "name": "XTTS-v2", "healthy": xtts_healthy, "languages": XTTS_LANGUAGES},
+            {"id": "gpt_sovits", "name": "GPT-SoVITS", "healthy": gpt_sovits_healthy,
+             "languages": GPT_SOVITS_LANGUAGES},
+        ],
         "bulk_action_sources": {
             action: sorted(statuses)
             for action, statuses in BULK_ACTION_SOURCES.items()

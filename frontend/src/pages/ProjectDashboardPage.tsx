@@ -10,7 +10,7 @@ import {
   getModels,
   ApiError,
 } from '../api/client'
-import type { FailedJob, Model } from '../types/api'
+import type { EngineInfo, FailedJob, Model } from '../types/api'
 import { retryPlan } from '../utils/retry'
 import { errorMessage } from '../utils/errors'
 import { deriveStage } from '../utils/stage'
@@ -47,31 +47,36 @@ function writeAdvancedPref(on: boolean): void {
   }
 }
 
-// XTTS presence is a deployment fact, fetched once. Memoise a resolved `true` at
-// module scope so a later transient probe failure can't flip an enabled
-// deployment back to the Export terminal stage.
-let xttsCapabilityResolved = false
+// Voice-engine capabilities are a deployment fact, fetched once. Memoise a
+// resolved "training enabled" state at module scope so a later transient
+// probe failure can't flip an enabled deployment back to the Export terminal
+// stage. `voice_training` (not the back-compat-only `xtts` flag) drives this —
+// a GPT-SoVITS-only deployment (xtts absent/unhealthy, gpt_sovits healthy)
+// must offer the Train stage too.
+let voiceCapabilitiesResolved: { voiceTrainingEnabled: boolean; engines: EngineInfo[] } | null = null
 
-function useXttsEnabled(): boolean {
-  const [enabled, setEnabled] = useState(xttsCapabilityResolved)
+function useVoiceCapabilities(): { voiceTrainingEnabled: boolean; engines: EngineInfo[] } {
+  const [state, setState] = useState(
+    voiceCapabilitiesResolved ?? { voiceTrainingEnabled: false, engines: [] },
+  )
   useEffect(() => {
-    if (xttsCapabilityResolved) return
+    if (voiceCapabilitiesResolved) return
     let alive = true
     getCapabilities()
       .then((caps) => {
-        if (alive && caps.xtts) {
-          xttsCapabilityResolved = true
-          setEnabled(true)
+        if (alive && caps.voice_training) {
+          voiceCapabilitiesResolved = { voiceTrainingEnabled: true, engines: caps.engines ?? [] }
+          setState(voiceCapabilitiesResolved)
         }
       })
       .catch(() => {
-        /* treat an unreachable/failed probe as XTTS disabled */
+        /* treat an unreachable/failed probe as voice training disabled */
       })
     return () => {
       alive = false
     }
   }, [])
-  return enabled
+  return state
 }
 
 interface ReprocessConfirm {
@@ -99,7 +104,8 @@ export function ProjectDashboardPage() {
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null)
   const [compareOpen, setCompareOpen] = useState(false)
   const [advanced, setAdvanced] = useState(readAdvancedPref)
-  const xttsEnabled = useXttsEnabled()
+  const { voiceTrainingEnabled, engines } = useVoiceCapabilities()
+  const xttsAvailable = engines.some((e) => e.id === 'xtts' && e.healthy)
 
   function toggleAdvanced(on: boolean) {
     setAdvanced(on)
@@ -301,7 +307,7 @@ export function ProjectDashboardPage() {
   // (Pipeline hosts the whole journey including Review and Train); Models
   // opens by default once the project reaches the Train stage.
   // CollapsibleSection lets an explicit user toggle override and persist this.
-  const stage = deriveStage(project, xttsEnabled)
+  const stage = deriveStage(project, voiceTrainingEnabled)
   const modelsDefaultOpen = stage === 'train'
 
   return (
@@ -358,7 +364,7 @@ export function ProjectDashboardPage() {
       {/* Stage strip */}
       <StageStrip
         project={project}
-        xttsEnabled={xttsEnabled}
+        voiceTrainingEnabled={voiceTrainingEnabled}
         onGoToTrain={goToTrain}
         onGoToPipeline={goToPipeline}
       />
@@ -368,7 +374,7 @@ export function ProjectDashboardPage() {
         project={project}
         onAction={() => void refetch()}
         onOpenSettings={openSettings}
-        xttsEnabled={xttsEnabled}
+        voiceTrainingEnabled={voiceTrainingEnabled}
         onGoToTrain={goToTrain}
       />
 
@@ -412,7 +418,8 @@ export function ProjectDashboardPage() {
         >
           <PipelineSteps
             project={project}
-            xttsEnabled={xttsEnabled}
+            voiceTrainingEnabled={voiceTrainingEnabled}
+            engines={engines}
             onSaved={() => void refetch()}
             onReprocessAll={(steps) => void handleReprocessAll(steps)}
             onRunTranscription={() => void handleRunTranscription()}
@@ -430,8 +437,8 @@ export function ProjectDashboardPage() {
         </CollapsibleSection>
       )}
 
-      {/* Models (XTTS deployments) — trained models + voice preview */}
-      {xttsEnabled && hasSegments && (
+      {/* Models (voice-training deployments) — trained models + voice preview */}
+      {voiceTrainingEnabled && hasSegments && (
         <CollapsibleSection
           ref={modelsRef}
           title="Models"
@@ -445,6 +452,7 @@ export function ProjectDashboardPage() {
             modelsError={modelsError}
             reloadModels={() => void reloadModels()}
             advanced={advanced}
+            xttsAvailable={xttsAvailable}
           />
         </CollapsibleSection>
       )}

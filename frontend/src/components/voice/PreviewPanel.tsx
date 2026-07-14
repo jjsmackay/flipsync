@@ -11,6 +11,11 @@ interface PreviewPanelProps {
   /** Header toggle: show the top-k / top-p dials. Values still ride every
    *  request, so hiding them mid-session loses nothing. */
   advanced?: boolean
+  /** Whether the deployment's XTTS engine is healthy. Gates the zero-shot
+   *  "base model" column: a base (no model_id) preview is XTTS-only at the
+   *  orchestrator, so a GPT-SoVITS-only deployment has no untrained preview
+   *  to offer. Defaults true (existing XTTS-only behaviour). */
+  xttsAvailable?: boolean
 }
 
 const TEXT_MAX = 500
@@ -47,7 +52,9 @@ interface PreviewColumnProps {
   text: string
   conditioning: PreviewConditioning | undefined
   modelId: string | null
-  sampling: SamplingParams
+  /** null → send no sampling knobs, letting the engine service apply its own
+   *  defaults (GPT-SoVITS models: XTTS numbers would garble the audio). */
+  sampling: SamplingParams | null
   disabled: boolean
   disabledReason?: string
 }
@@ -156,7 +163,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disab
     setPreviewId(null)
     setPhase('generating')
 
-    const body: CreatePreviewRequest = { text, model_id: modelId, conditioning, ...sampling }
+    const body: CreatePreviewRequest = { text, model_id: modelId, conditioning, ...(sampling ?? {}) }
     try {
       const res = await createPreview(projectId, body)
       if (!mountedRef.current) return
@@ -196,7 +203,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disab
   )
 }
 
-export function PreviewPanel({ projectId, models, advanced = false }: PreviewPanelProps) {
+export function PreviewPanel({ projectId, models, advanced = false, xttsAvailable = true }: PreviewPanelProps) {
   const readyModels = models.filter((m) => m.status === 'ready')
 
   const [text, setText] = useState(DEFAULT_TEXT)
@@ -214,6 +221,15 @@ export function PreviewPanel({ projectId, models, advanced = false }: PreviewPan
     if (selectedModelId && readyModels.some((m) => m.id === selectedModelId)) return
     setSelectedModelId(readyModels[0]?.id ?? null)
   }, [readyModels, selectedModelId])
+
+  // The sliders are XTTS dials: a GPT-SoVITS model's preview sends no sampling
+  // knobs at all — the service's own defaults apply (XTTS numbers, especially
+  // repetition_penalty 10 vs the engine's 2.0 cap, garble its audio).
+  const selectedEngine = readyModels.find((m) => m.id === selectedModelId)?.engine ?? 'xtts'
+  const fineTunedSampling = selectedEngine === 'gpt_sovits' ? null : sampling
+  // Hide the sliders when no visible column uses them (gpt-sovits-only
+  // deployment); with the base column present they still drive it.
+  const showSliders = xttsAvailable || selectedEngine !== 'gpt_sovits'
 
   const conditioning: PreviewConditioning | undefined =
     source === 'auto' ? undefined : { source, segment_count: 5 }
@@ -260,6 +276,7 @@ export function PreviewPanel({ projectId, models, advanced = false }: PreviewPan
               ))}
             </select>
           </div>
+          {showSliders && (
           <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
           <SliderRow
             id="preview-temperature"
@@ -310,25 +327,37 @@ export function PreviewPanel({ projectId, models, advanced = false }: PreviewPan
             </>
           )}
           </div>
+          )}
+          {selectedEngine === 'gpt_sovits' && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {showSliders
+                ? 'The sliders apply to the base model only — GPT-SoVITS models use their own tuned sampling defaults.'
+                : 'GPT-SoVITS models use their own tuned sampling defaults.'}
+            </p>
+          )}
         </div>
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Generate the same text against the base model and a fine-tuned model to compare by ear.
+          {xttsAvailable
+            ? 'Generate the same text against the base model and a fine-tuned model to compare by ear.'
+            : 'Generate the text through a trained model to preview it by ear.'}
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
-          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Zero-shot (base model)</p>
-          <PreviewColumn
-            projectId={projectId}
-            text={trimmed}
-            conditioning={conditioning}
-            modelId={null}
-            sampling={sampling}
-            disabled={textInvalid}
-            disabledReason={textInvalid ? 'Enter text to synthesise.' : undefined}
-          />
-        </div>
+      <div className={`grid grid-cols-1 gap-4 ${xttsAvailable ? 'sm:grid-cols-2' : ''}`}>
+        {xttsAvailable && (
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
+            <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Zero-shot (base model)</p>
+            <PreviewColumn
+              projectId={projectId}
+              text={trimmed}
+              conditioning={conditioning}
+              modelId={null}
+              sampling={sampling}
+              disabled={textInvalid}
+              disabledReason={textInvalid ? 'Enter text to synthesise.' : undefined}
+            />
+          </div>
+        )}
 
         <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-3">
           <label className="flex items-center gap-2 text-sm">
@@ -356,7 +385,7 @@ export function PreviewPanel({ projectId, models, advanced = false }: PreviewPan
             text={trimmed}
             conditioning={conditioning}
             modelId={selectedModelId}
-            sampling={sampling}
+            sampling={fineTunedSampling}
             disabled={textInvalid || noModel || selectedModelId === null}
             disabledReason={
               noModel

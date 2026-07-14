@@ -3,6 +3,7 @@ import type { Model } from '../../types/api'
 import { deleteModel, getModelDownloadUrl, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
 import { errorMessage } from '../../utils/errors'
+import { engineLabel } from '../../utils/labels'
 import { StatusBadge } from '../ui/StatusBadge'
 
 interface ModelsListProps {
@@ -68,6 +69,9 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
               <div className="min-w-0 space-y-1">
                 <div className="flex items-center gap-2">
                   <StatusBadge status={model.status} kind="model" />
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                    {engineLabel(model.engine)}
+                  </span>
                   <span className="text-sm text-gray-700 dark:text-gray-300">
                     {model.dataset_mode === 'auto'
                       ? `Auto (≥ ${model.min_confidence ?? '—'})`

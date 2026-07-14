@@ -1,0 +1,49 @@
+# Service layer. The heavy accelerator stack (torch/torchaudio) lives in
+# requirements-accel.txt so it installs in an earlier, cache-friendly layer.
+fastapi
+uvicorn
+pydantic==2.10.6  # upstream caps <=2.10.6; also what gradio/fastapi resolve against
+
+# --- Vendored GPT-SoVITS runtime deps (training + English inference) --------
+# Pruned from upstream requirements.txt by import-closure at the pinned
+# commit: no webui/ASR/UVR5 tooling (funasr, modelscope, onnxruntime,
+# ctranslate2, av) and no ja/ko/yue g2p stacks (pyopenjtalk, g2pk2, ko_pron,
+# ToJyutping, opencc + G2PW) — text/cleaner.py imports language modules
+# lazily per language token and FlipSync is English-only in v1. A non-en
+# preview request would fail with a clear ImportError rather than silently
+# degrading.
+numpy==1.26.4             # upstream pins numpy<2.0
+scipy
+librosa==0.10.2           # upstream exact pin
+pytorch-lightning==2.5.2  # s1 (GPT) trainer; upstream floor is >=2.4
+tensorboard               # s2_train SummaryWriter + s1 TensorBoardLogger
+transformers==4.50.0      # upstream range >=4.43,<=4.50 — top of the range
+peft==0.17.0              # upstream cap <0.18.0
+pandas                    # AR data module + tools/my_utils
+soundfile                 # preview WAV writing (librosa pulls it anyway)
+ffmpeg-python             # tools/my_utils.load_audio (prep decodes via ffmpeg)
+PyYAML
+tqdm
+# tools/my_utils.py — imported by every prep script and the s2 data loader —
+# imports gradio at module top. Pure webui baggage, but severing it would
+# mean patching the vendored checkout; last 4.x matches upstream's gradio<5.
+gradio==4.44.1
+# English g2p path (text/english.py): NLTK data is baked in the Dockerfile.
+g2p_en
+wordsegment
+nltk
+# Chinese text modules are imported at TextPreprocessor import time even for
+# English-only use (from text import chinese) — the deps must be present.
+cn2an
+pypinyin
+jieba
+jieba_fast                # no py3.11 wheels; built from source (build-essential)
+# Language segmentation (TTS_infer_pack/TextPreprocessor).
+split-lang
+fast_langdetect>=0.3.1
+# Model code: module/models.py imports f5_tts unconditionally (v3/v4 DiT),
+# which needs x_transformers; AR/t2s_model needs torchmetrics.
+x_transformers
+rotary_embedding_torch
+torchmetrics<=1.5
+sentencepiece

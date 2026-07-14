@@ -1,14 +1,34 @@
 import { useState } from 'react'
-import type { ProjectDetail, Model, CreateModelRequest, JobSummary } from '../../types/api'
+import type {
+  ProjectDetail,
+  Model,
+  CreateModelRequest,
+  JobSummary,
+  EngineId,
+  EngineInfo,
+  GptSovitsTrainParams,
+} from '../../types/api'
 import { createModel, ApiError } from '../../api/client'
 import { formatDuration } from '../../utils/format'
 import { errorMessage } from '../../utils/errors'
 import { jobLabel } from '../../utils/labels'
 import { ProgressBar } from '../ui/ProgressBar'
 
+// Fallback when the caller doesn't pass `engines` (e.g. an XTTS-only
+// deployment that hasn't wired capabilities through) — a single implicit
+// XTTS engine, matching pre-GPT-SoVITS behaviour exactly.
+const DEFAULT_ENGINES: EngineInfo[] = [
+  { id: 'xtts', name: 'XTTS-v2', healthy: true, languages: [] },
+]
+
 interface TrainPanelProps {
   project: ProjectDetail
   models: Model[]
+  /** From capabilities.engines. A picker only renders when more than one
+   *  entry is healthy; otherwise the sole healthy engine is used implicitly
+   *  (still posted explicitly on the create request). Defaults to a single
+   *  implicit XTTS engine when omitted. */
+  engines?: EngineInfo[]
   /** Called after a train is successfully enqueued so the parent can refetch + reload models. */
   onStarted: () => void
 }
@@ -26,6 +46,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   insufficient_dataset: 'Not enough usable audio to train (300 s minimum after filtering).',
   finetune_in_progress: 'A model for this project is already training. Wait for it to finish.',
   xtts_unavailable: 'The voice service is not deployed or is unhealthy.',
+  engine_unavailable: 'The selected voice engine is not deployed or is unhealthy.',
 }
 
 function TrainingProgressCard({ job }: { job: JobSummary }) {
@@ -70,12 +91,25 @@ function TrainingProgressCard({ job }: { job: JobSummary }) {
   )
 }
 
-export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
+export function TrainPanel({ project, models, engines, onStarted }: TrainPanelProps) {
   const [confirming, setConfirming] = useState(false)
   const [mode, setMode] = useState<TrainMode>('approved')
   const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Engine picker: sourced from capabilities.engines, shown only when more
+  // than one engine is healthy (spec §7). Everywhere else the sole healthy
+  // engine is used implicitly — still posted explicitly on the request.
+  const healthyEngines = (engines ?? DEFAULT_ENGINES).filter((e) => e.healthy)
+  const [engine, setEngine] = useState<EngineId>(healthyEngines[0]?.id ?? 'xtts')
+
+  // GPT-SoVITS Advanced params (spec §7 resolution): plain numbers, kept as
+  // strings so an untouched field is distinguishable from an explicit 0 —
+  // empty means "omit the key, let the service default it".
+  const [sovitsEpochs, setSovitsEpochs] = useState('')
+  const [gptEpochs, setGptEpochs] = useState('')
+  const [gptSovitsBatchSize, setGptSovitsBatchSize] = useState('')
 
   const approvedDuration = project.stats.approved_duration_secs
 
@@ -93,10 +127,19 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
   async function handleTrain() {
     setError(null)
     setSubmitting(true)
-    const body: CreateModelRequest =
-      mode === 'auto'
+    const body: CreateModelRequest = {
+      engine,
+      ...(mode === 'auto'
         ? { dataset: { mode: 'auto', min_confidence: minConfidence } }
-        : { dataset: { mode: 'approved' } }
+        : { dataset: { mode: 'approved' } }),
+    }
+    if (engine === 'gpt_sovits') {
+      const overrides: GptSovitsTrainParams = {}
+      if (sovitsEpochs !== '') overrides.sovits_epochs = Number(sovitsEpochs)
+      if (gptEpochs !== '') overrides.gpt_epochs = Number(gptEpochs)
+      if (gptSovitsBatchSize !== '') overrides.batch_size = Number(gptSovitsBatchSize)
+      if (Object.keys(overrides).length > 0) body.params = overrides
+    }
     try {
       await createModel(project.id, body)
       setConfirming(false)
@@ -145,6 +188,23 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
         </>
       ) : (
         <div className="space-y-3">
+          {healthyEngines.length > 1 && (
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Engine</legend>
+              {healthyEngines.map((e) => (
+                <label key={e.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                  <input
+                    type="radio"
+                    name="train-engine"
+                    checked={engine === e.id}
+                    onChange={() => setEngine(e.id)}
+                  />
+                  {e.name}
+                </label>
+              ))}
+            </fieldset>
+          )}
+
           <fieldset className="space-y-2">
             <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Training data</legend>
             <label className="flex items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -200,6 +260,50 @@ export function TrainPanel({ project, models, onStarted }: TrainPanelProps) {
               Below the {formatDuration(TRAIN_TARGET_SECS)} recommended minimum — the model may
               be low quality.
             </p>
+          )}
+
+          {/* Per-engine Advanced params (spec §7) — panels are driven by engine
+              id, not a shared schema. XTTS's knobs live in the Train row's
+              persisted Settings instead; GPT-SoVITS has no such settings yet,
+              so its overrides ride the create request. Left blank, a field
+              omits its key and the service fills in its own default. */}
+          {engine === 'gpt_sovits' && (
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Advanced</legend>
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <span className="w-32">SoVITS epochs</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={sovitsEpochs}
+                  onChange={(e) => setSovitsEpochs(e.target.value)}
+                  placeholder="Service default"
+                  className="w-32 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <span className="w-32">GPT epochs</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={gptEpochs}
+                  onChange={(e) => setGptEpochs(e.target.value)}
+                  placeholder="Service default"
+                  className="w-32 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                <span className="w-32">Batch size</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={gptSovitsBatchSize}
+                  onChange={(e) => setGptSovitsBatchSize(e.target.value)}
+                  placeholder="Service default"
+                  className="w-32 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
+                />
+              </label>
+            </fieldset>
           )}
 
           <div className="flex items-center gap-2">

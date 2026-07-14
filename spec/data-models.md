@@ -201,13 +201,14 @@ CREATE TABLE jobs (
 
 ### `models` (v1.5)
 
-One row per XTTS-v2 fine-tuned model.
+One row per fine-tuned voice model (XTTS-v2 or GPT-SoVITS; see `engine`).
 
 ```sql
 CREATE TABLE models (
     id                    TEXT PRIMARY KEY,   -- UUID
     project_id            TEXT NOT NULL REFERENCES projects(id),
     status                TEXT NOT NULL,      -- see Model status
+    engine                TEXT NOT NULL DEFAULT 'xtts',  -- xtts | gpt_sovits (migration 014)
     dataset_mode          TEXT NOT NULL,      -- approved | auto
     min_confidence        REAL,               -- auto mode only; NULL for approved
     segment_count         INTEGER,            -- set after dataset build
@@ -518,3 +519,7 @@ Migration log:
 | 008 | `008_whisper_tuning.sql` | Whisper transcription tuning as project config (`transcription_batch_size`, `transcription_compute_type`) |
 | 009 | `009_xtts_models.sql` | v1.5: adds the `models` table and the `jobs.progress_detail` column. Both additive |
 | 010 | `010_cleaned_path.sql` | v1.5: `segments.cleaned_path TEXT NULL` — dataset cleanup cache (`cleaned/{id}.wav`), decoupling dataset builds from `export/`/`export_path` |
+| 011 | `011_pipeline_tuning.sql` | Per-stage pipeline tuning as project config: `demucs_model`/`demucs_shifts`, diarisation bounds, whisper beam/VAD, cleanup high-pass and silence knobs — all defaulting to the previously hardcoded values |
+| 012 | `012_align_words.sql` | `projects.align_words` — optional wav2vec2 forced-alignment pass for transcription (off by default) |
+| 013 | `013_reference_transcript.sql` | `projects.reference_transcript TEXT NULL` — whole-clip transcript of the reference (surfaced read-only in the UI; feeds engines that need a reference transcript). Cleared on reference replace, repopulated by a `reference_transcribe` job |
+| 014 | `014_model_engine.sql` | `models.engine TEXT NOT NULL DEFAULT 'xtts'` (`xtts` \| `gpt_sovits`) — per-model voice-engine routing; existing rows default to `xtts` |
