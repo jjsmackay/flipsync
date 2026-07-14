@@ -2050,13 +2050,17 @@ async def _handle_finetune(
         return
 
     res = result.get("result") or {}
+    # Record the fully-resolved hyperparameters actually used (per-run overrides
+    # merged over project config), not just the client's overrides — so the
+    # Models UI shows exactly what this model was trained with.
     conn.execute(
         """
         UPDATE models
-        SET status='ready', checkpoint_dir=?, eval_loss=?, updated_at=?
+        SET status='ready', checkpoint_dir=?, params=?, eval_loss=?, updated_at=?
         WHERE id=?
         """,
-        (f"models/{model_id}", res.get("final_eval_loss"), _now(), model_id),
+        (f"models/{model_id}", json.dumps(hyperparams), res.get("final_eval_loss"),
+         _now(), model_id),
     )
     conn.commit()
     _complete_job(project_id, job_id)

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Model, Preview, Segment } from '../../types/api'
 import {
-  createPreview, getPreviews, getPreviewAudioUrl, getSegments,
+  createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getSegments,
   getSegmentAudioUrl, getProject, ApiError,
 } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
 import { SamplingParams, DEFAULT_SAMPLING, SliderRow } from './sampling'
+import { PreviewMeta, InlineDelete } from './history'
 
 interface ComparePanelProps {
   projectId: string
@@ -168,16 +169,22 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
     onData: handlePreviews,
   })
 
+  // Refetch the comparison history. Reused for the initial load and after a
+  // delete (polling is off while idle, so a delete needs an explicit reload).
+  const reloadHistory = useCallback(
+    () =>
+      getPreviews(projectId)
+        .then((res) => {
+          if (!mountedRef.current) return
+          setHistory(res.previews.filter((p) => p.segment_id !== null))
+        })
+        .catch(() => {}),
+    [projectId],
+  )
+
   // Initial history load — independent of the segment picker so a transient
   // failure fetching segments can't silently strand "Past comparisons" empty.
-  useEffect(() => {
-    getPreviews(projectId)
-      .then((res) => {
-        if (!mountedRef.current) return
-        setHistory(res.previews.filter((p) => p.segment_id !== null))
-      })
-      .catch(() => {})
-  }, [projectId])
+  useEffect(() => { void reloadHistory() }, [reloadHistory])
 
   // Bounded lifetime: give up after COMPARE_TIMEOUT_MS of generating.
   useEffect(() => {
@@ -393,7 +400,15 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
           <ul className="divide-y divide-gray-100 dark:divide-gray-700">
             {history.map((p) => (
               <li key={p.id} className="py-2 space-y-1">
-                <p className="text-sm text-gray-700 dark:text-gray-300">{p.text}</p>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-sm text-gray-700 dark:text-gray-300">{p.text}</p>
+                    <PreviewMeta models={models} modelId={p.model_id} sampling={p.sampling} advanced={advanced} />
+                  </div>
+                  <div className="flex-shrink-0">
+                    <InlineDelete onDelete={() => deletePreview(projectId, p.id).then(reloadHistory)} />
+                  </div>
+                </div>
                 {p.status === 'complete' && (
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <audio

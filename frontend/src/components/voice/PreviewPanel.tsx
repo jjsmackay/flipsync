@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '../../types/api'
-import { createPreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
+import { createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
 import { SamplingParams, DEFAULT_SAMPLING, SliderRow } from './sampling'
+import { PreviewMeta, InlineDelete } from './history'
 
 interface PreviewPanelProps {
   projectId: string
@@ -57,11 +58,13 @@ interface PreviewColumnProps {
   sampling: SamplingParams | null
   disabled: boolean
   disabledReason?: string
+  /** Fired when a generated take finishes, so the panel can refresh history. */
+  onComplete?: () => void
 }
 
 /** Generate button + poll-to-completion + audio player. Renders no card border of its
  *  own — the parent column supplies the card and any heading/model selector. */
-function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disabled, disabledReason }: PreviewColumnProps) {
+function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disabled, disabledReason, onComplete }: PreviewColumnProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
@@ -97,6 +100,7 @@ function PreviewColumn({ projectId, text, conditioning, modelId, sampling, disab
     objectUrlRef.current = url
     setObjectUrl(url)
     setPhase('ready')
+    onComplete?.()
   }
 
   /** The previews list carries no error detail for failed jobs; the failed job row on
@@ -215,6 +219,27 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
   function setKnob(key: keyof SamplingParams) {
     return (value: number) => setSampling((prev) => ({ ...prev, [key]: value }))
   }
+
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  // Free-text preview history (segment-linked takes belong to the Compare panel).
+  // Polling is per-column, so a completed take triggers reloadHistory via onComplete.
+  const [history, setHistory] = useState<Preview[]>([])
+  const reloadHistory = useCallback(
+    () =>
+      getPreviews(projectId)
+        .then((res) => {
+          if (!mountedRef.current) return
+          setHistory(res.previews.filter((p) => p.segment_id === null))
+        })
+        .catch(() => {}),
+    [projectId],
+  )
+  useEffect(() => { void reloadHistory() }, [reloadHistory])
 
   // Default the fine-tuned column to the newest ready model once one exists.
   useEffect(() => {
@@ -355,6 +380,7 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
               sampling={sampling}
               disabled={textInvalid}
               disabledReason={textInvalid ? 'Enter text to synthesise.' : undefined}
+              onComplete={reloadHistory}
             />
           </div>
         )}
@@ -394,9 +420,34 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
                   ? 'Enter text to synthesise.'
                   : undefined
             }
+            onComplete={reloadHistory}
           />
         </div>
       </div>
+
+      {history.length > 0 && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 space-y-2">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Recent previews</p>
+          <ul className="divide-y divide-gray-100 dark:divide-gray-700">
+            {history.map((p) => (
+              <li key={p.id} className="py-2 space-y-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-sm text-gray-700 dark:text-gray-300">{p.text}</p>
+                    <PreviewMeta models={models} modelId={p.model_id} sampling={p.sampling} advanced={advanced} />
+                  </div>
+                  <div className="flex-shrink-0">
+                    <InlineDelete onDelete={() => deletePreview(projectId, p.id).then(reloadHistory)} />
+                  </div>
+                </div>
+                {p.status === 'complete' && (
+                  <audio controls src={getPreviewAudioUrl(projectId, p.id)} className="w-full" />
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

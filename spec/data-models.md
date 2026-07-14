@@ -215,7 +215,7 @@ CREATE TABLE models (
     dataset_duration_secs REAL,               -- set after dataset build
     dataset_manifest_path TEXT,               -- models/{id}/dataset.json
     checkpoint_dir        TEXT,               -- models/{id}/, set when ready
-    params                TEXT,               -- JSON hyperparameters
+    params                TEXT,               -- JSON hyperparameters: client overrides at create, overwritten with the fully-resolved set when ready
     eval_loss             REAL,               -- final eval loss, set when ready
     error                 TEXT,
     created_at            TEXT NOT NULL,

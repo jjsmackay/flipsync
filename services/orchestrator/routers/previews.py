@@ -3,7 +3,7 @@
 import json
 from typing import Literal, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -155,6 +155,14 @@ async def list_previews(project_id: str, limit: int = 20):
             "segment_id": p.get("segment_id"),
             "model_id": p.get("model_id"),
             "conditioning": p.get("conditioning"),
+            # Provenance for the compare/preview history: the sampling knobs this
+            # take was rendered with. repetition_penalty stays server-side only.
+            "sampling": {
+                "temperature": p.get("temperature"),
+                "speed": p.get("speed"),
+                "top_k": p.get("top_k"),
+                "top_p": p.get("top_p"),
+            },
             "created_at": r["created_at"],
         })
     return {"previews": previews}
@@ -174,3 +182,25 @@ async def get_preview_audio(project_id: str, preview_id: str):
         raise AppError(404, "preview_not_ready", "Preview audio not found.")
 
     return FileResponse(str(wav), media_type="audio/wav")
+
+
+@router.delete("/{preview_id}", status_code=204)
+async def delete_preview(project_id: str, preview_id: str):
+    conn = require_project(project_id)
+    job = conn.execute(
+        "SELECT id, type, status FROM jobs WHERE id=? AND project_id=?", (preview_id, project_id)
+    ).fetchone()
+    if job is None or job["type"] != "preview":
+        raise AppError(404, "preview_not_found", "Preview not found.")
+    if job["status"] in ("queued", "running"):
+        raise AppError(
+            409, "preview_running",
+            "Cannot delete a preview that is still queued or running.",
+        )
+
+    # Best-effort: a failed preview never wrote a WAV. Preview WAVs are a few
+    # seconds of audio, so an inline unlink is fine (unlike model bundles).
+    (project_dir(project_id) / "previews" / f"{preview_id}.wav").unlink(missing_ok=True)
+    conn.execute("DELETE FROM jobs WHERE id=?", (preview_id,))
+    conn.commit()
+    return Response(status_code=204)

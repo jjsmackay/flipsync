@@ -403,6 +403,31 @@ class TestFinetuneHandler:
         detail = json.loads(job["progress_detail"])
         assert detail["epoch"] == 3 and detail["train_loss"] == 2.8
 
+    def test_success_persists_resolved_hyperparams(self, client, project, isolated_data_dir):
+        """With no per-run overrides the model row must still record the fully
+        resolved hyperparameters (from project config), so the Models UI can show
+        exactly what a model was trained with."""
+        import db
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="pending")
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def mock_poll(service, job_id, interval_secs=2.0, on_progress=None):
+            return {"job_id": job_id, "status": "complete",
+                    "result": {"final_eval_loss": 2.5}}
+
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_until_complete", new=AsyncMock(side_effect=mock_poll)):
+            _enqueue_and_run(project, "finetune",
+                             params={"model_id": model_id, "params": {}})
+
+        params = json.loads(conn.execute(
+            "SELECT params FROM models WHERE id=?", (model_id,)).fetchone()["params"])
+        # Project-config defaults from migration 011.
+        assert params == {"epochs": 10, "batch_size": 3, "grad_accum": 1, "learning_rate": 5e-06}
+
     def test_oom_fails_loud_without_resubmit(self, client, project, isolated_data_dir):
         """Fail loud: an OOM failure fails model+job with the service's message
         and does NOT auto-resubmit at a smaller batch size, even if the service

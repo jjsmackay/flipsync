@@ -876,13 +876,14 @@ List recent previews (derived from `preview` jobs).
       "segment_id": null,
       "model_id": null,
       "conditioning": { "source": "segments_cleaned", "segment_count": 5 },
+      "sampling": { "temperature": 0.65, "speed": 1.0, "top_k": 50, "top_p": 0.85 },
       "created_at": "2026-07-12T04:00:00Z"
     }
   ]
 }
 ```
 
-`segment_id` is the segment this preview was compared against, or `null` for a plain free-text preview.
+`segment_id` is the segment this preview was compared against, or `null` for a plain free-text preview. `sampling` records the knobs this take was rendered with (for compare/preview history provenance); fields are `null` for previews created before this metadata was recorded. `repetition_penalty` is not surfaced (server-side only).
 
 ---
 
@@ -890,6 +891,16 @@ List recent previews (derived from `preview` jobs).
 
 **Response 404** until the preview job completes.
 **Response 200:** `audio/wav`, full file (no Range support, consistent with segment audio).
+
+---
+
+#### `DELETE /projects/{project_id}/previews/{preview_id}`
+
+Delete a preview (comparison or free-text) — removes the `preview` job row and best-effort deletes its WAV.
+
+**Response 204** on success.
+**Response 404** `preview_not_found` if the id isn't a preview job for this project.
+**Response 409** `preview_running` if the preview is still `queued` or `running`.
 
 ---
 

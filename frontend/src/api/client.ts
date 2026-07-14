@@ -436,6 +436,10 @@ export function getPreviewAudioUrl(projectId: string, previewId: string): string
   return `${BASE_URL}/projects/${projectId}/previews/${previewId}/audio`
 }
 
+export function deletePreview(projectId: string, previewId: string): Promise<void> {
+  return request(`/projects/${projectId}/previews/${previewId}`, { method: 'DELETE' })
+}
+
 // ---- Tuning previews (ephemeral stage A/B) ----
 
 export function createTuningPreview(

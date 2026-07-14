@@ -85,6 +85,17 @@ export function ModelsList({ projectId, models, loading, error, onChanged }: Mod
                   · {model.segment_count ?? '—'} segments
                   {model.eval_loss != null && ` · eval loss ${model.eval_loss.toFixed(4)}`}
                 </p>
+                {model.params && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {model.params.epochs} epochs · batch {model.params.batch_size}
+                    {' '}· grad-accum {model.params.grad_accum} · lr {model.params.learning_rate}
+                  </p>
+                )}
+                {model.checkpoint_dir && (
+                  <p className="text-xs font-mono text-gray-400 dark:text-gray-500 break-all">
+                    {model.checkpoint_dir}
+                  </p>
+                )}
                 <p className="text-xs text-gray-400 dark:text-gray-500">{formatCreated(model.created_at)}</p>
                 {model.status === 'failed' && model.error && (
                   <p className="text-xs text-red-600 dark:text-red-400">{model.error}</p>

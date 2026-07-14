@@ -315,3 +315,93 @@ class TestPreviewSegmentId:
         by_text = {p["text"]: p for p in previews}
         assert by_text["a line"]["segment_id"] == target
         assert by_text["plain preview"]["segment_id"] is None
+
+
+class TestListSurfacesSampling:
+    def test_list_returns_model_id_and_sampling(self, client, project, isolated_data_dir):
+        """Past comparisons need model + the sampling knobs used to render provenance."""
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        target = _insert_seg(conn, project, src, transcript="a line")
+        _insert_seg(conn, project, src)
+
+        with patch("service_client.is_healthy", new=AsyncMock(return_value=True)):
+            client.post(f"/projects/{project}/previews",
+                        json={"segment_id": target, "temperature": 0.9, "speed": 1.1,
+                              "top_k": 30, "top_p": 0.7})
+
+        p = client.get(f"/projects/{project}/previews").json()["previews"][0]
+        assert p["model_id"] is None
+        assert p["sampling"] == {"temperature": 0.9, "speed": 1.1, "top_k": 30, "top_p": 0.7}
+
+
+class TestDeletePreview:
+    def _make_preview(self, client, project, conn, src):
+        target = _insert_seg(conn, project, src, transcript="delete me")
+        _insert_seg(conn, project, src)
+        with patch("service_client.is_healthy", new=AsyncMock(return_value=True)):
+            resp = client.post(f"/projects/{project}/previews", json={"segment_id": target})
+        return resp.json()["enqueued_job"]["id"]
+
+    def test_delete_removes_row_and_wav(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        preview_id = self._make_preview(client, project, conn, src)
+
+        # Mark terminal and drop a fake WAV on disk to prove both are cleaned up.
+        conn.execute("UPDATE jobs SET status='complete' WHERE id=?", (preview_id,))
+        conn.commit()
+        wav = db.project_dir(project) / "previews" / f"{preview_id}.wav"
+        wav.parent.mkdir(parents=True, exist_ok=True)
+        wav.write_bytes(b"\x00" * 10)
+
+        resp = client.delete(f"/projects/{project}/previews/{preview_id}")
+        assert resp.status_code == 204
+        assert conn.execute("SELECT 1 FROM jobs WHERE id=?", (preview_id,)).fetchone() is None
+        assert not wav.exists()
+
+    def test_delete_missing_404(self, client, project, isolated_data_dir):
+        resp = client.delete(f"/projects/{project}/previews/{uuid.uuid4()}")
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "preview_not_found"
+
+    def test_delete_non_preview_job_404(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        job_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO jobs (id, project_id, type, status, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (job_id, project, "export", "complete", _now()),
+        )
+        conn.commit()
+        resp = client.delete(f"/projects/{project}/previews/{job_id}")
+        assert resp.status_code == 404
+
+    def test_delete_running_preview_409(self, client, project, isolated_data_dir):
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        preview_id = self._make_preview(client, project, conn, src)
+        conn.execute("UPDATE jobs SET status='running' WHERE id=?", (preview_id,))
+        conn.commit()
+
+        resp = client.delete(f"/projects/{project}/previews/{preview_id}")
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "preview_running"
+        # The row survives a rejected delete.
+        assert conn.execute("SELECT 1 FROM jobs WHERE id=?", (preview_id,)).fetchone() is not None
+
+    def test_delete_terminal_without_wav_still_204(self, client, project, isolated_data_dir):
+        """A failed preview never wrote a WAV; deleting it must not error."""
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        preview_id = self._make_preview(client, project, conn, src)
+        conn.execute("UPDATE jobs SET status='failed' WHERE id=?", (preview_id,))
+        conn.commit()
+
+        resp = client.delete(f"/projects/{project}/previews/{preview_id}")
+        assert resp.status_code == 204

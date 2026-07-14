@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ComparePanel } from './ComparePanel'
-import { createPreview, getPreviews, getSegments } from '../../api/client'
-import type { Model, Segment } from '../../types/api'
+import { createPreview, deletePreview, getPreviews, getSegments } from '../../api/client'
+import type { Model, Preview, Segment } from '../../types/api'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
-  return { ...actual, createPreview: vi.fn(), getPreviews: vi.fn(), getSegments: vi.fn(), getProject: vi.fn() }
+  return {
+    ...actual,
+    createPreview: vi.fn(), deletePreview: vi.fn(), getPreviews: vi.fn(),
+    getSegments: vi.fn(), getProject: vi.fn(),
+  }
 })
 
 const model: Model = {
@@ -27,8 +31,18 @@ const seg: Segment = {
 
 const paginated = { segments: [seg], pagination: { page: 1, per_page: 50, total: 1, pages: 1 } }
 
+const SAMPLING = { temperature: 0.9, speed: 1.1, top_k: 30, top_p: 0.7 }
+
+function preview(over: Partial<Preview>): Preview {
+  return {
+    id: 'x', status: 'complete', text: 'line', model_id: null, conditioning: null,
+    segment_id: 'seg-9', sampling: SAMPLING, created_at: '2026-07-13T00:00:00Z', ...over,
+  }
+}
+
 beforeEach(() => {
   vi.mocked(createPreview).mockReset()
+  vi.mocked(deletePreview).mockReset().mockResolvedValue(undefined)
   vi.mocked(getPreviews).mockReset().mockResolvedValue({ previews: [] })
   vi.mocked(getSegments).mockReset().mockResolvedValue(paginated)
 })
@@ -69,9 +83,8 @@ describe('ComparePanel', () => {
   it('shows Original and Clone players when the preview completes', async () => {
     vi.mocked(createPreview).mockResolvedValue({ enqueued_job: { id: 'job-1', type: 'preview' } })
     vi.mocked(getPreviews).mockResolvedValue({
-      previews: [{ id: 'job-1', status: 'complete', text: 'a different finished line',
-                   model_id: 'model-1234567890', conditioning: null,
-                   segment_id: 'seg-1', created_at: '2026-07-14T00:00:00Z' }],
+      previews: [preview({ id: 'job-1', text: 'a different finished line',
+                           model_id: 'model-1234567890', segment_id: 'seg-1' })],
     })
     // Clone audio is blob-fetched; stub fetch.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
@@ -92,16 +105,39 @@ describe('ComparePanel', () => {
   it('lists past compares (previews with a segment_id) as history', async () => {
     vi.mocked(getPreviews).mockResolvedValue({
       previews: [
-        { id: 'old-1', status: 'complete', text: 'an old line', model_id: null,
-          conditioning: null, segment_id: 'seg-9', created_at: '2026-07-13T00:00:00Z' },
-        { id: 'plain', status: 'complete', text: 'not a compare', model_id: null,
-          conditioning: null, segment_id: null, created_at: '2026-07-13T00:00:00Z' },
+        preview({ id: 'old-1', text: 'an old line', segment_id: 'seg-9' }),
+        preview({ id: 'plain', text: 'not a compare', segment_id: null }),
       ],
     })
     render(<ComparePanel projectId="p1" models={[model]} />)
 
     await waitFor(() => expect(screen.getByText(/an old line/)).toBeTruthy())
     expect(screen.queryByText(/not a compare/)).toBeNull()
+  })
+
+  it('shows model + sampling provenance on a past comparison', async () => {
+    vi.mocked(getPreviews).mockResolvedValue({
+      previews: [preview({ id: 'old-1', text: 'an old line', model_id: 'model-1234567890' })],
+    })
+    render(<ComparePanel projectId="p1" models={[model]} advanced />)
+
+    await waitFor(() => expect(screen.getByText(/an old line/)).toBeTruthy())
+    // Reviewed model label + the sampling knobs (top-k/top-p shown under advanced).
+    expect(screen.getByText(/Reviewed · model-12.*temp 0\.9.*speed 1\.1.*top-k 30.*top-p 0\.7/)).toBeTruthy()
+  })
+
+  it('deletes a past comparison and reloads the history', async () => {
+    vi.mocked(getPreviews)
+      .mockResolvedValueOnce({ previews: [preview({ id: 'old-1', text: 'doomed line' })] })
+      .mockResolvedValue({ previews: [] })
+    render(<ComparePanel projectId="p1" models={[model]} />)
+
+    await waitFor(() => expect(screen.getByText(/doomed line/)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))       // arm confirm
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))       // confirm
+
+    await waitFor(() => expect(deletePreview).toHaveBeenCalledWith('p1', 'old-1'))
+    await waitFor(() => expect(screen.queryByText(/doomed line/)).toBeNull())
   })
 
   it('disables generate with no ready model', async () => {

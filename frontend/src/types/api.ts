@@ -347,6 +347,15 @@ export interface PreviewConditioning {
   segment_count?: number
 }
 
+/** The sampling knobs a preview/comparison take was rendered with. Values are
+ *  null for previews created before this metadata was recorded. */
+export interface PreviewSampling {
+  temperature: number | null
+  speed: number | null
+  top_k: number | null
+  top_p: number | null
+}
+
 export interface Preview {
   id: string
   status: string
@@ -354,6 +363,7 @@ export interface Preview {
   model_id: string | null
   conditioning: PreviewConditioning | null
   segment_id: string | null
+  sampling: PreviewSampling | null
   created_at: string
 }
 
