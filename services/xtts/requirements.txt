@@ -10,6 +10,13 @@ uvicorn
 # code. Pin the known-good set.
 coqui-tts==0.27.5
 soundfile
+# coqui-tts's `enable_text_splitting=True` (used in engine.synthesise for long
+# previews) calls its tokenizer's split_sentence, which imports spacy lazily and
+# raises "requires Spacy" if absent. coqui doesn't pull spacy as a hard dep, so
+# pin it here. Base spacy covers the rule-based sentencizer for English, Spanish
+# and the multilanguage (`xx`) default — every XTTS-v2 language except `ja`
+# (needs spacy[ja]) and `zh` (needs spacy[zh]); add the extra if those ship.
+spacy
 # transformers 5.x removed `isin_mps_friendly` from transformers.pytorch_utils,
 # which coqui imports. Cap below 5 — 4.57.6 is the current 4.x that satisfies
 # coqui-tts 0.27.5's transformers>=4.57.
