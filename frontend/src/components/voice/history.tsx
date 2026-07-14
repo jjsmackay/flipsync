@@ -21,6 +21,7 @@ function samplingSummary(s: PreviewSampling | null, advanced: boolean): string {
   if (s.speed != null) parts.push(`speed ${s.speed}`)
   if (advanced && s.top_k != null) parts.push(`top-k ${s.top_k}`)
   if (advanced && s.top_p != null) parts.push(`top-p ${s.top_p}`)
+  if (advanced && s.repetition_penalty != null) parts.push(`rep ${s.repetition_penalty}`)
   return parts.join(' · ')
 }
 

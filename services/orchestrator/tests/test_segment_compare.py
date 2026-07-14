@@ -329,11 +329,12 @@ class TestListSurfacesSampling:
         with patch("service_client.is_healthy", new=AsyncMock(return_value=True)):
             client.post(f"/projects/{project}/previews",
                         json={"segment_id": target, "temperature": 0.9, "speed": 1.1,
-                              "top_k": 30, "top_p": 0.7})
+                              "top_k": 30, "top_p": 0.7, "repetition_penalty": 8.0})
 
         p = client.get(f"/projects/{project}/previews").json()["previews"][0]
         assert p["model_id"] is None
-        assert p["sampling"] == {"temperature": 0.9, "speed": 1.1, "top_k": 30, "top_p": 0.7}
+        assert p["sampling"] == {"temperature": 0.9, "speed": 1.1, "top_k": 30,
+                                 "top_p": 0.7, "repetition_penalty": 8.0}
 
 
 class TestDeletePreview:

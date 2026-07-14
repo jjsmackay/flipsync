@@ -92,9 +92,8 @@ describe('PreviewPanel sampling knobs', () => {
       speed: 1,
       top_k: 50,
       top_p: 0.85,
+      repetition_penalty: 10,
     })
-    // Not a UI dial — the server default applies.
-    expect(body).not.toHaveProperty('repetition_penalty')
   })
 
   it('sends the adjusted speed', async () => {
@@ -107,21 +106,24 @@ describe('PreviewPanel sampling knobs', () => {
     expect(body.speed).toBe(1.25)
   })
 
-  it('hides top-k / top-p unless advanced mode is on', () => {
+  it('hides advanced knobs unless advanced mode is on', () => {
     render(<PreviewPanel projectId="p1" models={models} />)
     expect(screen.queryByLabelText('Top-k')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Repetition penalty')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Temperature')).toBeInTheDocument()
   })
 
-  it('sends top-k / top-p adjustments', async () => {
+  it('sends top-k / top-p / repetition-penalty adjustments', async () => {
     render(<PreviewPanel projectId="p1" models={models} advanced />)
     enterText()
     fireEvent.change(screen.getByLabelText('Top-k'), { target: { value: '25' } })
     fireEvent.change(screen.getByLabelText('Top-p'), { target: { value: '0.6' } })
+    fireEvent.change(screen.getByLabelText('Repetition penalty'), { target: { value: '15' } })
     clickZeroShotGenerate()
     await waitFor(() => expect(createPreview).toHaveBeenCalled())
     const [, body] = vi.mocked(createPreview).mock.calls[0]
     expect(body.top_k).toBe(25)
     expect(body.top_p).toBe(0.6)
+    expect(body.repetition_penalty).toBe(15)
   })
 })

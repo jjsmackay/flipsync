@@ -349,6 +349,17 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
                 onChange={setKnob('top_p')}
                 hint="Nucleus cutoff. Lower keeps only the most probable continuations."
               />
+              <SliderRow
+                id="preview-repetition-penalty"
+                label="Repetition penalty"
+                min={1}
+                max={20}
+                step={0.5}
+                decimals={1}
+                value={sampling.repetition_penalty}
+                onChange={setKnob('repetition_penalty')}
+                hint="Higher discourages repeats — raise to kill stutters or looping."
+              />
             </>
           )}
           </div>

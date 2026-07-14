@@ -876,14 +876,14 @@ List recent previews (derived from `preview` jobs).
       "segment_id": null,
       "model_id": null,
       "conditioning": { "source": "segments_cleaned", "segment_count": 5 },
-      "sampling": { "temperature": 0.65, "speed": 1.0, "top_k": 50, "top_p": 0.85 },
+      "sampling": { "temperature": 0.65, "speed": 1.0, "top_k": 50, "top_p": 0.85, "repetition_penalty": 10.0 },
       "created_at": "2026-07-12T04:00:00Z"
     }
   ]
 }
 ```
 
-`segment_id` is the segment this preview was compared against, or `null` for a plain free-text preview. `sampling` records the knobs this take was rendered with (for compare/preview history provenance); fields are `null` for previews created before this metadata was recorded. `repetition_penalty` is not surfaced (server-side only).
+`segment_id` is the segment this preview was compared against, or `null` for a plain free-text preview. `sampling` records the knobs this take was rendered with (for compare/preview history provenance); fields are `null` for previews created before this metadata was recorded.
 
 ---
 

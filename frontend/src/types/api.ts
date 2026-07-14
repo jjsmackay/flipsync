@@ -354,6 +354,7 @@ export interface PreviewSampling {
   speed: number | null
   top_k: number | null
   top_p: number | null
+  repetition_penalty: number | null
 }
 
 export interface Preview {

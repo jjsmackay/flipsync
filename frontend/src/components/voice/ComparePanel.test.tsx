@@ -31,7 +31,7 @@ const seg: Segment = {
 
 const paginated = { segments: [seg], pagination: { page: 1, per_page: 50, total: 1, pages: 1 } }
 
-const SAMPLING = { temperature: 0.9, speed: 1.1, top_k: 30, top_p: 0.7 }
+const SAMPLING = { temperature: 0.9, speed: 1.1, top_k: 30, top_p: 0.7, repetition_penalty: 8 }
 
 function preview(over: Partial<Preview>): Preview {
   return {

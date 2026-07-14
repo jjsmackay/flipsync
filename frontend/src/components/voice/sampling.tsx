@@ -1,11 +1,11 @@
 // Per-run XTTS sampling knobs, shared across both columns so A/B compares
 // models, not sampling noise. Defaults mirror the orchestrator's.
-// repetition_penalty stays server-default only — not a UI dial.
 export interface SamplingParams {
   temperature: number
   speed: number
   top_k: number
   top_p: number
+  repetition_penalty: number
 }
 
 export const DEFAULT_SAMPLING: SamplingParams = {
@@ -13,6 +13,7 @@ export const DEFAULT_SAMPLING: SamplingParams = {
   speed: 1,
   top_k: 50,
   top_p: 0.85,
+  repetition_penalty: 10,
 }
 
 export function SliderRow({

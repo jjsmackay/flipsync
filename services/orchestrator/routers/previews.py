@@ -156,12 +156,13 @@ async def list_previews(project_id: str, limit: int = 20):
             "model_id": p.get("model_id"),
             "conditioning": p.get("conditioning"),
             # Provenance for the compare/preview history: the sampling knobs this
-            # take was rendered with. repetition_penalty stays server-side only.
+            # take was rendered with.
             "sampling": {
                 "temperature": p.get("temperature"),
                 "speed": p.get("speed"),
                 "top_k": p.get("top_k"),
                 "top_p": p.get("top_p"),
+                "repetition_penalty": p.get("repetition_penalty"),
             },
             "created_at": r["created_at"],
         })
