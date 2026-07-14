@@ -136,9 +136,37 @@ async def poll_until_complete(
 
     Returns:
         The final poll response dict with status 'complete' or 'failed'.
+
+    A polling HTTP/transport error is translated into a terminal
+    ``{"status": "failed", "error": ...}`` result with a clean, caller-safe
+    message. The raw httpx error embeds the internal service URL
+    (``http://xtts:8005/jobs/...``); surfacing that verbatim leaked an internal
+    address into user-visible job errors, so it must never escape this boundary.
+    A 404 specifically means the service no longer knows the job — it was
+    evicted or the service restarted mid-job — which is terminal.
     """
     while True:
-        result = await poll_job(service_name, job_id)
+        try:
+            result = await poll_job(service_name, job_id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {
+                    "status": "failed",
+                    "error": (
+                        f"job_lost: the {service_name} service no longer has this "
+                        "job (it likely restarted mid-job)"
+                    ),
+                }
+            return {
+                "status": "failed",
+                "error": f"poll_error: the {service_name} service returned HTTP {exc.response.status_code} while polling",
+            }
+        except (httpx.TransportError, ConnectionError, OSError) as exc:
+            return {
+                "status": "failed",
+                "error": f"poll_error: could not reach the {service_name} service while polling ({type(exc).__name__})",
+            }
+
         status = result.get("status")
 
         if on_progress is not None:

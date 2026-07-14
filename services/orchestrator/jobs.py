@@ -327,7 +327,24 @@ def _complete_job(project_id: str, job_id: str) -> None:
     conn.commit()
 
 
+def _redact_service_urls(error: str) -> str:
+    """Strip internal service base URLs from a job error before it is persisted
+    and shown to the user. Raw httpx errors embed addresses like
+    ``http://xtts:8005/jobs/...``; those are internal and must never surface.
+    Handlers that know the cause emit clean messages already — this is the
+    choke-point backstop for the generic paths (submit errors, the runner's
+    catch-all) that interpolate a raw exception. Replacement is exact (known
+    service base URLs), not heuristic."""
+    if not error:
+        return error
+    for name, url in service_client.SERVICE_URLS.items():
+        if url in error:
+            error = error.replace(url, f"<{name}>")
+    return error
+
+
 def _fail_job(project_id: str, job_id: str, error: str) -> None:
+    error = _redact_service_urls(error)
     conn = get_conn(project_id)
     conn.execute(
         "UPDATE jobs SET status='failed', error=?, completed_at=? WHERE id=?",
@@ -367,6 +384,7 @@ def _fail_linked_model(conn, project_id: str, job_id: str, error: str) -> None:
 def _fail_model(conn, model_id: str, msg: str) -> None:
     """Mark a models row failed. A model left at 'pending'/'training' would be
     wedged forever (no cancel endpoint, POST/DELETE 409 while in progress)."""
+    msg = _redact_service_urls(msg)
     conn.execute(
         "UPDATE models SET status='failed', error=?, updated_at=? WHERE id=?",
         (msg, _now(), model_id),

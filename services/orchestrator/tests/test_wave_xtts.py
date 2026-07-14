@@ -457,6 +457,46 @@ class TestFinetuneHandler:
         job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         assert job["status"] == "failed"
 
+    def test_poll_404_fails_cleanly_without_leaking_url(self, client, project, isolated_data_dir):
+        """Regression: an xtts restart mid-train made GET /jobs/{id} return 404,
+        and the raw httpx error (with http://xtts:8005/...) leaked into the
+        model+job error shown to the user. The real poll_until_complete must
+        translate it into a clean, addressless terminal failure."""
+        import db
+        import httpx
+        conn = db.get_conn(project)
+        model_id = _insert_model(conn, project, status="pending")
+
+        async def mock_submit(service, payload):
+            return {"job_id": payload["job_id"]}
+
+        async def raise_404(service, job_id):
+            url = f"http://xtts:8005/jobs/{job_id}"
+            request = httpx.Request("GET", url)
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError(
+                f"Client error '404 Not Found' for url '{url}'", request=request, response=response
+            )
+
+        # Patch poll_job (not poll_until_complete) so the real translation runs.
+        with patch("service_client.submit_job", new=AsyncMock(side_effect=mock_submit)), \
+             patch("service_client.poll_job", new=raise_404):
+            job_id = _enqueue_and_run(project, "finetune",
+                                      params={"model_id": model_id, "params": {}})
+
+        for row in (
+            conn.execute("SELECT error FROM models WHERE id=?", (model_id,)).fetchone(),
+            conn.execute("SELECT error FROM jobs WHERE id=?", (job_id,)).fetchone(),
+        ):
+            assert "xtts:8005" not in row["error"]
+            assert "http://" not in row["error"]
+            assert "job_lost" in row["error"]
+
+        m = conn.execute("SELECT status FROM models WHERE id=?", (model_id,)).fetchone()
+        assert m["status"] == "failed"
+        job = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert job["status"] == "failed"
+
     def test_insufficient_vram_no_resubmit(self, client, project, isolated_data_dir):
         import db
         conn = db.get_conn(project)
