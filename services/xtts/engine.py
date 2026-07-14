@@ -348,6 +348,11 @@ def finetune(
         out_path=latents_path,
     )
 
+    # 6. Drop the trainer's run-*/ scratch (~11 GB of duplicate checkpoints).
+    # The root model.pth/config.json/vocab.json/speaker_latents.pt bundle is
+    # all inference needs; keeping the run dirs filled the live host's disk.
+    _prune_run_dirs(output_dir)
+
     return {
         "checkpoint_dir": output_dir,
         "model_path": model_path,
@@ -505,6 +510,31 @@ def _find_best_checkpoint(trainer_obj, output_dir: str) -> str:
         if matches:
             return max(matches, key=os.path.getmtime)
     raise FileNotFoundError(f"no checkpoint produced under {output_dir}")
+
+
+def _prune_run_dirs(output_dir: str) -> int:
+    """Delete the trainer's ``run-*/`` scratch dirs under ``output_dir``.
+
+    Coqui's Trainer writes a timestamped ``run-<...>/`` subdir holding
+    per-step checkpoints and ``best_model*.pth`` — ~11 GB per run. Once the
+    best checkpoint is copied into the root ``model.pth`` bundle these are dead
+    weight (inference loads only the root bundle); left uncleaned they filled
+    the live host's /data to 100%. Best-effort: a pruning error must never fail
+    an otherwise-successful fine-tune. Returns the count removed.
+    """
+    import glob
+    import shutil
+
+    removed = 0
+    for path in glob.glob(os.path.join(output_dir, "run-*")):
+        if not os.path.isdir(path):
+            continue
+        try:
+            shutil.rmtree(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _save_speaker_latents(

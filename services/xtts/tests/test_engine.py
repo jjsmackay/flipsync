@@ -74,3 +74,45 @@ class TestSelectLatentWavs:
         rows = [["/does/not/exist.wav", "t", "target"], [str(real), "t", "target"]]
         picked = engine.select_latent_wavs(rows, limit=5)
         assert picked[0] == str(real)
+
+
+class TestPruneRunDirs:
+    """`run-*/` are the trainer's timestamped scratch dirs (~11 GB of duplicate
+    checkpoints). Once the best checkpoint is copied to the root `model.pth`
+    bundle they are dead weight and left the live host's /data at 100%."""
+
+    def _bundle(self, d):
+        for name in ("model.pth", "config.json", "vocab.json", "speaker_latents.pt"):
+            (d / name).write_bytes(b"x")
+
+    def test_removes_run_dirs_keeps_bundle(self, tmp_path):
+        self._bundle(tmp_path)
+        run = tmp_path / "run-July-14-2026_05+35AM-0000000"
+        (run / "sub").mkdir(parents=True)
+        (run / "best_model.pth").write_bytes(b"x" * 10)
+        (run / "best_model_390.pth").write_bytes(b"x" * 10)
+
+        removed = engine._prune_run_dirs(str(tmp_path))
+
+        assert removed == 1
+        assert not run.exists()
+        for name in ("model.pth", "config.json", "vocab.json", "speaker_latents.pt"):
+            assert (tmp_path / name).exists()
+
+    def test_removes_multiple_run_dirs(self, tmp_path):
+        for stamp in ("run-a", "run-b", "run-c"):
+            (tmp_path / stamp).mkdir()
+        assert engine._prune_run_dirs(str(tmp_path)) == 3
+        assert not list(tmp_path.glob("run-*"))
+
+    def test_leaves_non_run_dirs_and_files(self, tmp_path):
+        (tmp_path / "dataset").mkdir()
+        (tmp_path / "model.pth").write_bytes(b"x")
+        (tmp_path / "run-x").mkdir()
+        engine._prune_run_dirs(str(tmp_path))
+        assert (tmp_path / "dataset").exists()
+        assert (tmp_path / "model.pth").exists()
+        assert not (tmp_path / "run-x").exists()
+
+    def test_missing_output_dir_is_noop(self, tmp_path):
+        assert engine._prune_run_dirs(str(tmp_path / "nope")) == 0
