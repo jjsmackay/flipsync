@@ -334,6 +334,15 @@ export function ProjectDashboardPage() {
           </label>
           <ThemeToggle />
           {hasSegments && (
+            <Link
+              to={`/projects/${project.id}/qc`}
+              title="Play approved segments before and after cleanup"
+              className="px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+            >
+              Cleaned QC
+            </Link>
+          )}
+          {hasSegments && (
             <button
               onClick={openSettings}
               aria-label="Project settings"

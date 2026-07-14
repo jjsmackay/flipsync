@@ -10,6 +10,7 @@ import {
   selectScoutSpeaker,
   uploadReference,
   getReferenceAudioUrl,
+  transcribeReference,
 } from '../../api/client'
 
 vi.mock('../../api/client', async () => {
@@ -23,22 +24,28 @@ vi.mock('../../api/client', async () => {
     ),
     selectScoutSpeaker: vi.fn(),
     uploadReference: vi.fn(),
+    transcribeReference: vi.fn(),
   }
 })
 
 const mockGetScoutStatus = vi.mocked(getScoutStatus)
 const mockSelectScoutSpeaker = vi.mocked(selectScoutSpeaker)
 const mockUploadReference = vi.mocked(uploadReference)
+const mockTranscribeReference = vi.mocked(transcribeReference)
 
 function makeProject(overrides: {
   sourceStatuses?: SourceStatus[]
   referencePath?: string | null
   referenceOrigin?: ReferenceOrigin | null
+  referenceTranscript?: string | null
+  activeJobs?: ProjectDetail['active_jobs']
 } = {}): ProjectDetail {
   const {
     sourceStatuses = ['complete'],
     referencePath = 'reference.wav',
     referenceOrigin = null,
+    referenceTranscript = null,
+    activeJobs = [],
   } = overrides
   return {
     id: 'proj-1',
@@ -48,6 +55,7 @@ function makeProject(overrides: {
     updated_at: '2026-07-14T00:00:00Z',
     reference_path: referencePath,
     reference_origin: referenceOrigin,
+    reference_transcript: referenceTranscript,
     config: {
       whisper_model: 'large-v3',
       language: null,
@@ -58,7 +66,7 @@ function makeProject(overrides: {
       auto_approve_transcript_threshold: 0.9,
       ...TUNING_DEFAULTS,
     },
-    active_jobs: [],
+    active_jobs: activeJobs,
     recent_failed_jobs: [],
     stats: {
       approved_count: 0,
@@ -141,6 +149,50 @@ describe('ReferenceCard — replace with upload', () => {
     await user.upload(input, file)
 
     await waitFor(() => expect(mockUploadReference).toHaveBeenCalledWith('proj-1', file, expect.any(Function)))
+    expect(onAction).toHaveBeenCalled()
+  })
+})
+
+describe('ReferenceCard — transcript', () => {
+  it('shows the transcript and a Re-transcribe button when present', () => {
+    render(
+      <ReferenceCard
+        project={makeProject({ referenceTranscript: 'the quick brown fox' })}
+        onAction={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('the quick brown fox')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Re-transcribe' })).toBeInTheDocument()
+  })
+
+  it('shows a Transcribe button when there is no transcript', () => {
+    render(<ReferenceCard project={makeProject({ referenceTranscript: null })} onAction={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Transcribe' })).toBeInTheDocument()
+    expect(screen.getByText('No transcript yet.')).toBeInTheDocument()
+  })
+
+  it('shows "Transcribing…" while a reference_transcribe job is active', () => {
+    render(
+      <ReferenceCard
+        project={makeProject({
+          activeJobs: [{ id: 'j1', type: 'reference_transcribe', status: 'running', progress: null }],
+        })}
+        onAction={vi.fn()}
+      />,
+    )
+    expect(screen.getByText('Transcribing…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Transcribe' })).not.toBeInTheDocument()
+  })
+
+  it('calls transcribeReference and onAction when Transcribe is clicked', async () => {
+    const user = userEvent.setup()
+    const onAction = vi.fn()
+    mockTranscribeReference.mockResolvedValue({ enqueued_job: { id: 'j2', type: 'reference_transcribe' } })
+
+    render(<ReferenceCard project={makeProject()} onAction={onAction} />)
+    await user.click(screen.getByRole('button', { name: 'Transcribe' }))
+
+    await waitFor(() => expect(mockTranscribeReference).toHaveBeenCalledWith('proj-1'))
     expect(onAction).toHaveBeenCalled()
   })
 })

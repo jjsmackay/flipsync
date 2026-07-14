@@ -163,6 +163,11 @@ export interface ProjectDetail extends ProjectSummary {
   recent_failed_jobs: FailedJob[]
   reference_path: string | null
   reference_origin: ReferenceOrigin | null
+  // Whole-clip transcript of the reference (read-only surface; feeds engines
+  // that require it, e.g. GPT-SoVITS). null until a reference_transcribe job
+  // lands, or when no reference is set. Optional: an orchestrator predating
+  // migration 013 won't send it.
+  reference_transcript?: string | null
 }
 
 // ---- Segments ----

@@ -1,6 +1,6 @@
 import { useRef, useState, ChangeEvent } from 'react'
 import type { ProjectDetail } from '../../types/api'
-import { uploadReference, getReferenceAudioUrl } from '../../api/client'
+import { uploadReference, getReferenceAudioUrl, transcribeReference } from '../../api/client'
 import { errorMessage } from '../../utils/errors'
 import { SpeakerScanPicker, SCOUTABLE_STATUSES } from './SpeakerScanPicker'
 
@@ -23,7 +23,21 @@ export function ReferenceCard({ project, onAction }: ReferenceCardProps) {
   const [picking, setPicking] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [transcribeError, setTranscribeError] = useState<string | null>(null)
   const uploadInputRef = useRef<HTMLInputElement>(null)
+
+  const transcribing = project.active_jobs.some((j) => j.type === 'reference_transcribe')
+  const transcript = project.reference_transcript?.trim() ?? ''
+
+  async function handleTranscribe() {
+    setTranscribeError(null)
+    try {
+      await transcribeReference(project.id)
+      onAction()
+    } catch (err) {
+      setTranscribeError(errorMessage(err, 'Could not start transcription'))
+    }
+  }
 
   const scoutable = project.stats.source_coverage.filter((s) => SCOUTABLE_STATUSES.has(s.status))
   const autoSourceId = scoutable[0]?.source_id ?? ''
@@ -110,6 +124,38 @@ export function ReferenceCard({ project, onAction }: ReferenceCardProps) {
       <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
         Replacing the reference doesn't re-match existing segments — reprocess sources to apply it.
       </p>
+
+      {/* Reference transcript — read-only. Auto-transcribed when the reference
+          is set; the button re-runs it (or recovers a reference set before this
+          existed / while the transcription service was down). */}
+      <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Transcript</span>
+          {transcribing ? (
+            <span className="text-xs text-gray-400 dark:text-gray-500">Transcribing…</span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleTranscribe()}
+              className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              {transcript ? 'Re-transcribe' : 'Transcribe'}
+            </button>
+          )}
+        </div>
+        {transcript ? (
+          <p className="mt-1 text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{transcript}</p>
+        ) : (
+          !transcribing && (
+            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500 italic">
+              No transcript yet.
+            </p>
+          )
+        )}
+        {transcribeError && (
+          <p className="mt-1 text-sm text-red-600 dark:text-red-400">{transcribeError}</p>
+        )}
+      </div>
 
       {picking && (
         <div className="mt-4 border-t border-gray-100 dark:border-gray-800 pt-4">

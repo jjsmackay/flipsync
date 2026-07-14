@@ -217,6 +217,12 @@ export function getReferenceAudioUrl(projectId: string): string {
   return `${BASE_URL}/projects/${projectId}/reference/audio`
 }
 
+/** (Re-)transcribe the reference clip. Auto-runs when a reference is set; this
+ * backs the manual re-transcribe button. */
+export function transcribeReference(projectId: string): Promise<{ enqueued_job: EnqueuedJob }> {
+  return request(`/projects/${projectId}/reference/transcribe`, { method: 'POST' })
+}
+
 // ---- Reference: diarise + pick (scout) ----
 
 export function startScout(
