@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '../../types/api'
-import { createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getProject, uploadConditioningClip, ApiError } from '../../api/client'
+import type { Model, Preview, PreviewConditioning, CreatePreviewRequest, ConditioningClip } from '../../types/api'
+import { createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getProject, uploadConditioningClip, listConditioningClips, ApiError } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
 import { SamplingParams, DEFAULT_SAMPLING, SliderRow, CheckboxRow, NumericSamplingKey } from './sampling'
@@ -217,11 +217,22 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
   // Shared across both columns so A/B compares models, not sampling noise.
   const [sampling, setSampling] = useState<SamplingParams>(DEFAULT_SAMPLING)
 
-  // source='custom': a one-off clip uploaded just for inference conditioning.
+  // source='custom': a clip uploaded, or promoted from a segment elsewhere,
+  // used just for inference conditioning.
   const [customClipId, setCustomClipId] = useState<string | null>(null)
   const [customClipName, setCustomClipName] = useState<string | null>(null)
   const [uploadingClip, setUploadingClip] = useState(false)
   const [clipError, setClipError] = useState<string | null>(null)
+  const [clips, setClips] = useState<ConditioningClip[]>([])
+
+  const clipLabel = (c: ConditioningClip) => `Clip ${c.clip_id.slice(0, 8)} · ${c.duration_secs.toFixed(1)}s`
+
+  const reloadClips = useCallback(() => {
+    listConditioningClips(projectId)
+      .then((r) => setClips(r.clips))
+      .catch(() => {})
+  }, [projectId])
+  useEffect(() => { reloadClips() }, [reloadClips])
 
   async function handleClipUpload(file: File) {
     setUploadingClip(true)
@@ -231,6 +242,7 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
       const res = await uploadConditioningClip(projectId, file)
       setCustomClipId(res.clip_id)
       setCustomClipName(file.name)
+      reloadClips()
     } catch (err) {
       setClipError(errorMessage(err, 'Upload failed.'))
     } finally {
@@ -333,6 +345,24 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
             </select>
             {source === 'custom' && (
               <div className="mt-2 space-y-1">
+                {clips.length > 0 && (
+                  <select
+                    value={customClipId && clips.some((c) => c.clip_id === customClipId) ? customClipId : ''}
+                    onChange={(e) => {
+                      const id = e.target.value || null
+                      setCustomClipId(id)
+                      const c = clips.find((x) => x.clip_id === id)
+                      setCustomClipName(c ? clipLabel(c) : null)
+                      setClipError(null)
+                    }}
+                    className="block rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-xs"
+                  >
+                    <option value="">— pick a saved clip —</option>
+                    {clips.map((c) => (
+                      <option key={c.clip_id} value={c.clip_id}>{clipLabel(c)}</option>
+                    ))}
+                  </select>
+                )}
                 <input
                   type="file"
                   accept="audio/*"
@@ -350,6 +380,7 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
                 {clipError && <p className="text-xs text-red-600 dark:text-red-400">{clipError}</p>}
                 <p className="text-xs text-gray-400 dark:text-gray-500">
                   A few seconds of clean, expressive speech (XTTS only). Inference-only — doesn't change diarisation.
+                  Segments sent via “Use as conditioning” in review appear in the list above.
                 </p>
               </div>
             )}

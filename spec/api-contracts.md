@@ -899,6 +899,29 @@ Upload a one-off clip to condition XTTS synthesis on — inference-only, distinc
 
 **Response 201:** `{ "clip_id": "…", "duration_secs": 4.2 }`
 **Response 422** `conditioning_too_short` if under 2 seconds.
+
+---
+
+#### `POST /projects/{project_id}/previews/conditioning/from-segment`
+
+Promote an existing segment's audio (e.g. a stitched clip of expressive lines) to a custom conditioning clip — no download/reupload, and the project reference is untouched. Copies the segment's raw WAV into the conditioning scratch dir.
+
+**Request:** `{ "segment_id": "…" }`
+**Response 201:** `{ "clip_id": "…", "duration_secs": 4.2 }`
+**Response 404** if the segment doesn't exist. **409** `audio_unavailable` if its WAV is missing. **422** `conditioning_too_short` if under 2 seconds.
+
+---
+
+#### `GET /projects/{project_id}/previews/conditioning`
+
+List the project's custom conditioning clips (newest first) so the preview UI can offer previously uploaded/promoted clips.
+
+**Response 200:** `{ "clips": [{ "clip_id": "…", "duration_secs": 4.2 }] }`
+
+---
+
+_The remaining responses below pertain to `POST .../previews`._
+
 **Response 409** `segment_not_comparable` if `segment_id` doesn't exist or has no transcript.
 **Response 422** if neither `text` nor `segment_id` is given.
 **Response 503** `xtts_unavailable` if the resolved engine is XTTS (base preview, or an xtts model) and the XTTS service is not deployed or unhealthy; `engine_unavailable` for an unhealthy GPT-SoVITS model preview.

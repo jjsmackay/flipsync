@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Segment, SegmentStatus } from '../../types/api'
-import { adjustSegmentBoundaries, getSegmentAudioUrl, patchSegment, rerunSegmentTranscription } from '../../api/client'
+import { adjustSegmentBoundaries, getSegmentAudioUrl, patchSegment, promoteSegmentToConditioning, rerunSegmentTranscription } from '../../api/client'
 import { useAudio } from '../../hooks/useAudio'
 import { ConfidenceBadge } from '../ui/ConfidenceBadge'
 import { StatusBadge } from '../ui/StatusBadge'
@@ -63,6 +63,21 @@ export function SegmentDetail({
   const [startNudge, setStartNudge] = useState('')
   const [endNudge, setEndNudge] = useState('')
   const [adjusting, setAdjusting] = useState(false)
+  // Promote this segment (e.g. a stitched clip) to a custom conditioning clip.
+  const [condState, setCondState] = useState<'idle' | 'saving' | 'done'>('idle')
+
+  async function useAsConditioning() {
+    if (condState === 'saving') return
+    setCondState('saving')
+    setError(null)
+    try {
+      await promoteSegmentToConditioning(projectId, segment.id)
+      setCondState('done')
+    } catch (e) {
+      setError(errorMessage(e, 'Could not add as conditioning clip'))
+      setCondState('idle')
+    }
+  }
 
   async function applyBoundaries() {
     const startAmt = parseFloat(startNudge) || 0
@@ -152,6 +167,7 @@ export function SegmentDetail({
     setSaving(false)
     setStartNudge('')
     setEndNudge('')
+    setCondState('idle')
   }, [segment.id])
 
   // Keyboard shortcuts (Space/R/E/[/]) — only when not editing
@@ -397,6 +413,15 @@ export function SegmentDetail({
                 }`}
               >
                 {inStitch ? '✓ In stitch' : '+ Stitch'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void useAsConditioning()}
+                disabled={condState !== 'idle'}
+                title="Copy this segment's audio to a custom conditioning clip, then pick it in the Preview panel's Conditioning → Custom clip. Doesn't change the project reference."
+                className="px-2 py-1 rounded text-xs border border-teal-300 dark:border-teal-700 text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/30 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-teal-400"
+              >
+                {condState === 'saving' ? 'Adding…' : condState === 'done' ? '✓ Conditioning clip' : '→ Conditioning'}
               </button>
             </div>
           </>

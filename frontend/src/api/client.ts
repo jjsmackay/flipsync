@@ -15,6 +15,7 @@ import type {
   Model,
   CreateModelRequest,
   Preview,
+  ConditioningClip,
   CreatePreviewRequest,
   CreateTuningPreviewRequest,
   TuningPreviewStatus,
@@ -228,6 +229,24 @@ export function uploadConditioningClip(
   onProgress?: (fraction: number) => void,
 ): Promise<{ clip_id: string; duration_secs: number }> {
   return uploadWithProgress(`/projects/${projectId}/previews/conditioning`, file, onProgress)
+}
+
+/** Custom conditioning clips available for this project (newest first). */
+export function listConditioningClips(projectId: string): Promise<{ clips: ConditioningClip[] }> {
+  return request(`/projects/${projectId}/previews/conditioning`)
+}
+
+/** Promote an existing segment's audio to a custom conditioning clip (no
+ *  download/reupload; leaves the project reference untouched). */
+export function promoteSegmentToConditioning(
+  projectId: string,
+  segmentId: string,
+): Promise<ConditioningClip> {
+  return request(`/projects/${projectId}/previews/conditioning/from-segment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ segment_id: segmentId }),
+  })
 }
 
 /** The current reference clip's audio — whatever was uploaded or assembled from a scan pick. */

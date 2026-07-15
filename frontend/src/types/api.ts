@@ -348,6 +348,12 @@ export interface CreateModelRequest {
 
 // ---- Previews (v1.5) ----
 
+/** A custom conditioning clip (uploaded or promoted from a segment). */
+export interface ConditioningClip {
+  clip_id: string
+  duration_secs: number
+}
+
 export interface PreviewConditioning {
   source?: 'reference_clip' | 'segments_raw' | 'segments_cleaned' | 'custom'
   segment_count?: number

@@ -1,7 +1,9 @@
 """Previews API (v1.5) — XTTS-v2 speech synthesis previews."""
 
+import asyncio
 import json
 import os
+import shutil
 import time
 import uuid
 from typing import Literal, Optional
@@ -114,6 +116,61 @@ async def upload_conditioning_clip(project_id: str, file: UploadFile = File(...)
             tmp.unlink(missing_ok=True)
 
     return {"clip_id": clip_id, "duration_secs": duration}
+
+
+class ConditioningFromSegment(BaseModel):
+    segment_id: str = Field(min_length=1)
+
+
+@router.post("/conditioning/from-segment", status_code=201)
+async def conditioning_from_segment(project_id: str, body: ConditioningFromSegment):
+    """Promote an existing segment's audio to a custom conditioning clip — e.g.
+    a stitched clip of expressive lines — without downloading + re-uploading, and
+    without touching the project reference. Returns a clip_id for
+    ``conditioning: {source: 'custom', clip_id}``."""
+    conn = require_project(project_id)
+    seg = conn.execute(
+        "SELECT raw_path FROM segments WHERE id=? AND project_id=?",
+        (body.segment_id, project_id),
+    ).fetchone()
+    if seg is None:
+        raise AppError(404, "not_found", "Segment not found.")
+    pdir = project_dir(project_id)
+    src = pdir / seg["raw_path"]
+    if not src.exists():
+        raise AppError(409, "audio_unavailable", "The segment's audio is missing on disk.")
+
+    dest_dir = pdir / "conditioning"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_conditioning(project_id)
+    clip_id = uuid.uuid4().hex
+    dest = dest_dir / f"{clip_id}.wav"
+    await asyncio.to_thread(shutil.copy2, src, dest)
+
+    duration = await get_duration(str(dest))
+    if duration < MIN_CONDITIONING_SECS:
+        dest.unlink(missing_ok=True)
+        raise AppError(
+            422, "conditioning_too_short",
+            f"Conditioning clip must be at least {MIN_CONDITIONING_SECS} seconds. "
+            f"Segment is {duration:.1f} seconds.",
+            {"duration_secs": duration, "minimum_secs": MIN_CONDITIONING_SECS},
+        )
+    return {"clip_id": clip_id, "duration_secs": duration}
+
+
+@router.get("/conditioning")
+async def list_conditioning_clips(project_id: str):
+    """Custom conditioning clips available for this project (newest first), so
+    the preview UI can offer previously-uploaded/promoted clips, not just a
+    fresh upload."""
+    require_project(project_id)
+    d = project_dir(project_id) / "conditioning"
+    clips = []
+    if d.exists():
+        for f in sorted(d.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True):
+            clips.append({"clip_id": f.stem, "duration_secs": await get_duration(str(f))})
+    return {"clips": clips}
 
 
 @router.post("", status_code=202)
