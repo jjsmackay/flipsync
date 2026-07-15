@@ -676,7 +676,7 @@ Boundaries are clamped to `[0, vocals_duration]`. The re-cut segment must be at 
 
 #### `POST /projects/{project_id}/segments/stitch`
 
-Concatenate 2+ segments into a single clip and replace them with one stitched segment. The segments' raw WAVs are joined end-to-end in the order given (cross-source allowed; each is normalised so differing rates/channels concat cleanly — a seam remains at each join). Use when diarisation split one utterance, or to assemble specific lines into one clip.
+Concatenate 2+ segments into a single clip and replace them with one stitched segment. The segments' raw WAVs are joined in the order given (cross-source allowed; each is normalised so differing rates/channels join cleanly). Consecutive clips are joined with a short equal-power crossfade (~10 ms) so a boundary landing mid-waveform doesn't click. Use when diarisation split one utterance, or to assemble specific lines into one clip.
 
 **Request** (`segment_ids` length ≥ 2, distinct, ordered):
 ```json

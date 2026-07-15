@@ -404,8 +404,8 @@ async def stitch_segments(project_id: str, body: StitchRequest):
     """Concatenate 2+ segments into one clip (in the given order) and replace
     them with a single stitched segment.
 
-    Cross-source is allowed — each clip is normalised and joined end-to-end
-    (a seam remains at each join; that's inherent to concatenation). The merged
+    Cross-source is allowed — each clip is normalised and joined with a short
+    equal-power crossfade (so a boundary mid-waveform doesn't click). The merged
     segment starts ``pending`` with a ``stitched`` flag and the space-joined
     transcript; the originals' rows and WAVs are removed. Invalidates any prior
     export. Its start/end are synthetic (first segment's start + total duration)

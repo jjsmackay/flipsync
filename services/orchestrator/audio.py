@@ -79,27 +79,41 @@ async def slice_wav(src: str, dst: str, start_secs: float, end_secs: float) -> b
     return proc.returncode == 0
 
 
+CROSSFADE_SECS = 0.01  # ~10 ms equal-power crossfade at each stitch join
+
+
 async def concat_wavs(srcs: list[str], dst: str) -> bool:
     """Concatenate ``srcs`` end-to-end into ``dst`` via ffmpeg (in order).
 
     Used to stitch multiple review segments into one clip. Each input is first
     normalised to a common format (44100 Hz stereo) so clips cut from different
-    sources — which may differ in rate/channels — concat without error; cleanup
-    later downmixes to the dataset's 22050/mono. A hard seam remains at each
-    join (that's inherent to concatenation). Returns True on success.
+    sources — which may differ in rate/channels — join without error; cleanup
+    later downmixes to the dataset's 22050/mono. Consecutive clips are joined
+    with a short equal-power crossfade (``CROSSFADE_SECS``) rather than a hard
+    butt-join, so a boundary landing mid-waveform doesn't click; at the usual
+    pause boundaries it just blends silence. Each join overlaps by that
+    duration (a few ms lost per join — imperceptible for speech). Returns True
+    on success.
     """
-    if len(srcs) < 2:
+    n = len(srcs)
+    if n < 2:
         return False
     inputs: list[str] = []
     for s in srcs:
         inputs += ["-i", s]
-    n = len(srcs)
     norm = "".join(
         f"[{i}:a]aformat=sample_rates=44100:channel_layouts=stereo[a{i}];"
         for i in range(n)
     )
-    joined = "".join(f"[a{i}]" for i in range(n))
-    filter_complex = f"{norm}{joined}concat=n={n}:v=0:a=1[out]"
+    # Chain acrossfade: (((a0 x a1) x a2) x …). acrossfade takes two inputs, so
+    # fold left, naming intermediates x1, x2, … and the last output "out".
+    xfade = []
+    prev = "[a0]"
+    for i in range(1, n):
+        out = "[out]" if i == n - 1 else f"[x{i}]"
+        xfade.append(f"{prev}[a{i}]acrossfade=d={CROSSFADE_SECS}:c1=qsin:c2=qsin{out}")
+        prev = out
+    filter_complex = norm + ";".join(xfade)
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", *inputs,
