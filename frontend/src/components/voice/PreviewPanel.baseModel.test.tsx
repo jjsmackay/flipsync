@@ -52,7 +52,7 @@ describe('PreviewPanel base-model gating', () => {
 
 describe('PreviewPanel per-engine sampling', () => {
   const samplingKeys = ['temperature', 'speed', 'repetition_penalty', 'top_k', 'top_p',
-                        'length_penalty', 'num_beams', 'enable_text_splitting'] as const
+                        'enable_text_splitting'] as const
 
   beforeEach(() => {
     vi.mocked(createPreview).mockResolvedValue({ enqueued_job: { id: 'j1', type: 'preview' } })

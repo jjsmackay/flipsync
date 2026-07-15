@@ -335,7 +335,6 @@ class TestListSurfacesSampling:
         assert p["model_id"] is None
         assert p["sampling"] == {"temperature": 0.9, "speed": 1.1, "top_k": 30,
                                  "top_p": 0.7, "repetition_penalty": 8.0,
-                                 "length_penalty": None, "num_beams": None,
                                  "enable_text_splitting": None}
 
 

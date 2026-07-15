@@ -2165,7 +2165,7 @@ def _resolve_conditioning(
 # defaults, applied when a knob is absent from the synthesise payload.
 _SAMPLING_KEYS = (
     "temperature", "speed", "repetition_penalty", "top_k", "top_p",
-    "length_penalty", "num_beams", "enable_text_splitting",
+    "enable_text_splitting",
 )
 _XTTS_SAMPLING_DEFAULTS = {
     "temperature": 0.65,
@@ -2173,11 +2173,6 @@ _XTTS_SAMPLING_DEFAULTS = {
     "repetition_penalty": 10.0,
     "top_k": 50,
     "top_p": 0.85,
-    # length_penalty only bites under beam search, so it travels with num_beams
-    # (>1 switches XTTS from sampling to beam search). num_beams=1 leaves the
-    # default sampling path unchanged and length_penalty inert until raised.
-    "length_penalty": 1.0,
-    "num_beams": 1,
     "enable_text_splitting": True,
 }
 

@@ -863,11 +863,9 @@ Either `text` or `segment_id` is required. `segment_id` drives the A/B compare f
 | `repetition_penalty` | float | 10.0 | 1–20. Raise to kill stutters, repeated syllables, and trailing silences. |
 | `top_k` | int | 50 | 1–100. Sample from only the k most likely tokens. |
 | `top_p` | float | 0.85 | Nucleus sampling cutoff (>0, ≤1). |
-| `length_penalty` | float | 1.0 | 0.1–5. Only affects beam search (`num_beams` > 1). <1 favours shorter output, >1 longer. |
-| `num_beams` | int | 1 | 1–10. 1 = sampling (default). >1 enables beam search — slower, and what makes `length_penalty` take effect. |
 | `enable_text_splitting` | bool | true | Split long text into per-sentence prosody contours. |
 
-All sampling knobs are per-run only — never stored on the project, and the tabled defaults are **XTTS values applied per-engine**: the orchestrator persists only the knobs the request explicitly sent, then fills the rest per the model's engine (XTTS previews get the values above; GPT-SoVITS previews leave omitted knobs to the service's own defaults — XTTS-scale values like `repetition_penalty: 10.0` are never forced onto it, and these knobs are never sent for GPT-SoVITS). `length_penalty` only bites under beam search, so it travels with `num_beams`: at the default `num_beams: 1` it is inert.
+All sampling knobs are per-run only — never stored on the project, and the tabled defaults are **XTTS values applied per-engine**: the orchestrator persists only the knobs the request explicitly sent, then fills the rest per the model's engine (XTTS previews get the values above; GPT-SoVITS previews leave omitted knobs to the service's own defaults — XTTS-scale values like `repetition_penalty: 10.0` are never forced onto it, and these knobs are never sent for GPT-SoVITS). `num_beams`/`length_penalty` are deliberately not exposed: coqui XTTS's inference path is not beam-aware (`num_beams` > 1 crashes with a tensor reshape error), and `length_penalty` only applies under beam search.
 
 The orchestrator resolves the conditioning source to absolute WAV paths (XTTS previews only). The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
 

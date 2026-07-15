@@ -358,28 +358,6 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
                   onChange={setKnob('repetition_penalty')}
                   hint="Higher discourages repeats — raise to kill stutters or looping."
                 />
-                <SliderRow
-                  id="compare-num-beams"
-                  label="Beams"
-                  min={1}
-                  max={10}
-                  step={1}
-                  decimals={0}
-                  value={sampling.num_beams}
-                  onChange={setKnob('num_beams')}
-                  hint="1 = sampling (default). >1 turns on beam search — slower, and what makes length penalty take effect."
-                />
-                <SliderRow
-                  id="compare-length-penalty"
-                  label="Length penalty"
-                  min={0.1}
-                  max={5}
-                  step={0.1}
-                  decimals={1}
-                  value={sampling.length_penalty}
-                  onChange={setKnob('length_penalty')}
-                  hint="Only active with beams >1. <1 favours shorter output, >1 longer."
-                />
                 <CheckboxRow
                   id="compare-text-splitting"
                   label="Split long text into sentences"

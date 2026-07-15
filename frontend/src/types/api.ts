@@ -361,8 +361,6 @@ export interface PreviewSampling {
   top_k: number | null
   top_p: number | null
   repetition_penalty: number | null
-  length_penalty: number | null
-  num_beams: number | null
   enable_text_splitting: boolean | null
 }
 
@@ -396,10 +394,6 @@ export interface CreatePreviewRequest {
   top_k?: number
   /** >0–1, default 0.85 */
   top_p?: number
-  /** 0.1–5, default 1 — only affects beam search (num_beams>1) */
-  length_penalty?: number
-  /** 1–10, default 1 — >1 enables beam search (slower; activates length_penalty) */
-  num_beams?: number
   /** default true — split long text into per-sentence prosody contours */
   enable_text_splitting?: boolean
 }

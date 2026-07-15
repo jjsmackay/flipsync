@@ -6,8 +6,6 @@ export interface SamplingParams {
   top_k: number
   top_p: number
   repetition_penalty: number
-  length_penalty: number
-  num_beams: number
   enable_text_splitting: boolean
 }
 
@@ -21,8 +19,6 @@ export const DEFAULT_SAMPLING: SamplingParams = {
   top_k: 50,
   top_p: 0.85,
   repetition_penalty: 10,
-  length_penalty: 1,
-  num_beams: 1,
   enable_text_splitting: true,
 }
 

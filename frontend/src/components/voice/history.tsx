@@ -22,9 +22,6 @@ function samplingSummary(s: PreviewSampling | null, advanced: boolean): string {
   if (advanced && s.top_k != null) parts.push(`top-k ${s.top_k}`)
   if (advanced && s.top_p != null) parts.push(`top-p ${s.top_p}`)
   if (advanced && s.repetition_penalty != null) parts.push(`rep ${s.repetition_penalty}`)
-  if (advanced && s.num_beams != null && s.num_beams > 1) parts.push(`beams ${s.num_beams}`)
-  if (advanced && s.num_beams != null && s.num_beams > 1 && s.length_penalty != null)
-    parts.push(`len ${s.length_penalty}`)
   if (advanced && s.enable_text_splitting === false) parts.push('split off')
   return parts.join(' · ')
 }

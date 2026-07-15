@@ -118,11 +118,9 @@ class SynthParams(BaseModel):
     repetition_penalty: float = 10.0
     top_k: int = 50
     top_p: float = 0.85
-    # length_penalty only bites under beam search, so it travels with num_beams
-    # (>1 switches XTTS from sampling to beam search). num_beams=1 keeps the
-    # default sampling path, leaving length_penalty inert until raised.
-    length_penalty: float = 1.0
-    num_beams: int = 1
+    # num_beams / length_penalty are deliberately absent: coqui XTTS's inference
+    # path is not beam-aware — num_beams>1 crashes with a tensor reshape error,
+    # and length_penalty only applies under beam search, so both are unusable.
     # Splits long text into per-sentence prosody contours (needs spacy, pinned).
     enable_text_splitting: bool = True
 
