@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Model, Preview, PreviewConditioning, CreatePreviewRequest, ConditioningClip } from '../../types/api'
-import { createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getProject, uploadConditioningClip, listConditioningClips, ApiError } from '../../api/client'
+import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '../../types/api'
+import { createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
 import { SamplingParams, DEFAULT_SAMPLING, SliderRow, CheckboxRow, NumericSamplingKey } from './sampling'
+import { ConditioningField, ConditioningOption, toConditioning, customClipMissing } from './conditioning'
 import { PreviewMeta, InlineDelete } from './history'
 
 interface PreviewPanelProps {
@@ -30,16 +31,6 @@ const PREVIEW_TIMEOUT_MS = 10 * 60_000
 // Prefill with a stock sentence so the generate buttons are live on render.
 // Without this, users see disabled buttons and think previews are broken.
 const DEFAULT_TEXT = "Here's a quick preview of this voice. The quick brown fox jumps over the lazy dog."
-
-type ConditioningOption = 'auto' | 'reference_clip' | 'segments_raw' | 'segments_cleaned' | 'custom'
-
-const CONDITIONING_LABELS: Record<ConditioningOption, string> = {
-  auto: 'Auto (best available)',
-  reference_clip: 'Reference clip',
-  segments_raw: 'Raw segments',
-  segments_cleaned: 'Cleaned segments',
-  custom: 'Custom clip…',
-}
 
 const ERROR_MESSAGES: Record<string, string> = {
   conditioning_unavailable: 'No audio available for the chosen conditioning source yet.',
@@ -218,37 +209,8 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
   const [sampling, setSampling] = useState<SamplingParams>(DEFAULT_SAMPLING)
 
   // source='custom': a clip uploaded, or promoted from a segment elsewhere,
-  // used just for inference conditioning.
+  // used just for inference conditioning (ConditioningField owns the picker).
   const [customClipId, setCustomClipId] = useState<string | null>(null)
-  const [customClipName, setCustomClipName] = useState<string | null>(null)
-  const [uploadingClip, setUploadingClip] = useState(false)
-  const [clipError, setClipError] = useState<string | null>(null)
-  const [clips, setClips] = useState<ConditioningClip[]>([])
-
-  const clipLabel = (c: ConditioningClip) => `Clip ${c.clip_id.slice(0, 8)} · ${c.duration_secs.toFixed(1)}s`
-
-  const reloadClips = useCallback(() => {
-    listConditioningClips(projectId)
-      .then((r) => setClips(r.clips))
-      .catch(() => {})
-  }, [projectId])
-  useEffect(() => { reloadClips() }, [reloadClips])
-
-  async function handleClipUpload(file: File) {
-    setUploadingClip(true)
-    setClipError(null)
-    setCustomClipId(null)
-    try {
-      const res = await uploadConditioningClip(projectId, file)
-      setCustomClipId(res.clip_id)
-      setCustomClipName(file.name)
-      reloadClips()
-    } catch (err) {
-      setClipError(errorMessage(err, 'Upload failed.'))
-    } finally {
-      setUploadingClip(false)
-    }
-  }
 
   function setKnob(key: NumericSamplingKey) {
     return (value: number) => setSampling((prev) => ({ ...prev, [key]: value }))
@@ -293,14 +255,9 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
   // deployment); with the base column present they still drive it.
   const showSliders = xttsAvailable || selectedEngine !== 'gpt_sovits'
 
-  const conditioning: PreviewConditioning | undefined =
-    source === 'auto'
-      ? undefined
-      : source === 'custom'
-        ? { source: 'custom', clip_id: customClipId ?? undefined, segment_count: 5 }
-        : { source, segment_count: 5 }
-  // A custom source with no clip uploaded yet can't render — gate the buttons.
-  const customMissing = source === 'custom' && !customClipId
+  const conditioning: PreviewConditioning | undefined = toConditioning(source, customClipId)
+  // A custom source with no clip picked yet can't render — gate the buttons.
+  const customMissing = customClipMissing(source, customClipId)
 
   const trimmed = text.trim()
   const textInvalid = trimmed.length === 0 || text.length > TEXT_MAX
@@ -324,67 +281,14 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
         </div>
         {/* Synthesis parameters — same container treatment as the step settings cards. */}
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
-          <div>
-            <label
-              htmlFor="preview-conditioning"
-              className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-0.5"
-            >
-              Conditioning
-            </label>
-            <select
-              id="preview-conditioning"
-              value={source}
-              onChange={(e) => setSource(e.target.value as ConditioningOption)}
-              className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-sm"
-            >
-              {(Object.keys(CONDITIONING_LABELS) as ConditioningOption[]).map((opt) => (
-                <option key={opt} value={opt}>
-                  {CONDITIONING_LABELS[opt]}
-                </option>
-              ))}
-            </select>
-            {source === 'custom' && (
-              <div className="mt-2 space-y-1">
-                {clips.length > 0 && (
-                  <select
-                    value={customClipId && clips.some((c) => c.clip_id === customClipId) ? customClipId : ''}
-                    onChange={(e) => {
-                      const id = e.target.value || null
-                      setCustomClipId(id)
-                      const c = clips.find((x) => x.clip_id === id)
-                      setCustomClipName(c ? clipLabel(c) : null)
-                      setClipError(null)
-                    }}
-                    className="block rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-100 px-2 py-1 text-xs"
-                  >
-                    <option value="">— pick a saved clip —</option>
-                    {clips.map((c) => (
-                      <option key={c.clip_id} value={c.clip_id}>{clipLabel(c)}</option>
-                    ))}
-                  </select>
-                )}
-                <input
-                  type="file"
-                  accept="audio/*"
-                  disabled={uploadingClip}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0]
-                    if (f) void handleClipUpload(f)
-                  }}
-                  className="block text-xs text-gray-600 dark:text-gray-400 file:mr-2 file:rounded file:border-0 file:bg-blue-600 file:px-2 file:py-1 file:text-white hover:file:bg-blue-700 disabled:opacity-50"
-                />
-                {uploadingClip && <p className="text-xs text-gray-500 dark:text-gray-400">Uploading…</p>}
-                {customClipId && customClipName && !uploadingClip && (
-                  <p className="text-xs text-green-600 dark:text-green-400">Using {customClipName}</p>
-                )}
-                {clipError && <p className="text-xs text-red-600 dark:text-red-400">{clipError}</p>}
-                <p className="text-xs text-gray-400 dark:text-gray-500">
-                  A few seconds of clean, expressive speech (XTTS only). Inference-only — doesn't change diarisation.
-                  Segments sent via “Use as conditioning” in review appear in the list above.
-                </p>
-              </div>
-            )}
-          </div>
+          <ConditioningField
+            projectId={projectId}
+            idPrefix="preview"
+            source={source}
+            onSourceChange={setSource}
+            customClipId={customClipId}
+            onCustomClipChange={setCustomClipId}
+          />
           {showSliders && (
           <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
           <SliderRow

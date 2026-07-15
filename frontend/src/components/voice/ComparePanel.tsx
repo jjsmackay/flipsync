@@ -7,6 +7,7 @@ import {
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
 import { SamplingParams, DEFAULT_SAMPLING, SliderRow, CheckboxRow, NumericSamplingKey } from './sampling'
+import { ConditioningField, ConditioningOption, toConditioning, customClipMissing } from './conditioning'
 import { PreviewMeta, InlineDelete } from './history'
 
 interface ComparePanelProps {
@@ -68,6 +69,14 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
   function setSplitting(value: boolean) {
     setSampling((prev) => ({ ...prev, enable_text_splitting: value }))
   }
+
+  // Conditioning override (XTTS only): condition the clone on a custom clip to
+  // A/B whether it matches the original segment better. Default 'auto' keeps
+  // today's behaviour (best available).
+  const [source, setSource] = useState<ConditioningOption>('auto')
+  const [customClipId, setCustomClipId] = useState<string | null>(null)
+  const conditioning = toConditioning(source, customClipId)
+  const customMissing = customClipMissing(source, customClipId)
 
   // The sliders are XTTS dials: a GPT-SoVITS model's compare sends no sampling
   // knobs at all — the service's own defaults apply (XTTS numbers, especially
@@ -212,7 +221,9 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
       const res = await createPreview(projectId, {
         segment_id: selected.id,
         model_id: selectedModelId,
-        ...(selectedEngine === 'gpt_sovits' ? {} : sampling),
+        ...(selectedEngine === 'gpt_sovits'
+          ? {}
+          : { ...sampling, ...(conditioning ? { conditioning } : {}) }),
       })
       if (!mountedRef.current) return
       setPreviewId(res.enqueued_job.id)
@@ -229,6 +240,7 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
 
   const noModel = readyModels.length === 0
   const canGenerate = selected !== null && !noModel && selectedModelId !== null && phase !== 'generating'
+    && !(showSliders && customMissing)
 
   return (
     <div className="space-y-4">
@@ -299,6 +311,18 @@ export function ComparePanel({ projectId, models, advanced = false }: ComparePan
               )}
             </select>
           </div>
+          {showSliders && (
+            <div className="mb-3">
+              <ConditioningField
+                projectId={projectId}
+                idPrefix="compare"
+                source={source}
+                onSourceChange={setSource}
+                customClipId={customClipId}
+                onCustomClipChange={setCustomClipId}
+              />
+            </div>
+          )}
           {showSliders && (
           <div className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
             <SliderRow
