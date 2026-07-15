@@ -263,12 +263,15 @@ ffmpeg -i {input} -af loudnorm=I=-23:TP=-2:LRA=7:measured_I={i}:measured_TP={tp}
 ```
 
 **2. Silence trimming**  
-Remove leading and trailing silence above -50 dBFS with a minimum silence duration of 0.1 seconds. Preserves natural breath and short pauses within the segment.
+Remove leading and trailing silence above -50 dBFS with a minimum silence duration of 0.1 seconds. Preserves natural breath and short pauses within the segment. Skipped entirely when `do_trim_silence` is false — the diariser's boundaries are kept as-is (useful when trimming eats speech onsets).
 
 **3. High-pass filter**  
 Gentle high-pass at 80 Hz to remove low-frequency rumble and handling noise. TV audio rarely contains meaningful content below 80 Hz for voice.
 
-**4. Clipping detection**  
+**4. Silence padding**  
+Re-add a small amount of digital silence to the head (`silence_pad_start_secs`, default 0.05 s) and tail (`silence_pad_end_secs`, default 0.2 s) after trimming, via `adelay`/`apad`. A hard cut at the word boundary gives the voice-clone model an abrupt onset/offset and can click; the pad restores a clean attack and decay. Applied **after** the silent-after-trim reject check, so padding never resurrects an empty segment. Set either to 0 to disable that edge.
+
+**5. Clipping detection**  
 Scan for samples at or above -0.1 dBFS for more than 3 consecutive samples. Segments that clip are flagged `clipping_warning` rather than silently excluded. The export proceeds but the manifest records the flag. The user can choose to reject these segments and re-export.
 
 ### Output format

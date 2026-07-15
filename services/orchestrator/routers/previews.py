@@ -39,6 +39,12 @@ class CreatePreviewRequest(BaseModel):
     repetition_penalty: Optional[float] = Field(default=None, ge=1.0, le=20.0)
     top_k: Optional[int] = Field(default=None, ge=1, le=100)
     top_p: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+    # length_penalty only affects beam search; num_beams>1 turns beam search on
+    # (1 = the default sampling path, leaving length_penalty inert). XTTS only —
+    # ignored by GPT-SoVITS, which the frontend never sends these for.
+    length_penalty: Optional[float] = Field(default=None, ge=0.1, le=5.0)
+    num_beams: Optional[int] = Field(default=None, ge=1, le=10)
+    enable_text_splitting: Optional[bool] = Field(default=None)
 
     @model_validator(mode="after")
     def _require_text_or_segment(self):
@@ -118,6 +124,9 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
             ("repetition_penalty", body.repetition_penalty),
             ("top_k", body.top_k),
             ("top_p", body.top_p),
+            ("length_penalty", body.length_penalty),
+            ("num_beams", body.num_beams),
+            ("enable_text_splitting", body.enable_text_splitting),
         )
         if value is not None
     }
@@ -163,6 +172,9 @@ async def list_previews(project_id: str, limit: int = 20):
                 "top_k": p.get("top_k"),
                 "top_p": p.get("top_p"),
                 "repetition_penalty": p.get("repetition_penalty"),
+                "length_penalty": p.get("length_penalty"),
+                "num_beams": p.get("num_beams"),
+                "enable_text_splitting": p.get("enable_text_splitting"),
             },
             "created_at": r["created_at"],
         })

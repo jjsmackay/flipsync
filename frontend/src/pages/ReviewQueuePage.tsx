@@ -191,6 +191,10 @@ export function ReviewQueuePage() {
     setSegments(prev => prev.map(s => s.id === id ? { ...s, transcript_edited: transcript } : s))
   }
 
+  function handleSegmentUpdate(updated: Segment) {
+    setSegments(prev => prev.map(s => s.id === updated.id ? { ...s, ...updated } : s))
+  }
+
   const sources = project?.stats.source_coverage ?? []
   // Axis spans the source: use the furthest segment end across all fetched segments.
   const timelineSpan = timelineSegments.reduce((max, s) => Math.max(max, s.end_secs), 0)
@@ -346,6 +350,7 @@ export function ReviewQueuePage() {
               segment={selectedSegment}
               onStatusChange={handleStatusChange}
               onTranscriptChange={handleTranscriptChange}
+              onSegmentUpdate={handleSegmentUpdate}
               onFocusChange={setShortcutsEnabled}
               showSpectrogram={showSpectrogram}
               onSpectrogramToggle={() => setShowSpectrogram(s => !s)}

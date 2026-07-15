@@ -46,8 +46,14 @@ class CleanupParams:
     true_peak_dbtp: float = -2.0
     lra: float = 7.0
     highpass_hz: int = 80
+    do_trim_silence: bool = True
     silence_threshold_db: float = -50.0
     silence_min_duration_secs: float = 0.1
+    # Silence re-added to the head/tail AFTER trimming, so every segment has a
+    # clean attack/decay instead of a hard cut at the word boundary. 0.0 = no
+    # pad (the service default; the orchestrator supplies per-project values).
+    silence_pad_start_secs: float = 0.0
+    silence_pad_end_secs: float = 0.0
     clipping_threshold_db: float = -0.1
     clipping_min_consecutive_samples: int = 3
     output_sample_rate: int = 22050
@@ -315,17 +321,19 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
         # the voice-clone dataset depends on. `stop_periods=-1` would strip
         # every internal pause, so instead: trim the head with one
         # start-trigger pass, then reverse the stream, trim the (now-leading)
-        # tail with a second start-trigger pass, and reverse back.
-        trim_leading = (
-            f"silenceremove=start_periods=1"
-            f":start_duration={params.silence_min_duration_secs}"
-            f":start_threshold={params.silence_threshold_db}dB"
-        )
-        combined_filter = (
-            f"{trim_leading},"
-            f"areverse,{trim_leading},areverse,"
-            f"highpass=f={params.highpass_hz}"
-        )
+        # tail with a second start-trigger pass, and reverse back. When
+        # do_trim_silence is off, keep the diariser's boundaries and only
+        # high-pass.
+        filter_parts = []
+        if params.do_trim_silence:
+            trim_leading = (
+                f"silenceremove=start_periods=1"
+                f":start_duration={params.silence_min_duration_secs}"
+                f":start_threshold={params.silence_threshold_db}dB"
+            )
+            filter_parts += [trim_leading, "areverse", trim_leading, "areverse"]
+        filter_parts.append(f"highpass=f={params.highpass_hz}")
+        combined_filter = ",".join(filter_parts)
         trim_args = [
             "-i", intermediate,
             "-af", combined_filter,
@@ -353,13 +361,39 @@ def process_segment(segment: SegmentInput, params: CleanupParams) -> SegmentResu
             return _auto_reject()
 
         # -----------------------------------------------------------------------
-        # Copy trimmed output to final destination
+        # Head/tail silence padding + write to final destination
         # -----------------------------------------------------------------------
-        import shutil
-        try:
-            shutil.copy2(trimmed, output_path)
-        except Exception as e:
-            return _err(f"ffmpeg_error: could not write output file: {e}")
+        # Re-add a small amount of digital silence to the head and tail so the
+        # clip has a clean attack/decay rather than a hard cut at the word
+        # boundary. Done AFTER the silent-after-trim reject above so padding can
+        # never resurrect a genuinely empty segment. When both pads are 0 this
+        # is a plain copy (default behaviour, no extra ffmpeg pass).
+        pad_start = max(0.0, params.silence_pad_start_secs)
+        pad_end = max(0.0, params.silence_pad_end_secs)
+        if pad_start > 0 or pad_end > 0:
+            pad_filters = []
+            if pad_start > 0:
+                # adelay delays the signal, inserting silence at the head.
+                pad_filters.append(f"adelay={int(round(pad_start * 1000))}:all=1")
+            if pad_end > 0:
+                pad_filters.append(f"apad=pad_dur={pad_end}")
+            pad_args = [
+                "-i", trimmed,
+                "-af", ",".join(pad_filters),
+                "-acodec", "pcm_s16le",
+                output_path,
+            ]
+            rc, stdout, stderr = run_ffmpeg(pad_args)
+            if rc != 0:
+                return _err(
+                    f"ffmpeg_error: silence pad failed (exit {rc}): {stderr.strip()[:300]}"
+                )
+        else:
+            import shutil
+            try:
+                shutil.copy2(trimmed, output_path)
+            except Exception as e:
+                return _err(f"ffmpeg_error: could not write output file: {e}")
 
         # -----------------------------------------------------------------------
         # Clipping detection on the final output

@@ -19,8 +19,11 @@ export type TuningKey =
   | 'whisper_compute_type'
   | 'target_lufs'
   | 'highpass_hz'
+  | 'do_trim_silence'
   | 'silence_threshold_db'
   | 'silence_min_duration_secs'
+  | 'silence_pad_start_secs'
+  | 'silence_pad_end_secs'
   | 'xtts_epochs'
   | 'xtts_batch_size'
   | 'xtts_grad_accum'
@@ -167,6 +170,12 @@ export const CLEANUP_KNOBS: Knob[] = [
     hint: 'Cuts rumble below this frequency. 0 disables the filter.',
   },
   {
+    kind: 'checkbox',
+    key: 'do_trim_silence',
+    label: 'Trim silence',
+    hint: 'Trim leading/trailing silence from each segment. Turn off to keep the diariser boundaries when trimming eats speech onsets.',
+  },
+  {
     kind: 'number',
     key: 'silence_threshold_db',
     advanced: true,
@@ -185,6 +194,24 @@ export const CLEANUP_KNOBS: Knob[] = [
     max: 10,
     step: 0.05,
     hint: 'Silence must last this long before trimming touches it. Shorter gaps survive.',
+  },
+  {
+    kind: 'number',
+    key: 'silence_pad_start_secs',
+    label: 'Head pad (s)',
+    min: 0,
+    max: 2,
+    step: 0.05,
+    hint: 'Silence re-added to the start after trimming, so the clip has a clean attack instead of a hard cut. 0 disables.',
+  },
+  {
+    kind: 'number',
+    key: 'silence_pad_end_secs',
+    label: 'Tail pad (s)',
+    min: 0,
+    max: 2,
+    step: 0.05,
+    hint: 'Silence re-added to the end after trimming, so the clip has a clean decay instead of a hard cut. 0 disables.',
   },
 ]
 
@@ -246,8 +273,11 @@ export const TUNING_DEFAULTS = {
   whisper_compute_type: 'default',
   target_lufs: -23,
   highpass_hz: 80,
+  do_trim_silence: true,
   silence_threshold_db: -50,
   silence_min_duration_secs: 0.1,
+  silence_pad_start_secs: 0.05,
+  silence_pad_end_secs: 0.2,
   xtts_epochs: 10,
   xtts_batch_size: 3,
   xtts_grad_accum: 1,

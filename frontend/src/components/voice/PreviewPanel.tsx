@@ -3,7 +3,7 @@ import type { Model, Preview, PreviewConditioning, CreatePreviewRequest } from '
 import { createPreview, deletePreview, getPreviews, getPreviewAudioUrl, getProject, ApiError } from '../../api/client'
 import { usePolling } from '../../hooks/usePolling'
 import { errorMessage } from '../../utils/errors'
-import { SamplingParams, DEFAULT_SAMPLING, SliderRow } from './sampling'
+import { SamplingParams, DEFAULT_SAMPLING, SliderRow, CheckboxRow, NumericSamplingKey } from './sampling'
 import { PreviewMeta, InlineDelete } from './history'
 
 interface PreviewPanelProps {
@@ -216,8 +216,11 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
   // Shared across both columns so A/B compares models, not sampling noise.
   const [sampling, setSampling] = useState<SamplingParams>(DEFAULT_SAMPLING)
 
-  function setKnob(key: keyof SamplingParams) {
+  function setKnob(key: NumericSamplingKey) {
     return (value: number) => setSampling((prev) => ({ ...prev, [key]: value }))
+  }
+  function setSplitting(value: boolean) {
+    setSampling((prev) => ({ ...prev, enable_text_splitting: value }))
   }
 
   const mountedRef = useRef(true)
@@ -359,6 +362,35 @@ export function PreviewPanel({ projectId, models, advanced = false, xttsAvailabl
                 value={sampling.repetition_penalty}
                 onChange={setKnob('repetition_penalty')}
                 hint="Higher discourages repeats — raise to kill stutters or looping."
+              />
+              <SliderRow
+                id="preview-num-beams"
+                label="Beams"
+                min={1}
+                max={10}
+                step={1}
+                decimals={0}
+                value={sampling.num_beams}
+                onChange={setKnob('num_beams')}
+                hint="1 = sampling (default). >1 turns on beam search — slower, and what makes length penalty take effect."
+              />
+              <SliderRow
+                id="preview-length-penalty"
+                label="Length penalty"
+                min={0.1}
+                max={5}
+                step={0.1}
+                decimals={1}
+                value={sampling.length_penalty}
+                onChange={setKnob('length_penalty')}
+                hint="Only active with beams >1. <1 favours shorter output, >1 longer."
+              />
+              <CheckboxRow
+                id="preview-text-splitting"
+                label="Split long text into sentences"
+                checked={sampling.enable_text_splitting}
+                onChange={setSplitting}
+                hint="On (default) gives each sentence its own prosody. Turn off to feed text unsplit."
               />
             </>
           )}

@@ -428,7 +428,10 @@ class TestPreviewsRouterConditioningGate:
 # Preview sampling — per-engine defaults
 # ========================================================================
 
-_SAMPLING_KEYS = ("temperature", "speed", "repetition_penalty", "top_k", "top_p")
+_SAMPLING_KEYS = (
+    "temperature", "speed", "repetition_penalty", "top_k", "top_p",
+    "length_penalty", "num_beams", "enable_text_splitting",
+)
 
 _XTTS_SAMPLING_DEFAULTS = {
     "temperature": 0.65,
@@ -436,6 +439,9 @@ _XTTS_SAMPLING_DEFAULTS = {
     "repetition_penalty": 10.0,
     "top_k": 50,
     "top_p": 0.85,
+    "length_penalty": 1.0,
+    "num_beams": 1,
+    "enable_text_splitting": True,
 }
 
 

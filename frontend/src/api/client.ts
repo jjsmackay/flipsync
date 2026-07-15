@@ -359,6 +359,18 @@ export function patchSegment(
   })
 }
 
+export function adjustSegmentBoundaries(
+  projectId: string,
+  segmentId: string,
+  req: { start_secs?: number; end_secs?: number },
+): Promise<Segment> {
+  return request(`/projects/${projectId}/segments/${segmentId}/boundaries`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+}
+
 export function bulkSegmentAction(
   projectId: string,
   req: BulkSegmentRequest,

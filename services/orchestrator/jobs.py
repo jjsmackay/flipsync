@@ -1390,8 +1390,11 @@ def _cleanup_params(project_row: Any) -> dict:
         "true_peak_dbtp": -2.0,
         "lra": 7.0,
         "highpass_hz": project_row["highpass_hz"],
+        "do_trim_silence": bool(project_row["do_trim_silence"]),
         "silence_threshold_db": project_row["silence_threshold_db"],
         "silence_min_duration_secs": project_row["silence_min_duration_secs"],
+        "silence_pad_start_secs": project_row["silence_pad_start_secs"],
+        "silence_pad_end_secs": project_row["silence_pad_end_secs"],
         "clipping_threshold_db": -0.1,
         "clipping_min_consecutive_samples": 3,
         "output_sample_rate": 22050,
@@ -2160,13 +2163,22 @@ def _resolve_conditioning(
 # defaults for them (coqui's inference defaults, except the 0.65 house
 # temperature). These are XTTS-only: other engines' services own their own
 # defaults, applied when a knob is absent from the synthesise payload.
-_SAMPLING_KEYS = ("temperature", "speed", "repetition_penalty", "top_k", "top_p")
+_SAMPLING_KEYS = (
+    "temperature", "speed", "repetition_penalty", "top_k", "top_p",
+    "length_penalty", "num_beams", "enable_text_splitting",
+)
 _XTTS_SAMPLING_DEFAULTS = {
     "temperature": 0.65,
     "speed": 1.0,
     "repetition_penalty": 10.0,
     "top_k": 50,
     "top_p": 0.85,
+    # length_penalty only bites under beam search, so it travels with num_beams
+    # (>1 switches XTTS from sampling to beam search). num_beams=1 leaves the
+    # default sampling path unchanged and length_penalty inert until raised.
+    "length_penalty": 1.0,
+    "num_beams": 1,
+    "enable_text_splitting": True,
 }
 
 

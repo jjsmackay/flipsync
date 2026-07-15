@@ -42,8 +42,11 @@ function cleanupParams(values: TuningValues): CleanupTuningParams {
   return {
     target_lufs: Number(values.target_lufs),
     highpass_hz: Number(values.highpass_hz),
+    do_trim_silence: Boolean(values.do_trim_silence),
     silence_threshold_db: Number(values.silence_threshold_db),
     silence_min_duration_secs: Number(values.silence_min_duration_secs),
+    silence_pad_start_secs: Number(values.silence_pad_start_secs),
+    silence_pad_end_secs: Number(values.silence_pad_end_secs),
   }
 }
 

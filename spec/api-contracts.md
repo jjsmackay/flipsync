@@ -189,7 +189,7 @@ Full project state, including per-source status and summary stats.
 
 #### `PATCH /projects/{project_id}`
 
-Update project config. Patchable: `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, `auto_approve_transcript_threshold`, `whisper_batch_size` (1–64), `whisper_compute_type` (`default` | `float16` | `int8_float16` | `int8`), plus the pipeline tuning knobs: `demucs_model` (`htdemucs` | `mdx_extra`), `demucs_shifts` (0–10), `diar_min_speakers`/`diar_max_speakers` (1–20), `diar_min_segment_duration` (>0, ≤30), `whisper_beam_size` (1–10), `whisper_vad_filter` (bool), `target_lufs` (−70…−5), `highpass_hz` (0–1000), `silence_threshold_db` (−90…0), `silence_min_duration_secs` (0–10), and the fine-tune hyperparameters `xtts_epochs` (1–200), `xtts_batch_size` (1–64), `xtts_grad_accum` (1–64), `xtts_learning_rate` (>0, ≤1). All tuning knobs are accepted on `POST /projects` too, with the same bounds. Out-of-range values return 422. Changing a tuning knob applies to the next run of that stage; it does not reprocess existing work. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
+Update project config. Patchable: `name`, `match_threshold`, `target_duration_secs`, `whisper_model`, `language`, `auto_approve_enabled`, `auto_approve_match_threshold`, `auto_approve_transcript_threshold`, `whisper_batch_size` (1–64), `whisper_compute_type` (`default` | `float16` | `int8_float16` | `int8`), plus the pipeline tuning knobs: `demucs_model` (`htdemucs` | `mdx_extra`), `demucs_shifts` (0–10), `diar_min_speakers`/`diar_max_speakers` (1–20), `diar_min_segment_duration` (>0, ≤30), `whisper_beam_size` (1–10), `whisper_vad_filter` (bool), `target_lufs` (−70…−5), `highpass_hz` (0–1000), `do_trim_silence` (bool), `silence_threshold_db` (−90…0), `silence_min_duration_secs` (0–10), `silence_pad_start_secs` (0–2), `silence_pad_end_secs` (0–2), and the fine-tune hyperparameters `xtts_epochs` (1–200), `xtts_batch_size` (1–64), `xtts_grad_accum` (1–64), `xtts_learning_rate` (>0, ≤1). All tuning knobs are accepted on `POST /projects` too, with the same bounds. Out-of-range values return 422. Changing a tuning knob applies to the next run of that stage; it does not reprocess existing work. Changing `match_threshold` or any auto-approve field triggers a synchronous re-evaluation of segment statuses by the orchestrator (not a queued job), applied in this order:
 
 1. **Auto-approve demotion:** segments with status `auto_approved` that no longer meet the auto-approve eligibility rule (see [Pipeline](pipeline.md) §Auto-approval) are moved to `pending`.
 2. **Auto-approve promotion:** segments with status `pending` that meet the eligibility rule are moved to `auto_approved`.
@@ -655,6 +655,25 @@ Patchable fields: `status`, `transcript_edited`.
 
 ---
 
+#### `POST /projects/{project_id}/segments/{segment_id}/boundaries`
+
+Re-cut a segment's audio with new time boundaries (the review panel's trim/extend control). The raw slice is re-cut from the source's retained separated-vocals WAV, so extending a boundary recovers real neighbouring audio (a word the diariser clipped) and trimming drops bleed from an adjacent speaker.
+
+**Request** (both fields optional; absolute seconds — omit an edge to leave it unchanged; at least one required):
+```json
+{
+  "start_secs": 1.5,
+  "end_secs": 6.0
+}
+```
+
+Boundaries are clamped to `[0, vocals_duration]`. The re-cut segment must be at least 0.1 s long. Side effects: `duration_secs` recomputes; the cleaned cache (`cleaned_path` + file) is cleared so the next dataset build re-cleans; any prior export is invalidated; a `boundary_edited` flag is added (the transcript is left as-is — re-transcribe if the words changed).
+
+**Response 200:** Updated segment object.
+**Response 409** `vocals_unavailable` if the source's separated audio is missing. **422** `no_change` (no fields) / `invalid_boundaries` (too short). **404** if the segment does not exist.
+
+---
+
 #### `POST /projects/{project_id}/segments/bulk`
 
 Apply an action to multiple segments at once.
@@ -844,8 +863,11 @@ Either `text` or `segment_id` is required. `segment_id` drives the A/B compare f
 | `repetition_penalty` | float | 10.0 | 1–20. Raise to kill stutters, repeated syllables, and trailing silences. |
 | `top_k` | int | 50 | 1–100. Sample from only the k most likely tokens. |
 | `top_p` | float | 0.85 | Nucleus sampling cutoff (>0, ≤1). |
+| `length_penalty` | float | 1.0 | 0.1–5. Only affects beam search (`num_beams` > 1). <1 favours shorter output, >1 longer. |
+| `num_beams` | int | 1 | 1–10. 1 = sampling (default). >1 enables beam search — slower, and what makes `length_penalty` take effect. |
+| `enable_text_splitting` | bool | true | Split long text into per-sentence prosody contours. |
 
-All five sampling knobs are per-run only — never stored on the project, and the tabled defaults are **XTTS values applied per-engine**: the orchestrator persists only the knobs the request explicitly sent, then fills the rest per the model's engine (XTTS previews get the values above; GPT-SoVITS previews leave omitted knobs to the service's own defaults — XTTS-scale values like `repetition_penalty: 10.0` are never forced onto it). `length_penalty` is deliberately not exposed: it only applies under beam search and the service keeps `num_beams=1`, so it would be a knob that does nothing.
+All sampling knobs are per-run only — never stored on the project, and the tabled defaults are **XTTS values applied per-engine**: the orchestrator persists only the knobs the request explicitly sent, then fills the rest per the model's engine (XTTS previews get the values above; GPT-SoVITS previews leave omitted knobs to the service's own defaults — XTTS-scale values like `repetition_penalty: 10.0` are never forced onto it, and these knobs are never sent for GPT-SoVITS). `length_penalty` only bites under beam search, so it travels with `num_beams`: at the default `num_beams: 1` it is inert.
 
 The orchestrator resolves the conditioning source to absolute WAV paths (XTTS previews only). The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
 
@@ -920,7 +942,9 @@ Render ONE segment through the cleanup service with draft params.
     "target_lufs": -19.0,
     "highpass_hz": 120,
     "silence_threshold_db": -50.0,
-    "silence_min_duration_secs": 0.1
+    "silence_min_duration_secs": 0.1,
+    "silence_pad_start_secs": 0.05,
+    "silence_pad_end_secs": 0.2
   },
   "target": { "segment_id": "..." }
 }
@@ -1299,8 +1323,11 @@ The orchestrator writes completed segments to the database as they arrive, rathe
     "true_peak_dbtp": -2.0,
     "lra": 7.0,
     "highpass_hz": 80,
+    "do_trim_silence": true,
     "silence_threshold_db": -50.0,
     "silence_min_duration_secs": 0.1,
+    "silence_pad_start_secs": 0.05,
+    "silence_pad_end_secs": 0.2,
     "clipping_threshold_db": -0.1,
     "clipping_min_consecutive_samples": 3,
     "output_sample_rate": 22050,
@@ -1315,8 +1342,11 @@ The orchestrator writes completed segments to the database as they arrive, rathe
 | `true_peak_dbtp` | float | -2.0 | True peak ceiling |
 | `lra` | float | 7.0 | Loudness range target |
 | `highpass_hz` | int | 80 | High-pass filter cutoff frequency |
+| `do_trim_silence` | bool | true | Whether to trim leading/trailing silence. False keeps the diariser's boundaries intact. |
 | `silence_threshold_db` | float | -50.0 | Silence detection threshold for leading/trailing trim |
 | `silence_min_duration_secs` | float | 0.1 | Minimum silence duration to trigger trim |
+| `silence_pad_start_secs` | float | 0.05 | Silence re-added to the head after trimming (clean attack). 0 disables. |
+| `silence_pad_end_secs` | float | 0.2 | Silence re-added to the tail after trimming (clean decay). 0 disables. |
 | `clipping_threshold_db` | float | -0.1 | dBFS threshold for clipping detection |
 | `clipping_min_consecutive_samples` | int | 3 | Number of consecutive samples at/above threshold to flag clipping |
 | `output_sample_rate` | int | 22050 | Output sample rate (Hz) |

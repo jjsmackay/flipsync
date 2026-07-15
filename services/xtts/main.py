@@ -112,14 +112,19 @@ class FinetuneParams(BaseModel):
 
 class SynthParams(BaseModel):
     # XTTS-v2 sampling knobs; defaults match coqui's inference() defaults
-    # except temperature (0.65 is our house default). length_penalty is
-    # deliberately absent — it only applies under beam search and num_beams
-    # stays 1, so exposing it would ship a knob that does nothing.
+    # except temperature (0.65 is our house default).
     temperature: float = 0.65
     speed: float = 1.0
     repetition_penalty: float = 10.0
     top_k: int = 50
     top_p: float = 0.85
+    # length_penalty only bites under beam search, so it travels with num_beams
+    # (>1 switches XTTS from sampling to beam search). num_beams=1 keeps the
+    # default sampling path, leaving length_penalty inert until raised.
+    length_penalty: float = 1.0
+    num_beams: int = 1
+    # Splits long text into per-sentence prosody contours (needs spacy, pinned).
+    enable_text_splitting: bool = True
 
 
 class FinetuneJob(BaseModel):

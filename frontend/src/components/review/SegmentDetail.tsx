@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Segment, SegmentStatus } from '../../types/api'
-import { getSegmentAudioUrl, patchSegment, rerunSegmentTranscription } from '../../api/client'
+import { adjustSegmentBoundaries, getSegmentAudioUrl, patchSegment, rerunSegmentTranscription } from '../../api/client'
 import { useAudio } from '../../hooks/useAudio'
 import { ConfidenceBadge } from '../ui/ConfidenceBadge'
 import { StatusBadge } from '../ui/StatusBadge'
@@ -14,6 +14,7 @@ interface SegmentDetailProps {
   segment: Segment
   onStatusChange: (id: string, status: SegmentStatus) => void
   onTranscriptChange: (id: string, transcript: string | null) => void
+  onSegmentUpdate: (segment: Segment) => void
   onFocusChange: (focused: boolean) => void
   showSpectrogram: boolean
   onSpectrogramToggle: () => void
@@ -32,12 +33,15 @@ export function SegmentDetail({
   segment,
   onStatusChange,
   onTranscriptChange,
+  onSegmentUpdate,
   onFocusChange,
   showSpectrogram,
   onSpectrogramToggle,
   autoPlay,
 }: SegmentDetailProps) {
-  const audioApiUrl = getSegmentAudioUrl(projectId, segment.id)
+  // Cache-bust on duration so a boundary re-cut (same URL, new bytes) reloads
+  // the player and waveform instead of serving the stale cached WAV.
+  const audioApiUrl = `${getSegmentAudioUrl(projectId, segment.id)}?v=${segment.duration_secs}`
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null)
   const [objectUrl, setObjectUrl] = useState<string | null>(null)
   const [audioError, setAudioError] = useState<string | null>(null)
@@ -49,6 +53,33 @@ export function SegmentDetail({
   const [saving, setSaving] = useState(false)
   const [retranscribing, setRetranscribing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Trim/extend boundary nudge: each box is a signed amount in seconds applied
+  // to that edge (+ extends outward = more audio, − trims inward).
+  const [startNudge, setStartNudge] = useState('')
+  const [endNudge, setEndNudge] = useState('')
+  const [adjusting, setAdjusting] = useState(false)
+
+  async function applyBoundaries() {
+    const startAmt = parseFloat(startNudge) || 0
+    const endAmt = parseFloat(endNudge) || 0
+    if (!startAmt && !endAmt) return
+    setAdjusting(true)
+    setError(null)
+    try {
+      const req: { start_secs?: number; end_secs?: number } = {}
+      if (startAmt) req.start_secs = Math.max(0, segment.start_secs - startAmt)
+      if (endAmt) req.end_secs = segment.end_secs + endAmt
+      const updated = await adjustSegmentBoundaries(projectId, segment.id, req)
+      onSegmentUpdate(updated)
+      setStartNudge('')
+      setEndNudge('')
+    } catch (e) {
+      setError(errorMessage(e, 'Adjust failed'))
+    } finally {
+      setAdjusting(false)
+    }
+  }
 
   async function handleRetranscribe() {
     setError(null)
@@ -115,6 +146,8 @@ export function SegmentDetail({
     setEditedTranscript('')
     setError(null)
     setSaving(false)
+    setStartNudge('')
+    setEndNudge('')
   }, [segment.id])
 
   // Keyboard shortcuts (Space/R/E/[/]) — only when not editing
@@ -254,12 +287,20 @@ export function SegmentDetail({
                   title={
                     flag === 'short_transcript'
                       ? 'Short segment: transcript confidence may be unreliable'
-                      : isCleanupError
-                        ? flag.replace('cleanup_error: ', '')
-                        : flag
+                      : flag === 'boundary_edited'
+                        ? 'Boundaries were re-cut after transcription — re-transcribe if the words changed'
+                        : isCleanupError
+                          ? flag.replace('cleanup_error: ', '')
+                          : flag
                   }
                 >
-                  {flag === 'short_transcript' ? 'Short transcript' : isCleanupError ? 'Cleanup error' : flag}
+                  {flag === 'short_transcript'
+                    ? 'Short transcript'
+                    : flag === 'boundary_edited'
+                      ? 'Boundary edited'
+                      : isCleanupError
+                        ? 'Cleanup error'
+                        : flag}
                 </span>
               )
             })}
@@ -300,6 +341,48 @@ export function SegmentDetail({
             >
               {showSpectrogram ? 'Hide spectrogram' : 'Show spectrogram'}
             </button>
+
+            {/* Trim / extend boundaries */}
+            <div className="flex flex-wrap items-end gap-3 pt-1">
+              <div className="flex flex-col gap-0.5">
+                <label htmlFor="start-nudge" className="text-xs text-gray-500 dark:text-gray-400">
+                  Start (s)
+                </label>
+                <input
+                  id="start-nudge"
+                  type="number"
+                  step={0.05}
+                  value={startNudge}
+                  onChange={(e) => setStartNudge(e.target.value)}
+                  placeholder="0"
+                  className="w-20 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm dark:bg-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <label htmlFor="end-nudge" className="text-xs text-gray-500 dark:text-gray-400">
+                  End (s)
+                </label>
+                <input
+                  id="end-nudge"
+                  type="number"
+                  step={0.05}
+                  value={endNudge}
+                  onChange={(e) => setEndNudge(e.target.value)}
+                  placeholder="0"
+                  className="w-20 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm dark:bg-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void applyBoundaries()}
+                disabled={adjusting || (!parseFloat(startNudge) && !parseFloat(endNudge))}
+                title="Re-cut this segment from the source audio. + extends the edge outward (recovers a clipped word), − trims it inward (drops bleed)."
+                className="px-3 py-1 rounded text-xs bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              >
+                {adjusting ? 'Re-cutting…' : 'Apply'}
+              </button>
+              <span className="text-xs text-gray-400 dark:text-gray-500">+ extends · − trims</span>
+            </div>
           </>
         )}
       </div>

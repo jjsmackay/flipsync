@@ -292,6 +292,37 @@ class TestSilenceTrimFilter:
             f"{start},areverse,{start},areverse,highpass=f={params.highpass_hz}"
         )
 
+    def test_do_trim_silence_false_skips_silenceremove(self, tmp_dir, clean_wav, output_dir):
+        """With do_trim_silence off, the third pass is high-pass only — no
+        silenceremove/areverse, so the diariser's boundaries are kept."""
+        params = CleanupParams(do_trim_silence=False)
+        out_path = os.path.join(output_dir, "seg_notrim.wav")
+        seg = SegmentInput(id="seg-notrim", input_path=clean_wav, output_path=out_path)
+
+        captured_filters = []
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            if "-af" in cmd:
+                captured_filters.append(cmd[cmd.index("-af") + 1])
+            if len(captured_filters) == 1:
+                result.stderr = LOUDNORM_JSON
+            else:
+                result.stderr = ""
+                sf.write(cmd[-1], np.zeros(22050, dtype=np.float32), 22050, subtype="PCM_16")
+            return result
+
+        with patch("cleaner.subprocess.run", side_effect=mock_run):
+            with patch("cleaner._get_audio_duration", return_value=1.0):
+                process_segment(seg, params)
+
+        trim_filter = captured_filters[2]
+        assert "silenceremove" not in trim_filter
+        assert "areverse" not in trim_filter
+        assert trim_filter == f"highpass=f={params.highpass_hz}"
+
     @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
     @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not installed")
     def test_real_ffmpeg_preserves_mid_pause(self, tmp_dir, output_dir):
@@ -336,6 +367,109 @@ class TestSilenceTrimFilter:
         assert out_secs > 1.15, f"mid pause was stripped (output {out_secs:.3f}s)"
         # Leading + trailing silence trimmed: clearly less than the 2.4 s input.
         assert out_secs < 1.9, f"lead/tail silence not trimmed (output {out_secs:.3f}s)"
+
+
+# ---------------------------------------------------------------------------
+# Head/tail silence padding (applied after trim + silent-after-trim reject)
+# ---------------------------------------------------------------------------
+
+
+class TestSilencePad:
+    def _mock_run_factory(self, captured_filters):
+        """A subprocess.run mock: records -af filters, feeds loudnorm JSON on the
+        first call, and writes a real WAV to the output of every later call."""
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            if "-af" in cmd:
+                captured_filters.append(cmd[cmd.index("-af") + 1])
+            if len(captured_filters) == 1:
+                result.stderr = LOUDNORM_JSON
+            else:
+                result.stderr = ""
+                sf.write(cmd[-1], np.zeros(22050, dtype=np.float32), 22050, subtype="PCM_16")
+            return result
+        return mock_run
+
+    def test_pad_pass_adds_adelay_and_apad(self, tmp_dir, clean_wav, output_dir):
+        """With pad params > 0 a fourth ffmpeg pass runs adelay (head) + apad (tail)."""
+        params = CleanupParams(silence_pad_start_secs=0.05, silence_pad_end_secs=0.2)
+        out_path = os.path.join(output_dir, "seg_pad.wav")
+        seg = SegmentInput(id="seg-pad", input_path=clean_wav, output_path=out_path)
+
+        captured_filters = []
+        with patch("cleaner.subprocess.run", side_effect=self._mock_run_factory(captured_filters)):
+            with patch("cleaner._get_audio_duration", return_value=1.0):
+                result = process_segment(seg, params)
+
+        assert result.error is None
+        assert result.output_path == out_path
+        # loudnorm pass1, loudnorm pass2, trim, pad = 4 filtered passes.
+        assert len(captured_filters) == 4
+        pad_filter = captured_filters[3]
+        assert pad_filter == "adelay=50:all=1,apad=pad_dur=0.2"
+
+    def test_no_pad_pass_when_zero(self, tmp_dir, clean_wav, output_dir):
+        """Default params (pad 0) skip the pad pass — output is a plain copy."""
+        params = CleanupParams()
+        assert params.silence_pad_start_secs == 0.0 and params.silence_pad_end_secs == 0.0
+        out_path = os.path.join(output_dir, "seg_nopad.wav")
+        seg = SegmentInput(id="seg-nopad", input_path=clean_wav, output_path=out_path)
+
+        captured_filters = []
+        with patch("cleaner.subprocess.run", side_effect=self._mock_run_factory(captured_filters)):
+            with patch("cleaner._get_audio_duration", return_value=1.0):
+                result = process_segment(seg, params)
+
+        assert result.error is None
+        assert result.output_path == out_path
+        # No pad pass: only loudnorm pass1, pass2, trim.
+        assert len(captured_filters) == 3
+
+    def test_pad_does_not_run_on_silent_after_trim(self, tmp_dir, clean_wav, output_dir):
+        """A segment silent after trim is auto-rejected before padding, so a pad
+        can never resurrect an empty segment."""
+        params = CleanupParams(silence_pad_start_secs=0.05, silence_pad_end_secs=0.2)
+        out_path = os.path.join(output_dir, "seg_padsilent.wav")
+        seg = SegmentInput(id="seg-padsilent", input_path=clean_wav, output_path=out_path)
+
+        captured_filters = []
+        with patch("cleaner.subprocess.run", side_effect=self._mock_run_factory(captured_filters)):
+            with patch("cleaner._get_audio_duration", return_value=0.001):
+                result = process_segment(seg, params)
+
+        assert result.auto_rejected is True
+        assert result.output_path is None
+        # Trimmed and rejected — the pad pass (would be #4) never ran.
+        assert len(captured_filters) == 3
+
+    @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+    @pytest.mark.skipif(shutil.which("ffprobe") is None, reason="ffprobe not installed")
+    def test_real_ffmpeg_pads_head_and_tail(self, tmp_dir, output_dir):
+        """Real FFmpeg run: padding lengthens the output by ~ (head + tail)."""
+        sr = 22050
+        t = np.linspace(0, 1.0, sr, endpoint=False)
+        tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        in_path = os.path.join(tmp_dir, "tone.wav")
+        sf.write(in_path, tone, sr, subtype="PCM_16")
+
+        out_base = os.path.join(output_dir, "tone_nopad.wav")
+        seg_base = SegmentInput(id="seg-base", input_path=in_path, output_path=out_base)
+        base = process_segment(seg_base, CleanupParams())
+        assert base.error is None, base.error
+        base_secs = len(sf.read(out_base)[0]) / sr
+
+        out_pad = os.path.join(output_dir, "tone_pad.wav")
+        seg_pad = SegmentInput(id="seg-pad-real", input_path=in_path, output_path=out_pad)
+        padded = process_segment(
+            seg_pad, CleanupParams(silence_pad_start_secs=0.1, silence_pad_end_secs=0.3)
+        )
+        assert padded.error is None, padded.error
+        pad_secs = len(sf.read(out_pad)[0]) / sr
+
+        # ~0.4 s of added silence, allowing for trim/rounding jitter.
+        assert pad_secs - base_secs > 0.3, f"padding not applied ({base_secs:.3f}→{pad_secs:.3f}s)"
 
 
 # ---------------------------------------------------------------------------

@@ -334,7 +334,9 @@ class TestListSurfacesSampling:
         p = client.get(f"/projects/{project}/previews").json()["previews"][0]
         assert p["model_id"] is None
         assert p["sampling"] == {"temperature": 0.9, "speed": 1.1, "top_k": 30,
-                                 "top_p": 0.7, "repetition_penalty": 8.0}
+                                 "top_p": 0.7, "repetition_penalty": 8.0,
+                                 "length_penalty": None, "num_beams": None,
+                                 "enable_text_splitting": None}
 
 
 class TestDeletePreview:

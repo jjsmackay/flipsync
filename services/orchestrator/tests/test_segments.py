@@ -2,6 +2,8 @@
 
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -447,3 +449,129 @@ class TestBulkAutoApproved:
         assert resp.json()["affected_count"] == 1
         assert conn.execute("SELECT status FROM segments WHERE id=?", (seg_auto,)).fetchone()["status"] == "auto_approved"
         assert conn.execute("SELECT status FROM segments WHERE id=?", (seg_pending,)).fetchone()["status"] == "rejected"
+
+
+class TestAdjustBoundaries:
+    """POST /segments/{id}/boundaries re-cuts the raw WAV from the source's
+    retained vocals file and invalidates the stale cleaned cache."""
+
+    def _setup(self, conn, project, *, cleaned=True, vocals=True):
+        import db
+        pdir = db.project_dir(project)
+        source_id = _insert_source(conn, project)
+        vocals_rel = None
+        if vocals:
+            vocals_rel = f"audio/vocals/{source_id}.wav"
+            (pdir / "audio" / "vocals").mkdir(parents=True, exist_ok=True)
+            (pdir / vocals_rel).write_bytes(b"RIFFvocals")
+            conn.execute("UPDATE sources SET vocals_path=? WHERE id=?", (vocals_rel, source_id))
+        seg_id = _insert_segment(conn, project, source_id, start=2.0, end=5.0, transcript="hi")
+        (pdir / "segments" / "raw").mkdir(parents=True, exist_ok=True)
+        (pdir / f"segments/raw/{seg_id}.wav").write_bytes(b"RIFFraw")
+        cleaned_rel = None
+        if cleaned:
+            cleaned_rel = f"cleaned/{seg_id}.wav"
+            (pdir / "cleaned").mkdir(parents=True, exist_ok=True)
+            (pdir / cleaned_rel).write_bytes(b"RIFFclean")
+            conn.execute("UPDATE segments SET cleaned_path=? WHERE id=?", (cleaned_rel, seg_id))
+        conn.commit()
+        return source_id, seg_id, pdir, cleaned_rel
+
+    def test_extend_reslices_and_clears_cleaned(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id, seg_id, pdir, cleaned_rel = self._setup(conn, project)
+
+        async def fake_slice(src, dst, start, end):
+            Path(dst).write_bytes(b"RIFFrecut")
+            return True
+
+        with patch("routers.segments.slice_wav", new=AsyncMock(side_effect=fake_slice)), \
+             patch("routers.segments.get_duration", new=AsyncMock(return_value=30.0)):
+            resp = client.post(f"/projects/{project}/segments/{seg_id}/boundaries",
+                               json={"start_secs": 1.5, "end_secs": 6.0})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["start_secs"] == 1.5
+        assert body["end_secs"] == 6.0
+        assert body["duration_secs"] == 4.5
+        assert "boundary_edited" in body["flags"]
+        row = conn.execute("SELECT cleaned_path FROM segments WHERE id=?", (seg_id,)).fetchone()
+        assert row["cleaned_path"] is None
+        assert not (pdir / cleaned_rel).exists()
+        # A prior export is now stale.
+        assert conn.execute("SELECT exported_at FROM projects WHERE id=?", (project,)).fetchone()["exported_at"] is None
+
+    def test_omitted_edge_keeps_current_value(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id, seg_id, pdir, _ = self._setup(conn, project, cleaned=False)
+        captured = {}
+
+        async def fake_slice(src, dst, start, end):
+            captured["start"], captured["end"] = start, end
+            Path(dst).write_bytes(b"x")
+            return True
+
+        with patch("routers.segments.slice_wav", new=AsyncMock(side_effect=fake_slice)), \
+             patch("routers.segments.get_duration", new=AsyncMock(return_value=30.0)):
+            resp = client.post(f"/projects/{project}/segments/{seg_id}/boundaries",
+                               json={"end_secs": 7.0})
+
+        assert resp.status_code == 200
+        assert captured["start"] == 2.0  # unchanged
+        assert captured["end"] == 7.0
+        assert resp.json()["start_secs"] == 2.0
+
+    def test_clamps_end_to_vocals_duration(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id, seg_id, pdir, _ = self._setup(conn, project, cleaned=False)
+        captured = {}
+
+        async def fake_slice(src, dst, start, end):
+            captured["end"] = end
+            Path(dst).write_bytes(b"x")
+            return True
+
+        with patch("routers.segments.slice_wav", new=AsyncMock(side_effect=fake_slice)), \
+             patch("routers.segments.get_duration", new=AsyncMock(return_value=5.5)):
+            resp = client.post(f"/projects/{project}/segments/{seg_id}/boundaries",
+                               json={"end_secs": 99.0})
+
+        assert resp.status_code == 200
+        assert captured["end"] == 5.5
+        assert resp.json()["end_secs"] == 5.5
+
+    def test_no_change_422(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id, seg_id, *_ = self._setup(conn, project)
+        resp = client.post(f"/projects/{project}/segments/{seg_id}/boundaries", json={})
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "no_change"
+
+    def test_too_short_422(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id, seg_id, *_ = self._setup(conn, project)
+        with patch("routers.segments.get_duration", new=AsyncMock(return_value=30.0)):
+            resp = client.post(f"/projects/{project}/segments/{seg_id}/boundaries",
+                               json={"start_secs": 3.0, "end_secs": 3.02})
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "invalid_boundaries"
+
+    def test_no_vocals_409(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        source_id, seg_id, *_ = self._setup(conn, project, vocals=False)
+        resp = client.post(f"/projects/{project}/segments/{seg_id}/boundaries",
+                           json={"start_secs": 1.0})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "vocals_unavailable"
+
+    def test_segment_not_found_404(self, client, project):
+        resp = client.post(f"/projects/{project}/segments/{uuid.uuid4()}/boundaries",
+                           json={"start_secs": 1.0})
+        assert resp.status_code == 404

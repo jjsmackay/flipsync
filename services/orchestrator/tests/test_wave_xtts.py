@@ -773,7 +773,9 @@ class TestPreviewHandler:
         p = captured["payload"]["params"]
         # Explicit values pass through; the rest fill from the shared defaults.
         assert p == {"temperature": 0.65, "speed": 1.3, "repetition_penalty": 10.0,
-                     "top_k": 25, "top_p": 0.85}
+                     "top_k": 25, "top_p": 0.85,
+                     "length_penalty": 1.0, "num_beams": 1,
+                     "enable_text_splitting": True}
 
     def test_finetuned_uses_checkpoint_dir(self, client, project, isolated_data_dir):
         import db

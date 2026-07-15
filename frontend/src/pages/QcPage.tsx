@@ -28,8 +28,11 @@ function cleanupParams(config: ProjectDetail['config']): CleanupTuningParams {
   return {
     target_lufs: config.target_lufs,
     highpass_hz: config.highpass_hz,
+    do_trim_silence: config.do_trim_silence,
     silence_threshold_db: config.silence_threshold_db,
     silence_min_duration_secs: config.silence_min_duration_secs,
+    silence_pad_start_secs: config.silence_pad_start_secs,
+    silence_pad_end_secs: config.silence_pad_end_secs,
   }
 }
 

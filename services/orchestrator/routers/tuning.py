@@ -27,8 +27,11 @@ class CleanupTuningParams(BaseModel):
     # Bounds mirror the project-config validators in routers/projects.py.
     target_lufs: float = Field(ge=-70.0, le=-5.0)
     highpass_hz: int = Field(ge=0, le=1000)
+    do_trim_silence: bool
     silence_threshold_db: float = Field(ge=-90.0, le=0.0)
     silence_min_duration_secs: float = Field(ge=0.0, le=10.0)
+    silence_pad_start_secs: float = Field(ge=0.0, le=2.0)
+    silence_pad_end_secs: float = Field(ge=0.0, le=2.0)
 
 
 class TuningTarget(BaseModel):

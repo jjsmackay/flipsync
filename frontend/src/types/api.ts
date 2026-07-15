@@ -72,8 +72,11 @@ export interface ProjectConfig {
   align_words: boolean
   target_lufs: number
   highpass_hz: number
+  do_trim_silence: boolean
   silence_threshold_db: number
   silence_min_duration_secs: number
+  silence_pad_start_secs: number
+  silence_pad_end_secs: number
   xtts_epochs: number
   xtts_batch_size: number
   xtts_grad_accum: number
@@ -235,8 +238,11 @@ export interface TuningPatch {
   whisper_compute_type?: string
   target_lufs?: number
   highpass_hz?: number
+  do_trim_silence?: boolean
   silence_threshold_db?: number
   silence_min_duration_secs?: number
+  silence_pad_start_secs?: number
+  silence_pad_end_secs?: number
   xtts_epochs?: number
   xtts_batch_size?: number
   xtts_grad_accum?: number
@@ -355,6 +361,9 @@ export interface PreviewSampling {
   top_k: number | null
   top_p: number | null
   repetition_penalty: number | null
+  length_penalty: number | null
+  num_beams: number | null
+  enable_text_splitting: boolean | null
 }
 
 export interface Preview {
@@ -387,6 +396,12 @@ export interface CreatePreviewRequest {
   top_k?: number
   /** >0–1, default 0.85 */
   top_p?: number
+  /** 0.1–5, default 1 — only affects beam search (num_beams>1) */
+  length_penalty?: number
+  /** 1–10, default 1 — >1 enables beam search (slower; activates length_penalty) */
+  num_beams?: number
+  /** default true — split long text into per-sentence prosody contours */
+  enable_text_splitting?: boolean
 }
 
 // ---- Tuning previews (ephemeral stage A/B) ----
@@ -394,8 +409,11 @@ export interface CreatePreviewRequest {
 export interface CleanupTuningParams {
   target_lufs: number
   highpass_hz: number
+  do_trim_silence: boolean
   silence_threshold_db: number
   silence_min_duration_secs: number
+  silence_pad_start_secs: number
+  silence_pad_end_secs: number
 }
 
 export interface CreateTuningPreviewRequest {

@@ -131,8 +131,11 @@ def _project_detail(project_id: str) -> dict:
             "align_words": bool(p["align_words"]),
             "target_lufs": p["target_lufs"],
             "highpass_hz": p["highpass_hz"],
+            "do_trim_silence": bool(p["do_trim_silence"]),
             "silence_threshold_db": p["silence_threshold_db"],
             "silence_min_duration_secs": p["silence_min_duration_secs"],
+            "silence_pad_start_secs": p["silence_pad_start_secs"],
+            "silence_pad_end_secs": p["silence_pad_end_secs"],
             "xtts_epochs": p["xtts_epochs"],
             "xtts_batch_size": p["xtts_batch_size"],
             "xtts_grad_accum": p["xtts_grad_accum"],
@@ -208,8 +211,11 @@ class ProjectCreate(BaseModel):
     # Cleanup
     target_lufs: float = Field(default=-23.0, ge=-70.0, le=-5.0)
     highpass_hz: int = Field(default=80, ge=0, le=1000)
+    do_trim_silence: bool = True
     silence_threshold_db: float = Field(default=-50.0, ge=-90.0, le=0.0)
     silence_min_duration_secs: float = Field(default=0.1, ge=0.0, le=10.0)
+    silence_pad_start_secs: float = Field(default=0.05, ge=0.0, le=2.0)
+    silence_pad_end_secs: float = Field(default=0.2, ge=0.0, le=2.0)
     # XTTS fine-tune
     xtts_epochs: int = Field(default=10, ge=1, le=200)
     xtts_batch_size: int = Field(default=3, ge=1, le=64)
@@ -245,8 +251,11 @@ class ProjectPatch(BaseModel):
     # Cleanup
     target_lufs: Optional[float] = Field(default=None, ge=-70.0, le=-5.0)
     highpass_hz: Optional[int] = Field(default=None, ge=0, le=1000)
+    do_trim_silence: Optional[bool] = None
     silence_threshold_db: Optional[float] = Field(default=None, ge=-90.0, le=0.0)
     silence_min_duration_secs: Optional[float] = Field(default=None, ge=0.0, le=10.0)
+    silence_pad_start_secs: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    silence_pad_end_secs: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     # XTTS fine-tune
     xtts_epochs: Optional[int] = Field(default=None, ge=1, le=200)
     xtts_batch_size: Optional[int] = Field(default=None, ge=1, le=64)
@@ -317,10 +326,12 @@ async def create_project(body: ProjectCreate):
             demucs_model, demucs_shifts,
             diar_min_speakers, diar_max_speakers, diar_min_segment_duration,
             whisper_beam_size, whisper_vad_filter, align_words,
-            target_lufs, highpass_hz, silence_threshold_db, silence_min_duration_secs,
+            target_lufs, highpass_hz, do_trim_silence,
+            silence_threshold_db, silence_min_duration_secs,
+            silence_pad_start_secs, silence_pad_end_secs,
             xtts_epochs, xtts_batch_size, xtts_grad_accum, xtts_learning_rate)
         VALUES (?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (project_id, body.name, now, now, body.whisper_model,
          body.language, body.match_threshold, body.target_duration_secs,
@@ -330,8 +341,9 @@ async def create_project(body: ProjectCreate):
          body.demucs_model, body.demucs_shifts,
          body.diar_min_speakers, body.diar_max_speakers, body.diar_min_segment_duration,
          body.whisper_beam_size, int(body.whisper_vad_filter), int(body.align_words),
-         body.target_lufs, body.highpass_hz, body.silence_threshold_db,
-         body.silence_min_duration_secs,
+         body.target_lufs, body.highpass_hz, int(body.do_trim_silence),
+         body.silence_threshold_db, body.silence_min_duration_secs,
+         body.silence_pad_start_secs, body.silence_pad_end_secs,
          body.xtts_epochs, body.xtts_batch_size, body.xtts_grad_accum,
          body.xtts_learning_rate),
     )
@@ -366,7 +378,9 @@ async def patch_project(project_id: str, body: ProjectPatch):
         "demucs_model", "demucs_shifts",
         "diar_min_speakers", "diar_max_speakers", "diar_min_segment_duration",
         "whisper_beam_size", "whisper_vad_filter", "align_words",
-        "target_lufs", "highpass_hz", "silence_threshold_db", "silence_min_duration_secs",
+        "target_lufs", "highpass_hz", "do_trim_silence",
+        "silence_threshold_db", "silence_min_duration_secs",
+        "silence_pad_start_secs", "silence_pad_end_secs",
         "xtts_epochs", "xtts_batch_size", "xtts_grad_accum", "xtts_learning_rate",
     ):
         if f in provided and getattr(body, f) is not None:

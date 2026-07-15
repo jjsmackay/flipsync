@@ -60,6 +60,7 @@ function renderDetail(segment: Segment) {
       segment={segment}
       onStatusChange={vi.fn()}
       onTranscriptChange={vi.fn()}
+      onSegmentUpdate={vi.fn()}
       onFocusChange={vi.fn()}
       showSpectrogram={false}
       onSpectrogramToggle={vi.fn()}

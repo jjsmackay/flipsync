@@ -407,10 +407,15 @@ def synthesise(
         repetition_penalty=float(params.get("repetition_penalty", 10.0)),
         top_k=params.get("top_k", 50),
         top_p=params.get("top_p", 0.85),
+        # length_penalty only applies under beam search; num_beams>1 turns it on.
+        # num_beams=1 keeps the default sampling path, leaving length_penalty inert.
+        length_penalty=float(params.get("length_penalty", 1.0)),
+        num_beams=int(params.get("num_beams", 1)),
         # Preview text can run to 500 chars; XTTS degrades past its per-language
-        # sentence limit (~250 chars for English) when fed unsplit text. Always
-        # split — each sentence gets its own prosody contour.
-        enable_text_splitting=True,
+        # sentence limit (~250 chars for English) when fed unsplit text. Splitting
+        # gives each sentence its own prosody contour — on by default (needs spacy,
+        # pinned in requirements) but exposed so it can be disabled per take.
+        enable_text_splitting=params.get("enable_text_splitting", True),
     )
     wav = torch.tensor(out["wav"]).unsqueeze(0)
     # inference() returns audio at the decoder's output rate (24 kHz for

@@ -8,12 +8,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from audio import get_duration, slice_wav
 from db import project_dir, require_project, utc_now
 from errors import AppError
 from state_machines import validate_segment_transition, BULK_ACTION_SOURCES
-from status import invalidate_export
+from status import invalidate_export, recompute_project_status
 
 router = APIRouter(prefix="/projects/{project_id}/segments", tags=["segments"])
 
@@ -281,6 +282,111 @@ async def patch_segment(project_id: str, segment_id: str, body: SegmentPatch):
     # Any approval or transcript change makes a prior export stale (the manifest
     # is derived from approvals + COALESCE(transcript_edited, transcript)).
     invalidate_export(project_id)
+
+    updated = _fetch_segment(conn, project_id, segment_id)
+    return _serialize_segment(updated, project_id)
+
+
+# Minimum length a segment may be trimmed to. Below this the cleanup service
+# auto-rejects it as silent-after-trim anyway, so reject the edit up front.
+MIN_SEGMENT_SECS = 0.1
+
+
+class SegmentBoundaries(BaseModel):
+    # Absolute new boundaries in seconds (the frontend computes these from the
+    # current values ± the user's nudge amount). Either may be omitted to leave
+    # that edge unchanged.
+    start_secs: Optional[float] = Field(default=None, ge=0.0)
+    end_secs: Optional[float] = Field(default=None, gt=0.0)
+
+
+@router.post("/{segment_id}/boundaries")
+async def adjust_segment_boundaries(project_id: str, segment_id: str, body: SegmentBoundaries):
+    """Re-cut a segment's WAV from the source's separated-vocals file with new
+    start/end boundaries — the trim/extend control in the review detail panel.
+
+    The raw slice was cut once at diarisation time, but the full vocals WAV is
+    retained, so extending a boundary recovers real neighbouring audio (a word
+    the diariser clipped), and trimming drops bleed from an adjacent speaker.
+    Invalidates the cleaned cache (the old clean is stale) and any prior export.
+    The transcript is left as-is but flagged ``boundary_edited`` — re-transcribe
+    if the recut changed the words.
+    """
+    conn = require_project(project_id)
+    seg = _fetch_segment(conn, project_id, segment_id)
+    if seg is None:
+        raise AppError(404, "not_found", "Segment not found.")
+    if body.start_secs is None and body.end_secs is None:
+        raise AppError(422, "no_change", "Provide start_secs and/or end_secs.")
+
+    new_start = body.start_secs if body.start_secs is not None else seg["start_secs"]
+    new_end = body.end_secs if body.end_secs is not None else seg["end_secs"]
+
+    src = conn.execute(
+        "SELECT vocals_path FROM sources WHERE id=? AND project_id=?",
+        (seg["source_id"], project_id),
+    ).fetchone()
+    if src is None or not src["vocals_path"]:
+        raise AppError(
+            409, "vocals_unavailable",
+            "The source's separated audio is not available; cannot re-cut this segment.",
+        )
+    pdir = project_dir(project_id)
+    vocals = pdir / src["vocals_path"]
+    if not vocals.exists():
+        raise AppError(
+            409, "vocals_unavailable",
+            "The source's separated audio file is missing on disk.",
+        )
+
+    # Clamp to the available audio. get_duration returns 0.0 when it cannot
+    # measure the file — in that case skip the upper clamp rather than reject a
+    # healthy edit (ffmpeg will still stop at end-of-file).
+    total = await get_duration(str(vocals))
+    new_start = max(0.0, new_start)
+    if total > 0:
+        new_end = min(new_end, total)
+    if new_end - new_start < MIN_SEGMENT_SECS:
+        raise AppError(
+            422, "invalid_boundaries",
+            f"Adjusted segment must be at least {MIN_SEGMENT_SECS:g}s long.",
+            {"start_secs": new_start, "end_secs": new_end},
+        )
+
+    raw = pdir / seg["raw_path"]
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    tmp = raw.with_suffix(".tmp.wav")
+    ok = await slice_wav(str(vocals), str(tmp), new_start, new_end)
+    if not ok:
+        tmp.unlink(missing_ok=True)
+        raise AppError(500, "reslice_failed", "Failed to re-cut the segment audio.")
+    tmp.replace(raw)
+
+    flags = json.loads(seg["flags"]) if seg["flags"] else []
+    if "boundary_edited" not in flags:
+        flags.append("boundary_edited")
+
+    old_cleaned = seg["cleaned_path"]
+    conn.execute(
+        """
+        UPDATE segments
+        SET start_secs=?, end_secs=?, cleaned_path=NULL, flags=?, updated_at=?
+        WHERE id=?
+        """,
+        (new_start, new_end, json.dumps(flags), utc_now(), segment_id),
+    )
+    conn.commit()
+
+    # The cached cleaned WAV was cut from the old boundaries — drop it so the
+    # next dataset build re-cleans from the new raw slice.
+    if old_cleaned:
+        try:
+            (pdir / old_cleaned).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    invalidate_export(project_id)
+    recompute_project_status(project_id)
 
     updated = _fetch_segment(conn, project_id, segment_id)
     return _serialize_segment(updated, project_id)

@@ -102,8 +102,11 @@ describe('CompareSettingsModal', () => {
       params: {
         target_lufs: -20,
         highpass_hz: 80,
+        do_trim_silence: true,
         silence_threshold_db: -50,
         silence_min_duration_secs: 0.1,
+        silence_pad_start_secs: 0.05,
+        silence_pad_end_secs: 0.2,
       },
       target: { segment_id: 'seg-1' },
     })
@@ -112,8 +115,11 @@ describe('CompareSettingsModal', () => {
       params: {
         target_lufs: -20,
         highpass_hz: 120,
+        do_trim_silence: true,
         silence_threshold_db: -50,
         silence_min_duration_secs: 0.1,
+        silence_pad_start_secs: 0.05,
+        silence_pad_end_secs: 0.2,
       },
       target: { segment_id: 'seg-1' },
     })
@@ -134,8 +140,11 @@ describe('CompareSettingsModal', () => {
     expect(patchProject).toHaveBeenCalledWith('p1', {
       target_lufs: -20,
       highpass_hz: 120,
+      do_trim_silence: true,
       silence_threshold_db: -50,
       silence_min_duration_secs: 0.1,
+      silence_pad_start_secs: 0.05,
+      silence_pad_end_secs: 0.2,
     })
     expect(await screen.findByText('Saved as project settings.')).toBeInTheDocument()
   })

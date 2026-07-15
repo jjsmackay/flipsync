@@ -97,8 +97,11 @@ def _capture():
 VALID_PARAMS = {
     "target_lufs": -20.0,
     "highpass_hz": 100,
+    "do_trim_silence": True,
     "silence_threshold_db": -40.0,
     "silence_min_duration_secs": 0.2,
+    "silence_pad_start_secs": 0.05,
+    "silence_pad_end_secs": 0.2,
 }
 
 

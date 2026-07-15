@@ -308,6 +308,7 @@ class TestSynthesise:
         assert mock_syn.call_args.kwargs["params"] == {
             "temperature": 0.9, "speed": 1.2, "repetition_penalty": 5.0,
             "top_k": 30, "top_p": 0.7,
+            "length_penalty": 1.0, "num_beams": 1, "enable_text_splitting": True,
         }
 
     def test_sampling_params_default_when_omitted(self, client, tmp_path):
@@ -324,6 +325,7 @@ class TestSynthesise:
         assert mock_syn.call_args.kwargs["params"] == {
             "temperature": 0.65, "speed": 1.0, "repetition_penalty": 10.0,
             "top_k": 50, "top_p": 0.85,
+            "length_penalty": 1.0, "num_beams": 1, "enable_text_splitting": True,
         }
 
     def test_synthesise_missing_reference_fails(self, client, tmp_path):

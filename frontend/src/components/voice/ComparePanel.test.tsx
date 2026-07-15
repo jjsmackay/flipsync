@@ -31,7 +31,10 @@ const seg: Segment = {
 
 const paginated = { segments: [seg], pagination: { page: 1, per_page: 50, total: 1, pages: 1 } }
 
-const SAMPLING = { temperature: 0.9, speed: 1.1, top_k: 30, top_p: 0.7, repetition_penalty: 8 }
+const SAMPLING = {
+  temperature: 0.9, speed: 1.1, top_k: 30, top_p: 0.7, repetition_penalty: 8,
+  length_penalty: 1, num_beams: 1, enable_text_splitting: true,
+}
 
 function preview(over: Partial<Preview>): Preview {
   return {
@@ -169,7 +172,8 @@ describe('ComparePanel', () => {
     await waitFor(() => expect(createPreview).toHaveBeenCalled())
     const [, body] = vi.mocked(createPreview).mock.calls[0]
     expect(body).toMatchObject({ segment_id: 'seg-1', model_id: 'model-gpt' })
-    for (const key of ['temperature', 'speed', 'repetition_penalty', 'top_k', 'top_p']) {
+    for (const key of ['temperature', 'speed', 'repetition_penalty', 'top_k', 'top_p',
+                       'length_penalty', 'num_beams', 'enable_text_splitting']) {
       expect(body).not.toHaveProperty(key)
     }
   })

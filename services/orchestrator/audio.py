@@ -48,3 +48,32 @@ async def get_duration(path: str) -> float:
 
     # Fallback: WAV header read, offloaded to a thread to stay non-blocking.
     return await asyncio.to_thread(wave_duration, path)
+
+
+async def slice_wav(src: str, dst: str, start_secs: float, end_secs: float) -> bool:
+    """Re-slice [start_secs, end_secs] of ``src`` into ``dst`` via ffmpeg.
+
+    Used to re-cut a segment's raw WAV from the source's separated-vocals file
+    when a user nudges its boundaries. Input-side ``-ss`` + ``-t`` is
+    sample-accurate for WAV (every sample is a keyframe) and re-encodes to
+    pcm_s16le so the output matches what diarisation originally wrote. Returns
+    True on success; False if ffmpeg is missing, errors, or the range is empty.
+    """
+    duration = end_secs - start_secs
+    if duration <= 0:
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y",
+            "-ss", f"{start_secs:.6f}",
+            "-i", src,
+            "-t", f"{duration:.6f}",
+            "-c:a", "pcm_s16le",
+            dst,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+    except (FileNotFoundError, OSError):
+        return False
+    return proc.returncode == 0

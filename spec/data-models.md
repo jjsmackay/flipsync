@@ -68,6 +68,8 @@ CREATE TABLE projects (
     highpass_hz               INTEGER NOT NULL DEFAULT 80,         -- cleanup high-pass cutoff
     silence_threshold_db      REAL NOT NULL DEFAULT -50.0,         -- cleanup silence-trim threshold
     silence_min_duration_secs REAL NOT NULL DEFAULT 0.1,
+    silence_pad_start_secs    REAL NOT NULL DEFAULT 0.05,          -- silence re-added to head after trim (clean attack)
+    silence_pad_end_secs      REAL NOT NULL DEFAULT 0.2,           -- silence re-added to tail after trim (clean decay)
     xtts_epochs               INTEGER NOT NULL DEFAULT 10,         -- fine-tune hyperparameters (per-run Train params override)
     xtts_batch_size           INTEGER NOT NULL DEFAULT 3,
     xtts_grad_accum           INTEGER NOT NULL DEFAULT 1,
