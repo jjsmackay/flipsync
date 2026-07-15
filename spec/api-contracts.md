@@ -674,6 +674,22 @@ Boundaries are clamped to `[0, vocals_duration]`. The re-cut segment must be at 
 
 ---
 
+#### `POST /projects/{project_id}/segments/stitch`
+
+Concatenate 2+ segments into a single clip and replace them with one stitched segment. The segments' raw WAVs are joined end-to-end in the order given (cross-source allowed; each is normalised so differing rates/channels concat cleanly — a seam remains at each join). Use when diarisation split one utterance, or to assemble specific lines into one clip.
+
+**Request** (`segment_ids` length ≥ 2, distinct, ordered):
+```json
+{ "segment_ids": ["id-a", "id-b"] }
+```
+
+The merged segment: `status: "pending"` with a `stitched` flag; transcript = the inputs' effective transcripts space-joined in order; `match_confidence` = the minimum of the inputs; synthetic `start_secs`/`end_secs` (first segment's start + total duration, since the audio is no longer a contiguous slice of one source). The originals' rows and WAVs are removed and any prior export is invalidated.
+
+**Response 200:** The new merged segment object.
+**Response 404** if any `segment_id` is missing. **422** `duplicate_segment` (ids not distinct) or fewer than 2 ids. **409** `audio_unavailable` if a segment's raw WAV is missing on disk.
+
+---
+
 #### `POST /projects/{project_id}/segments/bulk`
 
 Apply an action to multiple segments at once.

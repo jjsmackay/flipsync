@@ -381,6 +381,16 @@ export function adjustSegmentBoundaries(
   })
 }
 
+/** Concatenate 2+ segments (in the given order) into one stitched segment,
+ *  replacing the originals. Returns the new merged segment. */
+export function stitchSegments(projectId: string, segmentIds: string[]): Promise<Segment> {
+  return request(`/projects/${projectId}/segments/stitch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ segment_ids: segmentIds }),
+  })
+}
+
 export function bulkSegmentAction(
   projectId: string,
   req: BulkSegmentRequest,

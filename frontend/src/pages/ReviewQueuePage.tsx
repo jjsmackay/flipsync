@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useFilterState } from '../hooks/useFilterState'
 import { useProjectPolling } from '../hooks/useProjectPolling'
-import { getSegments, patchSegment } from '../api/client'
+import { getSegments, patchSegment, stitchSegments } from '../api/client'
 import type { Segment, SegmentStatus, PaginatedSegments } from '../types/api'
 import { ALL_SEGMENT_STATUSES_CSV } from '../constants'
 import { FilterBar } from '../components/review/FilterBar'
@@ -33,6 +33,9 @@ export function ReviewQueuePage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [timelineSegments, setTimelineSegments] = useState<Segment[]>([])
   const [refreshKey, setRefreshKey] = useState(0)
+  // Ordered selection for concatenating segments into one stitched clip.
+  const [stitchSel, setStitchSel] = useState<{ id: string; label: string }[]>([])
+  const [stitching, setStitching] = useState(false)
 
   // Project data (for ExportButton, sources list)
   const { project, refetch: refetchProject } = useProjectPolling(projectId!)
@@ -195,6 +198,31 @@ export function ReviewQueuePage() {
     setSegments(prev => prev.map(s => s.id === updated.id ? { ...s, ...updated } : s))
   }
 
+  function toggleStitch(seg: Segment) {
+    setStitchSel(prev => {
+      if (prev.some(x => x.id === seg.id)) return prev.filter(x => x.id !== seg.id)
+      const t = (seg.transcript_edited ?? seg.transcript ?? '').trim()
+      const label = t ? (t.length > 40 ? `${t.slice(0, 40)}…` : t) : formatDuration(seg.start_secs)
+      return [...prev, { id: seg.id, label }]
+    })
+  }
+
+  async function handleStitch() {
+    if (stitchSel.length < 2 || stitching) return
+    setStitching(true)
+    setActionError(null)
+    try {
+      const merged = await stitchSegments(projectId!, stitchSel.map(s => s.id))
+      setStitchSel([])
+      setRefreshKey(k => k + 1)
+      setSelectedId(merged.id)
+    } catch (e) {
+      setActionError(errorMessage(e, 'Stitch failed'))
+    } finally {
+      setStitching(false)
+    }
+  }
+
   const sources = project?.stats.source_coverage ?? []
   // Axis spans the source: use the furthest segment end across all fetched segments.
   const timelineSpan = timelineSegments.reduce((max, s) => Math.max(max, s.end_secs), 0)
@@ -343,7 +371,37 @@ export function ReviewQueuePage() {
         </div>
 
         {/* Right: detail */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {stitchSel.length > 0 && (
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/20 shrink-0 flex-wrap">
+              <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300">Stitch ({stitchSel.length}):</span>
+              {stitchSel.map((s, i) => (
+                <span key={s.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-white dark:bg-gray-800 border border-indigo-200 dark:border-indigo-700 text-gray-600 dark:text-gray-300">
+                  <span className="text-indigo-400">{i + 1}.</span>
+                  {s.label}
+                  <button type="button" onClick={() => setStitchSel(prev => prev.filter(x => x.id !== s.id))} className="text-gray-400 hover:text-red-600" title="Remove">×</button>
+                </span>
+              ))}
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setStitchSel([])}
+                  className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleStitch()}
+                  disabled={stitchSel.length < 2 || stitching}
+                  title="Concatenate the selected segments (in order) into one clip."
+                  className="px-3 py-1 rounded text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {stitching ? 'Stitching…' : `Stitch ${stitchSel.length}`}
+                </button>
+              </div>
+            </div>
+          )}
           {selectedSegment ? (
             <SegmentDetail
               projectId={projectId!}
@@ -351,6 +409,8 @@ export function ReviewQueuePage() {
               onStatusChange={handleStatusChange}
               onTranscriptChange={handleTranscriptChange}
               onSegmentUpdate={handleSegmentUpdate}
+              inStitch={stitchSel.some(x => x.id === selectedSegment.id)}
+              onToggleStitch={() => toggleStitch(selectedSegment)}
               onFocusChange={setShortcutsEnabled}
               showSpectrogram={showSpectrogram}
               onSpectrogramToggle={() => setShowSpectrogram(s => !s)}

@@ -15,6 +15,8 @@ interface SegmentDetailProps {
   onStatusChange: (id: string, status: SegmentStatus) => void
   onTranscriptChange: (id: string, transcript: string | null) => void
   onSegmentUpdate: (segment: Segment) => void
+  inStitch: boolean
+  onToggleStitch: () => void
   onFocusChange: (focused: boolean) => void
   showSpectrogram: boolean
   onSpectrogramToggle: () => void
@@ -34,6 +36,8 @@ export function SegmentDetail({
   onStatusChange,
   onTranscriptChange,
   onSegmentUpdate,
+  inStitch,
+  onToggleStitch,
   onFocusChange,
   showSpectrogram,
   onSpectrogramToggle,
@@ -382,6 +386,18 @@ export function SegmentDetail({
                 {adjusting ? 'Re-cutting…' : 'Apply'}
               </button>
               <span className="text-xs text-gray-400 dark:text-gray-500">+ extends · − trims</span>
+              <button
+                type="button"
+                onClick={onToggleStitch}
+                title="Queue this segment to be concatenated with others into one clip."
+                className={`ml-auto px-2 py-1 rounded text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                  inStitch
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30'
+                }`}
+              >
+                {inStitch ? '✓ In stitch' : '+ Stitch'}
+              </button>
             </div>
           </>
         )}

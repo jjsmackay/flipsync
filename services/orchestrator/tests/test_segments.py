@@ -575,3 +575,110 @@ class TestAdjustBoundaries:
         resp = client.post(f"/projects/{project}/segments/{uuid.uuid4()}/boundaries",
                            json={"start_secs": 1.0})
         assert resp.status_code == 404
+
+
+class TestStitchSegments:
+    """POST /segments/stitch concatenates 2+ segments into one, replacing them."""
+
+    def _seg_with_raw(self, conn, project, pdir, source_id, *, start, end, transcript, conf=0.9):
+        sid = _insert_segment(conn, project, source_id, start=start, end=end,
+                              transcript=transcript, confidence=conf)
+        raw = pdir / "segments" / "raw"
+        raw.mkdir(parents=True, exist_ok=True)
+        (raw / f"{sid}.wav").write_bytes(b"RIFFraw")
+        return sid
+
+    async def _fake_concat(self, srcs, dst):
+        Path(dst).write_bytes(b"RIFFmerged")
+        return True
+
+    def test_stitch_merges_and_replaces(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        src = _insert_source(conn, project)
+        a = self._seg_with_raw(conn, project, pdir, src, start=1.0, end=4.0, transcript="First line.", conf=0.8)
+        b = self._seg_with_raw(conn, project, pdir, src, start=10.0, end=12.0, transcript="Second line.", conf=0.6)
+
+        with patch("routers.segments.concat_wavs", new=AsyncMock(side_effect=self._fake_concat)):
+            resp = client.post(f"/projects/{project}/segments/stitch",
+                               json={"segment_ids": [a, b]})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] not in (a, b)
+        assert body["status"] == "pending"
+        assert "stitched" in body["flags"]
+        assert body["transcript"] == "First line. Second line."
+        assert body["start_secs"] == 1.0
+        assert body["duration_secs"] == 5.0        # 3.0 + 2.0
+        assert body["match_confidence"] == 0.6      # min of inputs
+        # Originals gone, merged present with its WAV on disk.
+        assert conn.execute("SELECT COUNT(*) FROM segments WHERE id IN (?,?)", (a, b)).fetchone()[0] == 0
+        assert (pdir / "segments" / "raw" / f"{body['id']}.wav").exists()
+        assert conn.execute("SELECT exported_at FROM projects WHERE id=?", (project,)).fetchone()["exported_at"] is None
+
+    def test_stitch_preserves_order(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        src = _insert_source(conn, project)
+        a = self._seg_with_raw(conn, project, pdir, src, start=0, end=2, transcript="Alpha.")
+        b = self._seg_with_raw(conn, project, pdir, src, start=0, end=2, transcript="Beta.")
+        with patch("routers.segments.concat_wavs", new=AsyncMock(side_effect=self._fake_concat)):
+            resp = client.post(f"/projects/{project}/segments/stitch", json={"segment_ids": [b, a]})
+        assert resp.json()["transcript"] == "Beta. Alpha."
+
+    def test_stitch_cross_source(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        s1 = _insert_source(conn, project)
+        s2 = _insert_source(conn, project)
+        a = self._seg_with_raw(conn, project, pdir, s1, start=0, end=2, transcript="One.")
+        b = self._seg_with_raw(conn, project, pdir, s2, start=0, end=3, transcript="Two.")
+        with patch("routers.segments.concat_wavs", new=AsyncMock(side_effect=self._fake_concat)):
+            resp = client.post(f"/projects/{project}/segments/stitch", json={"segment_ids": [a, b]})
+        assert resp.status_code == 200
+        # source_id inherits the first segment's.
+        merged_id = resp.json()["id"]
+        assert conn.execute("SELECT source_id FROM segments WHERE id=?", (merged_id,)).fetchone()["source_id"] == s1
+
+    def test_stitch_missing_segment_404(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        src = _insert_source(conn, project)
+        a = self._seg_with_raw(conn, project, pdir, src, start=0, end=2, transcript="x")
+        resp = client.post(f"/projects/{project}/segments/stitch",
+                           json={"segment_ids": [a, str(uuid.uuid4())]})
+        assert resp.status_code == 404
+
+    def test_stitch_duplicate_422(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        src = _insert_source(conn, project)
+        a = self._seg_with_raw(conn, project, pdir, src, start=0, end=2, transcript="x")
+        resp = client.post(f"/projects/{project}/segments/stitch", json={"segment_ids": [a, a]})
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "duplicate_segment"
+
+    def test_stitch_requires_two_422(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        pdir = db.project_dir(project)
+        src = _insert_source(conn, project)
+        a = self._seg_with_raw(conn, project, pdir, src, start=0, end=2, transcript="x")
+        resp = client.post(f"/projects/{project}/segments/stitch", json={"segment_ids": [a]})
+        assert resp.status_code == 422
+
+    def test_stitch_missing_audio_409(self, client, project):
+        import db
+        conn = db.get_conn(project)
+        src = _insert_source(conn, project)
+        # Segments with no raw file on disk.
+        a = _insert_segment(conn, project, src, start=0, end=2, transcript="x")
+        b = _insert_segment(conn, project, src, start=0, end=2, transcript="y")
+        resp = client.post(f"/projects/{project}/segments/stitch", json={"segment_ids": [a, b]})
+        assert resp.status_code == 409
+        assert resp.json()["error"] == "audio_unavailable"

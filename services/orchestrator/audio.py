@@ -77,3 +77,40 @@ async def slice_wav(src: str, dst: str, start_secs: float, end_secs: float) -> b
     except (FileNotFoundError, OSError):
         return False
     return proc.returncode == 0
+
+
+async def concat_wavs(srcs: list[str], dst: str) -> bool:
+    """Concatenate ``srcs`` end-to-end into ``dst`` via ffmpeg (in order).
+
+    Used to stitch multiple review segments into one clip. Each input is first
+    normalised to a common format (44100 Hz stereo) so clips cut from different
+    sources — which may differ in rate/channels — concat without error; cleanup
+    later downmixes to the dataset's 22050/mono. A hard seam remains at each
+    join (that's inherent to concatenation). Returns True on success.
+    """
+    if len(srcs) < 2:
+        return False
+    inputs: list[str] = []
+    for s in srcs:
+        inputs += ["-i", s]
+    n = len(srcs)
+    norm = "".join(
+        f"[{i}:a]aformat=sample_rates=44100:channel_layouts=stereo[a{i}];"
+        for i in range(n)
+    )
+    joined = "".join(f"[a{i}]" for i in range(n))
+    filter_complex = f"{norm}{joined}concat=n={n}:v=0:a=1[out]"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", *inputs,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-c:a", "pcm_s16le",
+            dst,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+    except (FileNotFoundError, OSError):
+        return False
+    return proc.returncode == 0

@@ -4,13 +4,15 @@ This is Wave 4 scope but included in Wave 1 to allow endpoint tests.
 """
 
 import json
+import os
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from audio import get_duration, slice_wav
+from audio import concat_wavs, get_duration, slice_wav
 from db import project_dir, require_project, utc_now
 from errors import AppError
 from state_machines import validate_segment_transition, BULK_ACTION_SOURCES
@@ -390,6 +392,99 @@ async def adjust_segment_boundaries(project_id: str, segment_id: str, body: Segm
 
     updated = _fetch_segment(conn, project_id, segment_id)
     return _serialize_segment(updated, project_id)
+
+
+class StitchRequest(BaseModel):
+    # Segments to concatenate, in the order they should play. 2+ required.
+    segment_ids: list[str] = Field(min_length=2)
+
+
+@router.post("/stitch")
+async def stitch_segments(project_id: str, body: StitchRequest):
+    """Concatenate 2+ segments into one clip (in the given order) and replace
+    them with a single stitched segment.
+
+    Cross-source is allowed — each clip is normalised and joined end-to-end
+    (a seam remains at each join; that's inherent to concatenation). The merged
+    segment starts ``pending`` with a ``stitched`` flag and the space-joined
+    transcript; the originals' rows and WAVs are removed. Invalidates any prior
+    export. Its start/end are synthetic (first segment's start + total duration)
+    since the audio is no longer a contiguous slice of one source.
+    """
+    conn = require_project(project_id)
+
+    if len(set(body.segment_ids)) != len(body.segment_ids):
+        raise AppError(422, "duplicate_segment", "segment_ids must be distinct.")
+
+    segs = []
+    for sid in body.segment_ids:
+        s = _fetch_segment(conn, project_id, sid)
+        if s is None:
+            raise AppError(404, "not_found", f"Segment {sid} not found.")
+        segs.append(s)
+
+    pdir = project_dir(project_id)
+    srcs = [str(pdir / s["raw_path"]) for s in segs]
+    for p in srcs:
+        if not os.path.exists(p):
+            raise AppError(409, "audio_unavailable", "A segment's audio is missing on disk.")
+
+    new_id = str(uuid.uuid4())
+    raw_rel = f"segments/raw/{new_id}.wav"
+    raw_abs = pdir / raw_rel
+    raw_abs.parent.mkdir(parents=True, exist_ok=True)
+    tmp = raw_abs.with_suffix(".tmp.wav")
+    if not await concat_wavs(srcs, str(tmp)):
+        tmp.unlink(missing_ok=True)
+        raise AppError(500, "stitch_failed", "Failed to concatenate the segment audio.")
+    tmp.replace(raw_abs)
+
+    total_dur = sum((s["duration_secs"] or 0.0) for s in segs)
+    start = segs[0]["start_secs"]
+    end = start + total_dur
+    parts = [
+        t for s in segs
+        if (t := (s["transcript_edited"] or s["transcript"] or "").strip())
+    ]
+    transcript = " ".join(parts) or None
+    confs = [s["match_confidence"] for s in segs if s["match_confidence"] is not None]
+    match_conf = min(confs) if confs else None
+    now = utc_now()
+
+    conn.execute(
+        """
+        INSERT INTO segments
+            (id, project_id, source_id, raw_path, start_secs, end_secs,
+             speaker_label, match_confidence, transcript, transcript_confidence,
+             status, flags, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        """,
+        (new_id, project_id, segs[0]["source_id"], raw_rel, start, end,
+         segs[0]["speaker_label"], match_conf, transcript, None,
+         json.dumps(["stitched"]), now, now),
+    )
+    placeholders = ",".join("?" * len(body.segment_ids))
+    conn.execute(
+        f"DELETE FROM segments WHERE project_id=? AND id IN ({placeholders})",
+        (project_id, *body.segment_ids),
+    )
+    conn.commit()
+
+    # Remove the originals' files only after the replacement committed. The
+    # merged raw is a new id, so this never touches the stitched clip.
+    for s in segs:
+        for rel in (s["raw_path"], s["cleaned_path"], s["export_path"]):
+            if rel:
+                try:
+                    (pdir / rel).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    invalidate_export(project_id)
+    recompute_project_status(project_id)
+
+    merged = _fetch_segment(conn, project_id, new_id)
+    return _serialize_segment(merged, project_id)
 
 
 class BulkFilter(BaseModel):
