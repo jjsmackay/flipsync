@@ -349,8 +349,10 @@ export interface CreateModelRequest {
 // ---- Previews (v1.5) ----
 
 export interface PreviewConditioning {
-  source?: 'reference_clip' | 'segments_raw' | 'segments_cleaned'
+  source?: 'reference_clip' | 'segments_raw' | 'segments_cleaned' | 'custom'
   segment_count?: number
+  /** For source='custom': id from POST /previews/conditioning. */
+  clip_id?: string
 }
 
 /** The sampling knobs a preview/comparison take was rendered with. Values are

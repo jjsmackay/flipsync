@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import tarfile
@@ -2077,7 +2078,7 @@ async def _handle_finetune(
 
 def _resolve_conditioning(
     conn, project_row: Any, project_id: str, source: str | None, segment_count: int,
-    exclude_segment_id: str | None = None,
+    exclude_segment_id: str | None = None, clip_id: str | None = None,
 ) -> tuple[str, list[str]]:
     """Resolve a conditioning source to absolute WAV paths on /data.
 
@@ -2089,6 +2090,8 @@ def _resolve_conditioning(
       auto_rejected, duration 2-12 s → raw_path
     - ``segments_cleaned`` → same query + cleaned audio present, preferring
       the dataset cache (cleaned_path) and falling back to export_path
+    - ``custom`` → a one-off uploaded clip (``clip_id``), inference-only; never
+      the project reference / diarisation gate
     - ``None`` → best available: cleaned, then raw, then reference
 
     When ``exclude_segment_id`` is set, that segment is excluded from
@@ -2103,6 +2106,16 @@ def _resolve_conditioning(
         ref = project_row["reference_path"]
         if ref:
             return "reference_clip", [_abs(ref)]
+        return None
+
+    def try_custom():
+        # clip_id is a bare uuid4 hex; reject anything else so it can't escape
+        # the conditioning dir. The file may have been swept (24 h TTL).
+        if not clip_id or not re.fullmatch(r"[0-9a-f]{32}", clip_id):
+            return None
+        abs_path = _abs(f"conditioning/{clip_id}.wav")
+        if os.path.exists(abs_path):
+            return "custom", [abs_path]
         return None
 
     def try_segments(cleaned: bool):
@@ -2135,6 +2148,11 @@ def _resolve_conditioning(
             return ("segments_cleaned" if cleaned else "segments_raw"), [_abs(r["p"]) for r in rows]
         return None
 
+    if source == "custom":
+        res = try_custom()
+        if res:
+            return res
+        raise LookupError("custom conditioning clip not found (missing clip_id or expired)")
     if source == "reference_clip":
         res = try_reference()
         if res:
@@ -2190,6 +2208,7 @@ async def _handle_preview(
     cond = params.get("conditioning") or {}
     source = cond.get("source")
     segment_count = cond.get("segment_count", 5)
+    clip_id = cond.get("clip_id")
 
     engine = "xtts"
     checkpoint_dir = None
@@ -2219,7 +2238,7 @@ async def _handle_preview(
         try:
             _resolved, reference_wavs = _resolve_conditioning(
                 conn, project, project_id, source, segment_count,
-                exclude_segment_id=params.get("segment_id"),
+                exclude_segment_id=params.get("segment_id"), clip_id=clip_id,
             )
         except LookupError as exc:
             _fail_job(project_id, job_id, f"conditioning_unavailable: {exc}")

@@ -1,23 +1,37 @@
 """Previews API (v1.5) — XTTS-v2 speech synthesis previews."""
 
 import json
+import os
+import time
+import uuid
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Response
+import aiofiles
+from fastapi import APIRouter, File, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 import service_client
+from audio import get_duration
 from db import project_dir, require_project
 from errors import AppError
 from jobs import enqueue, _resolve_conditioning
 
 router = APIRouter(prefix="/projects/{project_id}/previews", tags=["previews"])
 
+CHUNK_SIZE = 1024 * 1024  # 1 MB
+# XTTS conditioning wants a few seconds of clean speech; below this it's not
+# worth cloning from. No upper cap — XTTS truncates internally.
+MIN_CONDITIONING_SECS = 2.0
+# Custom conditioning clips are inference scratch; sweep old ones on upload.
+CONDITIONING_TTL_SECS = 24 * 3600
+
 
 class ConditioningSpec(BaseModel):
-    source: Optional[Literal["reference_clip", "segments_raw", "segments_cleaned"]] = None
+    source: Optional[Literal["reference_clip", "segments_raw", "segments_cleaned", "custom"]] = None
     segment_count: int = 5
+    # For source='custom': the id returned by POST .../previews/conditioning.
+    clip_id: Optional[str] = None
 
 
 class CreatePreviewRequest(BaseModel):
@@ -47,6 +61,59 @@ class CreatePreviewRequest(BaseModel):
         if self.text is None and self.segment_id is None:
             raise ValueError("either text or segment_id is required")
         return self
+
+
+def _sweep_stale_conditioning(project_id: str) -> None:
+    """Best-effort removal of custom conditioning clips older than the TTL."""
+    d = project_dir(project_id) / "conditioning"
+    if not d.exists():
+        return
+    cutoff = time.time() - CONDITIONING_TTL_SECS
+    for f in d.glob("*.wav"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+
+
+@router.post("/conditioning", status_code=201)
+async def upload_conditioning_clip(project_id: str, file: UploadFile = File(...)):
+    """Upload a one-off clip to condition XTTS synthesis on, without touching
+    the project reference (which gates diarisation). Reference it in a preview
+    with ``conditioning: {source: 'custom', clip_id: <returned id>}``. Clips are
+    inference scratch — best-effort swept after 24 h."""
+    require_project(project_id)
+    pdir = project_dir(project_id)
+    dest_dir = pdir / "conditioning"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_conditioning(project_id)
+
+    clip_id = uuid.uuid4().hex
+    tmp = dest_dir / f".{clip_id}.tmp"
+    dest = dest_dir / f"{clip_id}.wav"
+    try:
+        async with aiofiles.open(tmp, "wb") as out:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                await out.write(chunk)
+
+        duration = await get_duration(str(tmp))
+        if duration < MIN_CONDITIONING_SECS:
+            raise AppError(
+                422, "conditioning_too_short",
+                f"Conditioning clip must be at least {MIN_CONDITIONING_SECS} seconds. "
+                f"Provided clip is {duration:.1f} seconds.",
+                {"duration_secs": duration, "minimum_secs": MIN_CONDITIONING_SECS},
+            )
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+    return {"clip_id": clip_id, "duration_secs": duration}
 
 
 @router.post("", status_code=202)
@@ -103,7 +170,7 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
         try:
             _resolve_conditioning(
                 conn, project, project_id, body.conditioning.source, body.conditioning.segment_count,
-                exclude_segment_id=body.segment_id,
+                exclude_segment_id=body.segment_id, clip_id=body.conditioning.clip_id,
             )
         except LookupError as exc:
             raise AppError(
@@ -133,6 +200,7 @@ async def create_preview(project_id: str, body: CreatePreviewRequest):
             "conditioning": {
                 "source": body.conditioning.source,
                 "segment_count": body.conditioning.segment_count,
+                "clip_id": body.conditioning.clip_id,
             },
             **sampling,
         },

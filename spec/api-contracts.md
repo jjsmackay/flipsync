@@ -856,8 +856,9 @@ Either `text` or `segment_id` is required. `segment_id` drives the A/B compare f
 | `text` | string | — | 1–500 characters. Required unless `segment_id` is set. |
 | `segment_id` | UUID or null | null | Compare against this segment: synthesises its effective transcript and excludes it from segment conditioning pools. Ignores `text` when set. Required unless `text` is set. |
 | `model_id` | string or null | null | Fine-tuned model to synthesise with; null = base model zero-shot |
-| `conditioning.source` | string | best available | `reference_clip`, `segments_raw`, or `segments_cleaned`. Default resolves to the best available stage (cleaned > raw > reference) |
+| `conditioning.source` | string | best available | `reference_clip`, `segments_raw`, `segments_cleaned`, or `custom`. Default resolves to the best available stage (cleaned > raw > reference) |
 | `conditioning.segment_count` | int | 5 | Segment sources only: top-N segments by match confidence, duration 2–12 s |
+| `conditioning.clip_id` | string or null | null | For `source: "custom"` only — the id from `POST .../previews/conditioning`. Conditions XTTS on a one-off uploaded clip, inference-only, without touching the diarisation reference. |
 | `temperature` | float | 0.65 | XTTS sampling temperature (>0, ≤2). Higher = more varied delivery. |
 | `speed` | float | 1.0 | Speaking-rate multiplier (0.25–2). Real rate control, not resampling. |
 | `repetition_penalty` | float | 10.0 | 1–20. Raise to kill stutters, repeated syllables, and trailing silences. |
@@ -869,8 +870,19 @@ All sampling knobs are per-run only — never stored on the project, and the tab
 
 The orchestrator resolves the conditioning source to absolute WAV paths (XTTS previews only). The vocal-separation stage is not an option: vocal stems are whole-file, not speaker-specific.
 
-**Response 409** `conditioning_unavailable` if the requested source has no audio yet (e.g. `segments_raw` before diarisation has run). XTTS previews only — GPT-SoVITS models carry their own bundled reference, so this check is skipped for them.
+**Response 409** `conditioning_unavailable` if the requested source has no audio yet (e.g. `segments_raw` before diarisation has run, or a `custom` `clip_id` that is missing/expired). XTTS previews only — GPT-SoVITS models carry their own bundled reference, so this check is skipped for them.
 **Response 409** `model_not_ready` if `model_id` refers to a model that is not `ready`.
+
+---
+
+#### `POST /projects/{project_id}/previews/conditioning`
+
+Upload a one-off clip to condition XTTS synthesis on — inference-only, distinct from the project reference clip (which gates diarisation). Multipart (`file`), streamed to disk. Returns a `clip_id` to pass as `conditioning.clip_id` with `source: "custom"`. Clips are inference scratch under `projects/{id}/conditioning/` and are best-effort swept after 24 h.
+
+**Request:** `multipart/form-data` with a `file` field (audio, ≥ 2 s).
+
+**Response 201:** `{ "clip_id": "…", "duration_secs": 4.2 }`
+**Response 422** `conditioning_too_short` if under 2 seconds.
 **Response 409** `segment_not_comparable` if `segment_id` doesn't exist or has no transcript.
 **Response 422** if neither `text` nor `segment_id` is given.
 **Response 503** `xtts_unavailable` if the resolved engine is XTTS (base preview, or an xtts model) and the XTTS service is not deployed or unhealthy; `engine_unavailable` for an unhealthy GPT-SoVITS model preview.

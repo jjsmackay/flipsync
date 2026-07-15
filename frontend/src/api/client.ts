@@ -220,6 +220,16 @@ export function uploadReference(
   return uploadWithProgress(`/projects/${projectId}/reference`, file, onProgress)
 }
 
+/** Upload a one-off clip to condition XTTS synthesis on (inference only — does
+ *  not touch the diarisation reference). Returns a clip_id for conditioning. */
+export function uploadConditioningClip(
+  projectId: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<{ clip_id: string; duration_secs: number }> {
+  return uploadWithProgress(`/projects/${projectId}/previews/conditioning`, file, onProgress)
+}
+
 /** The current reference clip's audio — whatever was uploaded or assembled from a scan pick. */
 export function getReferenceAudioUrl(projectId: string): string {
   return `${BASE_URL}/projects/${projectId}/reference/audio`
